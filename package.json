@@ -1,0 +1,11 @@
+{
+  "name": "tint-recorder",
+  "version": "0.1.0",
+  "description": "Deterministic GIF recorder for tint demos.",
+  "private": true,
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "@xterm/headless": "^6.0.0"
+  }
+}
