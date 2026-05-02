@@ -10,13 +10,14 @@ use std::time::Duration;
 use crate::recorder::{Key, Recorder};
 
 /// Custom palette emitted by `run_custom_theme`. 17 colors after the
-/// `name:bg:fg:` triple — bg/fg/16 ANSI slots. Matrix phosphor green:
-/// bright green bg with near-black fg. ANSI ramp stays dark grey so the
-/// PS1's t/i/n/t letters render as readable dark glyphs on the bright bg.
+/// `name:bg:fg:` triple — bg/fg/16 ANSI slots. Authentic Matrix:
+/// near-black bg with phosphor-green fg, and an all-green ANSI ramp so
+/// the PS1's t/i/n/t letters render as Matrix-coded text instead of
+/// boring grey on the dark bg.
 pub const CUSTOM_THEME_LINE: &str = concat!(
-    "matrix:#00ff41:#001100:",
-    "#111111:#222222:#333333:#444444:#555555:#666666:#777777:#888888:",
-    "#999999:#aaaaaa:#bbbbbb:#cccccc:#dddddd:#eeeeee:#f0f0f0:#ffffff",
+    "matrix:#001100:#00ff41:",
+    "#001100:#00aa33:#00ff41:#00dd44:#003322:#00aa44:#00cc55:#66ff88:",
+    "#002211:#00bb33:#33ff66:#22ee55:#004433:#33bb55:#33dd66:#88ff99",
 );
 
 #[must_use] 

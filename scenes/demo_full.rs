@@ -57,9 +57,9 @@ fn main() -> anyhow::Result<()> {
     // - Act 5 is a short coda: `tint reset` returns to default. Doubles
     //   as a graceful loop transition — GIF ends on default-dark which
     //   matches the loop's start state, so the wrap-around isn't jarring.
-    // - 2500ms outro dwell after reset: long enough to register "back
-    //   to normal" before the loop restarts; shorter than the previous
-    //   3500ms because reset itself is a quieter beat.
+    // - 4000ms outro dwell after reset: a long beat at the end gives
+    //   the viewer space to absorb the demo before the loop restarts;
+    //   without it, the GIF feels like it's racing back to the start.
     // 36 rows: counted what the demo prints (preamble + 5 acts = ~30
     // command rows + blanks + heredoc wrap), default 30 was clipping
     // the trailing reset. TODO: programmatic fit (measure max used row
@@ -81,7 +81,7 @@ fn main() -> anyhow::Result<()> {
     run_custom_theme(&mut r)?;
     blank(&mut r, ms(500))?;
     run_reset(&mut r)?;
-    r.dwell(ms(2500), ms(100))?;
+    r.dwell(ms(4000), ms(100))?;
 
     let cast = r.stop()?;
     cast.write_with_summary(&args.cast)?;
