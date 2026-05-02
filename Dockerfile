@@ -1,28 +1,39 @@
-# Demo environment for tint-recorder.
+# Demo + render environment for tint-recorder.
 #
-# Container runs the bash session that scenes drive via PTY. Hermetic by
-# construction: no leak from the user's real $HOME, no stray .tint files,
-# no host-installed terminal tools shadowing tint's behavior.
-#
-# The recorder pipes a PTY to `docker run -i`, so the bash inside the
-# container sees its stdin as a tty and behaves as a normal interactive
-# shell. Scenes type at this shell.
+# One image with everything: bash + tint for the recording phase, plus
+# node/@xterm/headless + python/Pillow + ffmpeg + pinned font for the
+# render phase. Running both inside the same pinned container makes the
+# resulting GIF byte-stable across machines that have only Docker.
 
 FROM debian:12-slim
 
-# gawk (not mawk) — tint's palette-parsing awk script uses `{18}` interval
-# quantifiers, which mawk doesn't support.
+# Demo deps (gawk — mawk doesn't support `{18}` regex).
+# Render deps: node (snapshot.js), python3 (paint.py), ffmpeg (encode.py),
+# fonts-dejavu-core (paint.py reads from the bundled assets dir, but the
+# system font is also useful as a fallback).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         bash gawk sed grep coreutils ncurses-bin ca-certificates \
+        nodejs npm \
+        python3 python3-pip python3-venv \
+        fonts-dejavu-core ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# Tint script (copied from host build context — see Makefile `build-image`).
+# tint script (copied from host build context — see Makefile build-image).
 COPY tint /usr/local/bin/tint
 RUN chmod +x /usr/local/bin/tint
 
-# Demo user with an empty $HOME. No `.tint` file anywhere on the walk-up
-# path (no /home/demo/.tint, no /tmp/.tint), so the cd hook only fires on
-# .tint files the recording itself creates.
+# Renderer code + deps. Installed at the image level (read-only at runtime).
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm install --omit=dev --no-audit --no-fund
+COPY requirements.txt ./
+RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
+COPY renderer ./renderer
+COPY assets/fonts ./assets/fonts
+COPY render-cast.sh ./
+RUN chmod +x render-cast.sh
+
+# Demo user with empty $HOME — no `.tint` on the cd-hook walk-up path.
 RUN useradd -m -d /home/demo -s /bin/bash demo
 USER demo
 WORKDIR /home/demo

@@ -1,22 +1,24 @@
 .PHONY: setup build-image demo smoke clean
 
-PY        := .venv/bin/python
+PY        := python3
 SCENE     ?= demo_full
 CAST      := assets/$(SCENE).cast
 GIF       := assets/$(SCENE).gif
 IMAGE     := tint-recorder:demo
 TINT_PATH ?= /home/cory/code/tint/tint
 
+# Host requirements: python3 (for the scene runner only — uses stdlib) and
+# docker (everything else runs inside the container).
 setup:
-	python3 -m venv .venv
-	$(PY) -m pip install -r requirements.txt
-	npm install
+	@command -v python3 >/dev/null && echo "python3: $$(python3 --version)" || (echo "missing python3" && exit 1)
+	@command -v docker  >/dev/null && echo "docker:  $$(docker --version)"  || (echo "missing docker"  && exit 1)
 
-# Build the Docker image used as the demo's bash environment. Must rerun
-# whenever the host's tint script changes (or when Dockerfile changes).
-# Build context is a tar stream (Dockerfile + tint), avoiding any temp dir.
+# Build the demo container (bash + tint + render pipeline). Rerun whenever
+# the host's tint script, the Dockerfile, or render code changes.
 build-image:
-	tar -c Dockerfile -C $(dir $(TINT_PATH)) $(notdir $(TINT_PATH)) | \
+	tar -c Dockerfile render-cast.sh package.json package-lock.json \
+	       requirements.txt renderer assets/fonts \
+	       -C $(dir $(TINT_PATH)) $(notdir $(TINT_PATH)) | \
 		docker build -t $(IMAGE) -
 
 demo: SCENE=demo_full
@@ -25,11 +27,13 @@ demo: build-image render
 smoke: SCENE=smoke
 smoke: build-image render
 
+# Two phases: scene runs on host (drives docker for the bash session,
+# writes the cast to ./assets/), then render runs inside the container
+# (consumes the cast, writes the GIF back to ./assets/).
 render:
 	$(PY) -m scenes.$(SCENE)
-	node renderer/snapshot.js $(CAST) assets/snapshots
-	$(PY) renderer/paint.py assets/snapshots assets/frames
-	$(PY) renderer/encode.py assets/frames assets/snapshots/timing.json $(GIF)
+	docker run --rm -v $(CURDIR)/assets:/work $(IMAGE) \
+		/app/render-cast.sh /work/$(SCENE).cast /work/$(SCENE).gif
 	@echo "wrote $(GIF)"
 
 clean:
