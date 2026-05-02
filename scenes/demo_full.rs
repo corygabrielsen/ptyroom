@@ -63,7 +63,10 @@ fn main() -> anyhow::Result<()> {
     let mut r = Recorder::start(RecorderConfig::default())?;
     r.dwell(ms(800), ms(600))?;
     run_preamble(&mut r)?;
-    blank(&mut r, ms(500))?;
+    // Short blank between preamble and act 1: the preamble is framing,
+    // not a peer act, so it gets a tighter join than the standard 500ms
+    // inter-act spacing. Keeps the demo from "waiting" before content.
+    blank(&mut r, ms(250))?;
     run_cli(&mut r)?;
     blank(&mut r, ms(500))?;
     run_picker(&mut r, target_idx)?;

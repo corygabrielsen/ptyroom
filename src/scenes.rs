@@ -84,14 +84,16 @@ pub fn lookup_picker_idx(tint_path: &Path, theme: &str) -> anyhow::Result<usize>
 ///
 /// **Pacing:**
 /// - Title: 28ms/char, normal speed — it's the value-prop line.
-/// - 1200ms final settle so the viewer reads the line and registers
-///   the framing before the first act starts typing.
+/// - 100ms final settle (tight). The line is short enough that it reads
+///   on the way in; a long settle here makes the demo feel like it's
+///   waiting before the actual content starts. Composition adds a
+///   brief blank Enter after this for visual separation.
 ///
 /// # Errors
 /// Any [`Recorder`] IO error.
 pub fn run_preamble(r: &mut Recorder) -> anyhow::Result<()> {
     line(r, "# tint — terminal theme switcher",
-         ms(28), ms(300), ms(1200))?;
+         ms(28), ms(300), ms(100))?;
     Ok(())
 }
 
