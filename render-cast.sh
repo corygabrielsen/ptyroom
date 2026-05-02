@@ -1,14 +1,21 @@
 #!/bin/bash
 # Render an asciinema cast to a GIF inside the demo container.
 #
-# Usage: render-cast.sh <cast-path> <gif-path>
+# Usage: render-cast.sh <scene-name> <cast-path> <gif-path>
+#
 # Intermediate snapshots/ and frames/ dirs land beside the cast.
+# After rendering, runs the verify contract for `scene-name` and exits
+# non-zero if any check fails.
 set -euo pipefail
-CAST="$1"
-GIF="$2"
+SCENE="$1"
+CAST="$2"
+GIF="$3"
 DIR=$(dirname "$CAST")
 
-# Call tsx directly (skip the npx resolution dance, ~100-300ms cold start).
+# Snapshot replay still uses @xterm/headless via the JS file. That step
+# stays in TypeScript because Rust has no equivalent terminal emulator
+# with proper OSC 11 support (avt silently drops OSC).
 /app/node_modules/.bin/tsx /app/renderer/snapshot.ts "$CAST" "$DIR/snapshots"
-python3 /app/renderer/paint.py "$DIR/snapshots" "$DIR/frames"
-python3 /app/renderer/encode.py "$DIR/frames" "$DIR/snapshots/timing.json" "$GIF"
+tint-paint  "$DIR/snapshots" "$DIR/frames"
+tint-encode "$DIR/frames" "$DIR/snapshots/timing.json" "$GIF"
+tint-verify "$SCENE" --snapshots-dir "$DIR/snapshots"

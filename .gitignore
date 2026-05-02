@@ -1,12 +1,10 @@
-# Python
-__pycache__/
-*.pyc
-.venv/
+# Rust
+target/
 
-# Node
+# Node (snapshot replay only)
 node_modules/
 
-# Generated demo artifacts (the rendered GIFs, intermediate frames, casts)
+# Generated demo artifacts
 assets/*.gif
 assets/*.cast
 assets/snapshots/
@@ -18,3 +16,8 @@ assets/concat.txt
 *.swp
 *.swo
 *~
+
+# Python (legacy, removed in Rust port)
+__pycache__/
+*.pyc
+.venv/
