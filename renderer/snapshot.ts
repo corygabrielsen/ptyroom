@@ -84,19 +84,22 @@ function rgbHex(n: number): string {
 
 // ───────── snapshot extraction ─────────
 
-function extractColor(
-  cell: IBufferCell,
-  which: "fg" | "bg",
-  state: ReplayState,
-): CellColor {
-  // Use the boolean classifiers — the integer mode value is internal
-  // (0x3000000 for RGB, 0x2000000 for palette) and not part of the public API.
-  const isRGB = which === "fg" ? cell.isFgRGB() : cell.isBgRGB();
-  const isPalette = which === "fg" ? cell.isFgPalette() : cell.isBgPalette();
-  const colorVal = which === "fg" ? cell.getFgColor() : cell.getBgColor();
-  if (isRGB) return rgbHex(colorVal);
-  if (isPalette) return { palette: colorVal, fallback: state.palette[colorVal] ?? null };
-  return null; // default fg/bg
+function extractFg(cell: IBufferCell, state: ReplayState): CellColor {
+  if (cell.isFgRGB()) return rgbHex(cell.getFgColor());
+  if (cell.isFgPalette()) {
+    const idx = cell.getFgColor();
+    return { palette: idx, fallback: state.palette[idx] ?? null };
+  }
+  return null;
+}
+
+function extractBg(cell: IBufferCell, state: ReplayState): CellColor {
+  if (cell.isBgRGB()) return rgbHex(cell.getBgColor());
+  if (cell.isBgPalette()) {
+    const idx = cell.getBgColor();
+    return { palette: idx, fallback: state.palette[idx] ?? null };
+  }
+  return null;
 }
 
 function snapshot(term: Terminal, state: ReplayState): FrameSnapshot {
@@ -117,8 +120,8 @@ function snapshot(term: Terminal, state: ReplayState): FrameSnapshot {
       }
       row.push({
         ch: cell.getChars() || " ",
-        fg: extractColor(cell, "fg", state),
-        bg: extractColor(cell, "bg", state),
+        fg: extractFg(cell, state),
+        bg: extractBg(cell, state),
         bold: cell.isBold() ? 1 : 0,
         dim: cell.isDim() ? 1 : 0,
         italic: cell.isItalic() ? 1 : 0,

@@ -2,6 +2,8 @@
 
 PY        := python3
 SCENE     ?= demo_full
+# Deferred expansion (= not :=) so target-local SCENE overrides
+# (e.g. `smoke: SCENE=smoke`) reach into CAST/GIF at recipe time.
 CAST       = assets/$(SCENE).cast
 GIF        = assets/$(SCENE).gif
 IMAGE     := tint-recorder:demo

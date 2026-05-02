@@ -1,15 +1,9 @@
 """Per-scene visual assertion contracts.
 
 Each scene maps to a list of `Check` objects. Each check receives the full
-list of snapshots and returns `(passed, detail)`.
-
-Conventions:
-  - `expected_bg(snaps, idx, color)` — assert snapshot at idx has bg=color
-  - `find_first_bg(snaps, color)` — find first snap with bg=color (returns idx or None)
-  - `row_contains(snaps, idx, row, substring)` — assert row contains substring
-
-Contracts are intentionally a few load-bearing checks per scene, not
-exhaustive — they catch regressions, they don't validate every pixel.
+list of snapshots and returns `(passed, detail)`. Contracts are
+intentionally a few load-bearing checks per scene, not exhaustive — they
+catch regressions, they don't validate every pixel.
 """
 
 from __future__ import annotations

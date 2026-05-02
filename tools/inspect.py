@@ -18,6 +18,18 @@ import sys
 from pathlib import Path
 
 
+# Same xterm palette as paint.py's DEFAULT_ANSI — used as a last-resort
+# fallback when a cell uses a palette index 0-15 with no OSC 4 override
+# in the snapshot. Inspect rendering is best-effort; paint.py is the
+# canonical resolver for the real GIF.
+DEFAULT_ANSI = [
+    "#000000", "#cd0000", "#00cd00", "#cdcd00",
+    "#0000ee", "#cd00cd", "#00cdcd", "#e5e5e5",
+    "#7f7f7f", "#ff0000", "#00ff00", "#ffff00",
+    "#5c5cff", "#ff00ff", "#00ffff", "#ffffff",
+]
+
+
 def hex_to_rgb(s: str | None) -> tuple[int, int, int] | None:
     if not s or not isinstance(s, str) or not s.startswith("#"):
         return None
@@ -25,20 +37,30 @@ def hex_to_rgb(s: str | None) -> tuple[int, int, int] | None:
     return int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)
 
 
-def cell_color(cell: dict, default_hex: str, key: str) -> str | None:
-    """Resolve a cell's bg or fg color spec to a hex string for ANSI output."""
+def cell_color(cell: dict, default_hex: str, key: str,
+               palette: dict[str, str]) -> str | None:
+    """Resolve a cell's bg or fg color spec to a hex string for ANSI output.
+
+    Mirrors paint.py's resolve_color: palette refs fall back to the cell's
+    inline fallback, then to the snapshot's OSC 4 palette dict, then to
+    DEFAULT_ANSI for indices 0-15.
+    """
     c = cell.get(key)
     if c is None:
         return default_hex
     if isinstance(c, str):
         return c
-    fb = c.get("fallback")
+    idx = c.get("palette")
+    fb = c.get("fallback") or palette.get(str(idx))
     if fb:
         return fb
+    if isinstance(idx, int) and 0 <= idx < 16:
+        return DEFAULT_ANSI[idx]
     return None
 
 
-def render_row(row: list, default_bg: str, default_fg: str, color: bool) -> str:
+def render_row(row: list, default_bg: str, default_fg: str,
+               palette: dict[str, str], color: bool) -> str:
     out: list[str] = []
     for cell in row:
         if cell is None:
@@ -48,8 +70,8 @@ def render_row(row: list, default_bg: str, default_fg: str, color: bool) -> str:
         if not color:
             out.append(ch)
             continue
-        bg = cell_color(cell, default_bg, "bg")
-        fg = cell_color(cell, default_fg, "fg")
+        bg = cell_color(cell, default_bg, "bg", palette)
+        fg = cell_color(cell, default_fg, "fg", palette)
         bg_rgb = hex_to_rgb(bg)
         fg_rgb = hex_to_rgb(fg)
         seq = ""
@@ -87,6 +109,7 @@ def main() -> None:
     grid = snap["grid"]
     bg = snap.get("bg", "#000000")
     fg = snap.get("fg", "#ffffff")
+    palette = snap.get("palette", {})
     total = len(grid)
     start, end = parse_rows(args.rows, total)
 
@@ -94,7 +117,7 @@ def main() -> None:
           file=sys.stderr)
     width = len(str(total))
     for i in range(start, end):
-        line = render_row(grid[i], bg, fg, args.color)
+        line = render_row(grid[i], bg, fg, palette, args.color)
         print(f"{i+1:>{width}}  {line}")
 
 
