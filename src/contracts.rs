@@ -21,6 +21,7 @@ const fn rgb(r: u8, g: u8, b: u8) -> HexColor { HexColor::from_rgb(r, g, b) }
 const DARK_AZURE:       HexColor = rgb(0x3a, 0x59, 0x78);
 const DRACULA:          HexColor = rgb(0x28, 0x2a, 0x36);
 const SOLARIZED_LIGHT:  HexColor = rgb(0xfd, 0xf6, 0xe3);
+const MONOKAI:          HexColor = rgb(0x27, 0x28, 0x22);
 const PALE_EMERALD:     HexColor = rgb(0xba, 0xde, 0xc3);
 const PALE_AMBER:       HexColor = rgb(0xde, 0xd5, 0xba);
 const HOT:              HexColor = rgb(0xff, 0x00, 0x6e);
@@ -41,13 +42,14 @@ pub fn registry(scene: &str) -> Option<Contract> {
 fn demo_full() -> Contract {
     let checks: Vec<Check> = vec![
         picker_scroll_indicator_visible(),
-        bg_reaches("dark-azure",       DARK_AZURE),
-        bg_reaches("dracula",           DRACULA),
-        bg_reaches("solarized-light",   SOLARIZED_LIGHT),
+        bg_reaches("dark-azure",           DARK_AZURE),
+        bg_reaches("dracula",              DRACULA),
+        bg_reaches("solarized-light",      SOLARIZED_LIGHT),
+        bg_reaches("monokai",              MONOKAI),
         bg_reaches("pale-emerald-cd-hook", PALE_EMERALD),
         bg_reaches("pale-amber-cd-hook",   PALE_AMBER),
-        bg_reaches("hot-custom",        HOT),
-        final_bg_is("hot-custom",       HOT),
+        bg_reaches("hot-custom",           HOT),
+        final_bg_is("hot-custom",          HOT),
     ];
     Contract { scene: "demo_full", checks }
 }
@@ -73,7 +75,8 @@ fn cli() -> Contract {
         checks: vec![
             bg_reaches("dracula",         DRACULA),
             bg_reaches("solarized-light", SOLARIZED_LIGHT),
-            final_bg_is("solarized-light", SOLARIZED_LIGHT),
+            bg_reaches("monokai",         MONOKAI),
+            final_bg_is("monokai",        MONOKAI),
         ],
     }
 }

@@ -148,7 +148,12 @@ pub fn run_picker(r: &mut Recorder, target_idx: usize) -> anyhow::Result<()> {
 /// Any [`Recorder`] IO error.
 pub fn run_cli(r: &mut Recorder) -> anyhow::Result<()> {
     line(r, "# apply by name", ms(24), ms(300), ms(700))?;
-    for theme in ["dracula", "solarized-light"] {
+    // Three themes: dracula (dark purple) → solarized-light (cream) →
+    // monokai (classic dark with vivid accents). Three is the rule-of-
+    // three rhythm — completes the "you can pick anything by name" beat
+    // without dragging. Sequence dark→light→dark gives visual contrast
+    // each step instead of monotonically darkening or lightening.
+    for theme in ["dracula", "solarized-light", "monokai"] {
         line(r, &format!("tint {theme}"), ms(35), ms(300), ms(900))?;
     }
     Ok(())
