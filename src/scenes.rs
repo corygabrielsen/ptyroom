@@ -78,9 +78,7 @@ pub fn lookup_picker_idx(tint_path: &Path, theme: &str) -> anyhow::Result<usize>
 // first call needs the long settle).
 
 /// Demo preamble: the value-prop line that runs before act 1. Sets the
-/// frame ("this is the tint demo") without a numbered list (an earlier
-/// iteration tried enumerating "1. pick / 2. apply by name / ..." but
-/// the list felt heavy; the title alone is enough to set the scene).
+/// frame ("this is the tint demo") so per-act headers can be terse.
 ///
 /// **Pacing:**
 /// - Title: 28ms/char, normal speed — it's the value-prop line.
@@ -90,7 +88,7 @@ pub fn lookup_picker_idx(tint_path: &Path, theme: &str) -> anyhow::Result<usize>
 /// # Errors
 /// Any [`Recorder`] IO error.
 pub fn run_preamble(r: &mut Recorder) -> anyhow::Result<()> {
-    line(r, "# tint — 4 ways to theme your terminal:",
+    line(r, "# tint — terminal theme switcher",
          ms(28), ms(300), ms(1200))?;
     Ok(())
 }
