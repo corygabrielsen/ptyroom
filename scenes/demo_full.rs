@@ -27,14 +27,14 @@ fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let target_idx = lookup_picker_idx(&args.tint_path, PICKER_TARGET)?;
 
-    // Consistent double-Enter between every act for visual spacing.
+    // Single blank line between every act for consistent visual spacing.
     let mut r = Recorder::start(RecorderConfig::default())?;
     run_picker(&mut r, target_idx)?;
-    blank(&mut r, ms(250))?; blank(&mut r, ms(500))?;
+    blank(&mut r, ms(500))?;
     run_cli(&mut r)?;
-    blank(&mut r, ms(250))?; blank(&mut r, ms(500))?;
+    blank(&mut r, ms(500))?;
     run_cd_hook(&mut r)?;
-    blank(&mut r, ms(250))?; blank(&mut r, ms(500))?;
+    blank(&mut r, ms(500))?;
     run_custom_theme(&mut r)?;
     r.dwell(ms(3500), ms(100))?;
 
