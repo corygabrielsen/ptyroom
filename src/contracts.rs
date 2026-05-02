@@ -21,8 +21,8 @@ const fn rgb(r: u8, g: u8, b: u8) -> HexColor { HexColor::from_rgb(r, g, b) }
 const DARK_AZURE:       HexColor = rgb(0x3a, 0x59, 0x78);
 const DRACULA:          HexColor = rgb(0x28, 0x2a, 0x36);
 const SOLARIZED_LIGHT:  HexColor = rgb(0xfd, 0xf6, 0xe3);
-const BLUE:             HexColor = rgb(0x53, 0x53, 0xac);
-const PALE_ROSE:        HexColor = rgb(0xde, 0xba, 0xcc);
+const PALE_EMERALD:     HexColor = rgb(0xba, 0xde, 0xc3);
+const PALE_AMBER:       HexColor = rgb(0xde, 0xd5, 0xba);
 const HOT:              HexColor = rgb(0xff, 0x00, 0x6e);
 
 #[must_use]
@@ -44,8 +44,8 @@ fn demo_full() -> Contract {
         bg_reaches("dark-azure",       DARK_AZURE),
         bg_reaches("dracula",           DRACULA),
         bg_reaches("solarized-light",   SOLARIZED_LIGHT),
-        bg_reaches("blue-cd-hook",      BLUE),
-        bg_reaches("pale-rose-cd-hook", PALE_ROSE),
+        bg_reaches("pale-emerald-cd-hook", PALE_EMERALD),
+        bg_reaches("pale-amber-cd-hook",   PALE_AMBER),
         bg_reaches("hot-custom",        HOT),
         final_bg_is("hot-custom",       HOT),
     ];
@@ -82,9 +82,9 @@ fn cd_hook() -> Contract {
     Contract {
         scene: "cd_hook",
         checks: vec![
-            bg_reaches("blue",      BLUE),
-            bg_reaches("pale-rose", PALE_ROSE),
-            final_bg_is("pale-rose", PALE_ROSE),
+            bg_reaches("pale-emerald",  PALE_EMERALD),
+            bg_reaches("pale-amber",    PALE_AMBER),
+            final_bg_is("pale-amber",   PALE_AMBER),
         ],
     }
 }
