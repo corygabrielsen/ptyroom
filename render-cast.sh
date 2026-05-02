@@ -12,6 +12,12 @@ CAST="$2"
 GIF="$3"
 DIR=$(dirname "$CAST")
 
+# Hermetic intermediates: nuke the per-render dirs so leftover frames from
+# a previous scene can't leak into this scene's verify (e.g. an earlier
+# render with more events leaves higher-numbered snapshots that look like
+# this scene's "final" frame).
+rm -rf "$DIR/snapshots" "$DIR/frames"
+
 # Snapshot replay still uses @xterm/headless via the JS file. That step
 # stays in TypeScript because Rust has no equivalent terminal emulator
 # with proper OSC 11 support (avt silently drops OSC).

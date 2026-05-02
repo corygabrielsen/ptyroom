@@ -1,11 +1,20 @@
 //! Per-scene contract registry.
 //!
-//! Adding a scene? Add an entry to [`registry`].
+//! Adding a scene? Add an entry to [`registry`] *and* to [`SCENES`]. The
+//! lib test `every_scene_has_a_contract` keeps them in sync.
 
 use crate::color::HexColor;
 use crate::verify::{
     Check, Contract, bg_reaches, final_bg_is, picker_scroll_indicator_visible,
 };
+
+/// Every scene name the registry knows about. Source of truth for any
+/// "iterate over all scenes" workflow (Makefile `verify-all`, regression
+/// loops, `tint-verify --list-scenes`, etc.).
+pub const SCENES: &[&str] = &[
+    "demo_full", "smoke",
+    "picker", "cli", "cd_hook", "custom_theme",
+];
 
 const fn rgb(r: u8, g: u8, b: u8) -> HexColor { HexColor::from_rgb(r, g, b) }
 
@@ -87,5 +96,30 @@ fn custom_theme() -> Contract {
             bg_reaches("hot",  HOT),
             final_bg_is("hot", HOT),
         ],
+    }
+}
+
+/// Open contract: scene exists but has no validation checks. Use for
+/// exploratory scenes whose endpoints aren't predictable (random themes,
+/// `tint -l` based pickers, mood loops). The render pipeline still runs
+/// to completion; verify reports zero failures.
+#[must_use]
+pub fn open_contract(scene: &'static str) -> Contract {
+    Contract { scene, checks: vec![] }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_scene_has_a_contract() {
+        for name in SCENES {
+            assert!(
+                registry(name).is_some(),
+                "SCENES lists {name:?} but registry returns None — \
+                 add the match arm or remove the entry"
+            );
+        }
     }
 }

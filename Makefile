@@ -1,4 +1,4 @@
-.PHONY: setup build build-image render demo smoke picker cli cd-hook custom-theme all-scenes verify clean
+.PHONY: setup build build-image render demo smoke picker cli cd-hook custom-theme all-scenes verify verify-all clean
 
 SCENE     ?= demo_full
 CAST       = assets/$(SCENE).cast
@@ -67,6 +67,27 @@ render:
 verify:
 	docker run --rm -v $(CURDIR)/assets:/work $(IMAGE) \
 		tint-verify $(SCENE) --snapshots-dir /work/snapshots
+
+# Render every registered scene and report PASS/FAIL per scene. Drives
+# the scene list from `tint-verify --list-scenes` so it stays in sync
+# with the contract registry. Slow — runs the full render pipeline for
+# each scene. Returns non-zero if any scene fails verify.
+verify-all: build build-image
+	@scenes=$$(docker run --rm $(IMAGE) tint-verify --list-scenes); \
+	failed=""; \
+	for scene in $$scenes; do \
+		printf '\n=== %s ===\n' "$$scene"; \
+		out=$$($(MAKE) -s render SCENE=$$scene 2>&1 || true); \
+		printf '%s\n' "$$out" | grep -E '^(PASS|FAIL|wrote )' || true; \
+		if printf '%s' "$$out" | grep -q '^FAIL'; then \
+			failed="$$failed $$scene"; \
+		fi; \
+	done; \
+	if [ -n "$$failed" ]; then \
+		printf '\nFAILED:%s\n' "$$failed"; exit 1; \
+	else \
+		printf '\nall scenes passed\n'; \
+	fi
 
 clean:
 	rm -rf assets/snapshots assets/frames assets/concat.txt
