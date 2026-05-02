@@ -6,7 +6,6 @@
 //! container the recorder spawns.
 
 use std::path::PathBuf;
-use std::time::Duration;
 
 use clap::Parser;
 use tint_recorder::recorder::{Key, Recorder, RecorderConfig};
@@ -42,13 +41,7 @@ fn main() -> anyhow::Result<()> {
     r.dwell(ms(3500), ms(100))?; // outro
 
     let cast = r.stop()?;
-    let _ = std::fs::create_dir_all(args.cast.parent().unwrap_or(&PathBuf::from(".")));
-    cast.write(&args.cast)?;
-    println!("wrote {} ({} bytes, {} events)",
-        args.cast.display(),
-        std::fs::metadata(&args.cast)?.len(),
-        cast.events.len(),
-    );
+    cast.write_with_summary(&args.cast)?;
     Ok(())
 }
 
@@ -112,5 +105,3 @@ fn act4_custom_theme(r: &mut Recorder) -> anyhow::Result<()> {
     line(r, "tint hot", ms(32), ms(300), ms(1200))?;
     Ok(())
 }
-
-const _: Option<Duration> = None;

@@ -1,6 +1,5 @@
 //! Smoke scene: open picker, scroll a few rows, dismiss with Esc.
 use std::path::PathBuf;
-use std::time::Duration;
 
 use clap::Parser;
 use tint_recorder::recorder::{Key, Recorder, RecorderConfig};
@@ -33,15 +32,6 @@ fn main() -> anyhow::Result<()> {
     r.dwell(ms(600), ms(100))?;
 
     let cast = r.stop()?;
-    let _ = std::fs::create_dir_all(args.cast.parent().unwrap_or(&PathBuf::from(".")));
-    cast.write(&args.cast)?;
-    println!("wrote {} ({} bytes, {} events)",
-        args.cast.display(),
-        std::fs::metadata(&args.cast)?.len(),
-        cast.events.len(),
-    );
+    cast.write_with_summary(&args.cast)?;
     Ok(())
 }
-
-// Quiet a clippy lint for the unused Duration import path
-const _: Option<Duration> = None;

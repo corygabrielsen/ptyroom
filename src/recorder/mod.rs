@@ -27,6 +27,11 @@ use crate::cast::{Cast, CastEvent, CastHeader, EventKind};
 use drainer::Drainer;
 use pty::{PtyMaster, spawn};
 
+/// Wall-clock window we wait after each input write to let the container
+/// produce output before we drain. Long enough for the picker's render
+/// pipeline; short enough that scenes don't run for ages on the host.
+const DEFAULT_SETTLE: Duration = Duration::from_millis(100);
+
 #[derive(Debug, Clone)]
 pub struct RecorderConfig {
     pub cols: u16,
@@ -103,7 +108,7 @@ impl Recorder {
 
     /// Send a single key, dwell `dwell` after.
     pub fn key(&mut self, key: Key, dwell: Duration) -> anyhow::Result<()> {
-        self.send_and_capture(key.bytes(), dwell, Duration::from_millis(100))
+        self.send_and_capture(key.bytes(), dwell, DEFAULT_SETTLE)
     }
 
     /// Send a key `repeat` times, with `dwell` between each.
@@ -118,14 +123,14 @@ impl Recorder {
         for ch in text.chars() {
             let mut buf = [0u8; 4];
             let bytes = ch.encode_utf8(&mut buf).as_bytes();
-            self.send_and_capture(bytes, per_char, Duration::from_millis(100))?;
+            self.send_and_capture(bytes, per_char, DEFAULT_SETTLE)?;
         }
         Ok(())
     }
 
     /// Send raw bytes (escape sequences, control codes) with the given dwell.
     pub fn send_raw(&mut self, bytes: &[u8], dwell: Duration) -> anyhow::Result<()> {
-        self.send_and_capture(bytes, dwell, Duration::from_millis(100))
+        self.send_and_capture(bytes, dwell, DEFAULT_SETTLE)
     }
 
     fn send_and_capture(

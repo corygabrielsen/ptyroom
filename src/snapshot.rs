@@ -43,6 +43,19 @@ impl Cell {
     pub fn first_char(&self) -> char {
         self.ch.chars().next().unwrap_or(' ')
     }
+
+    /// Resolve this cell's `(fg, bg)` to concrete RGB given the snapshot's
+    /// layer defaults and palette overrides, applying the `inverse`
+    /// attribute as a final swap. Single source of truth — both the PNG
+    /// renderer and the ASCII inspector go through here.
+    pub fn resolve_layers(&self, snap: &Snapshot) -> (HexColor, HexColor) {
+        let mut fg = self.fg.resolve(snap.fg, &snap.palette);
+        let mut bg = self.bg.resolve(snap.bg, &snap.palette);
+        if self.is_inverse() {
+            std::mem::swap(&mut fg, &mut bg);
+        }
+        (fg, bg)
+    }
 }
 
 /// Captured frame: bg/fg/palette state + a rectangular grid.
@@ -86,11 +99,32 @@ impl Snapshot {
 /// Rectangular grid of optional cells. `None` is rare — empty cells where
 /// the terminal emulator has no content. Snapshots from `@xterm/headless`
 /// usually fill all cells with at least a space, but we accept absence.
+///
+/// The inner `Vec` is private — every `Grid` either came from the
+/// validating [`Grid::new`] constructor or from JSON deserialization that
+/// also runs [`Grid::validate`]. Callers can't construct a non-rectangular
+/// grid, so [`Snapshot::row_text`] and the renderer can iterate without
+/// width-mismatch defense.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(transparent)]
-pub struct Grid(pub Vec<Vec<Option<Cell>>>);
+pub struct Grid(Vec<Vec<Option<Cell>>>);
 
 impl Grid {
+    /// Validating constructor. Returns `Err` if the grid is empty or any
+    /// row has a different length than the first row.
+    pub fn new(rows: Vec<Vec<Option<Cell>>>) -> anyhow::Result<Self> {
+        let g = Grid(rows);
+        g.validate()?;
+        Ok(g)
+    }
+
+    /// Test-only escape hatch — accept any grid (including ragged or empty).
+    /// Tests sometimes exercise validation by passing in a bad grid.
+    #[cfg(test)]
+    pub(crate) fn from_unchecked(rows: Vec<Vec<Option<Cell>>>) -> Self {
+        Grid(rows)
+    }
+
     pub fn rows(&self) -> usize { self.0.len() }
     pub fn cols(&self) -> usize { self.0.first().map(Vec::len).unwrap_or(0) }
 
@@ -152,7 +186,7 @@ mod tests {
 
     #[test]
     fn grid_rejects_non_rectangular() {
-        let g = Grid(vec![
+        let g = Grid::from_unchecked(vec![
             vec![solid_cell('a'), solid_cell('b')],
             vec![solid_cell('c')], // ragged
         ]);
@@ -161,13 +195,13 @@ mod tests {
 
     #[test]
     fn grid_rejects_empty() {
-        let g = Grid(vec![]);
+        let g = Grid::from_unchecked(vec![]);
         assert!(g.validate().is_err());
     }
 
     #[test]
     fn snapshot_row_text_right_trims() {
-        let g = Grid(vec![
+        let g = Grid::from_unchecked(vec![
             vec![solid_cell('h'), solid_cell('i'), solid_cell(' '), solid_cell(' ')],
         ]);
         let s = Snapshot {
@@ -181,7 +215,7 @@ mod tests {
 
     #[test]
     fn snapshot_row_text_handles_none_cells_as_space() {
-        let g = Grid(vec![
+        let g = Grid::from_unchecked(vec![
             vec![solid_cell('a'), None, solid_cell('b')],
         ]);
         let s = Snapshot {
@@ -199,7 +233,7 @@ mod tests {
             bg: HexColor::from_rgb(0x1a, 0x1b, 0x26),
             fg: HexColor::from_rgb(0xc0, 0xca, 0xf5),
             palette: PaletteOverrides::new(),
-            grid: Grid(vec![vec![solid_cell('x')]]),
+            grid: Grid::from_unchecked(vec![vec![solid_cell('x')]]),
         };
         let json = serde_json::to_string(&s).unwrap();
         let back: Snapshot = serde_json::from_str(&json).unwrap();

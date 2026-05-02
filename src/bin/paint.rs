@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use clap::Parser;
 use tint_recorder::paint::{FONT_BYTES, PaintConfig, Painter};
 use tint_recorder::snapshot::Snapshot;
+use tint_recorder::verify::list_numbered_snapshots;
 
 #[derive(Parser)]
 struct Args {
@@ -25,15 +26,7 @@ fn main() -> anyhow::Result<()> {
                       cell_w_px: None, cell_h_px: None },
     )?;
 
-    let mut entries: Vec<_> = std::fs::read_dir(&args.snap_dir)?
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("json"))
-        .filter(|p| p.file_stem().and_then(|s| s.to_str())
-                     .is_some_and(|n| n.chars().all(|c| c.is_ascii_digit())))
-        .collect();
-    entries.sort();
-
+    let entries = list_numbered_snapshots(&args.snap_dir)?;
     let m = painter.metrics();
     println!("painting {} frames at cell {}x{}", entries.len(), m.width, m.height);
     for path in entries {

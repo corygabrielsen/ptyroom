@@ -5,9 +5,7 @@
 //! terminal matches what `paint.rs` would emit to PNG.
 
 use crate::color::HexColor;
-use crate::snapshot::Snapshot;
-#[allow(unused_imports)]
-use crate::snapshot::Cell;
+use crate::snapshot::{Cell, Snapshot};
 
 /// Half-open `[start, end)` row range; out-of-range bounds clamp.
 #[derive(Debug, Clone, Copy)]
@@ -17,10 +15,6 @@ pub struct RowRange {
 }
 
 impl RowRange {
-    pub fn full(snap: &Snapshot) -> Self {
-        Self { start: 0, end: snap.rows() }
-    }
-
     /// Parse `start:end`, `:end`, `start:`, or `N` (single row).
     /// Out-of-range values clamp; never panics.
     pub fn parse(spec: &str, total: usize) -> Result<Self, String> {
@@ -75,8 +69,9 @@ fn render_row_color(snap: &Snapshot, y: usize) -> String {
         match cell {
             None => out.push(' '),
             Some(c) => {
-                let bg = c.bg.resolve(snap.bg, &snap.palette);
-                let fg = c.fg.resolve(snap.fg, &snap.palette);
+                // Goes through Cell::resolve_layers so the inverse attribute
+                // applies here just like it does in the PNG renderer.
+                let (fg, bg) = c.resolve_layers(snap);
                 push_ansi_bg(&mut out, bg);
                 push_ansi_fg(&mut out, fg);
                 out.push(c.first_char());

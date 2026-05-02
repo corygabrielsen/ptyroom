@@ -185,11 +185,7 @@ struct ResolvedCell<'a> {
 }
 
 fn resolve<'a>(cell: &'a Cell, snap: &Snapshot) -> ResolvedCell<'a> {
-    let mut fg = cell.fg.resolve(snap.fg, &snap.palette);
-    let mut bg = cell.bg.resolve(snap.bg, &snap.palette);
-    if cell.is_inverse() {
-        std::mem::swap(&mut fg, &mut bg);
-    }
+    let (fg, bg) = cell.resolve_layers(snap);
     ResolvedCell { cell, fg, bg }
 }
 
@@ -242,7 +238,7 @@ mod tests {
             bg: HexColor::from_rgb(0, 0, 0),
             fg: HexColor::from_rgb(255, 255, 255),
             palette: PaletteOverrides::new(),
-            grid: Grid(vec![
+            grid: Grid::from_unchecked(vec![
                 vec![cell('a', CellColor::Default, CellColor::Default); 80];
                 30
             ]),
@@ -277,7 +273,7 @@ mod tests {
             bg: HexColor::from_rgb(0, 0, 0),
             fg: HexColor::from_rgb(255, 255, 255),
             palette: PaletteOverrides::new(),
-            grid: Grid(vec![vec![cell('h', CellColor::Default, CellColor::Default); 5]]),
+            grid: Grid::from_unchecked(vec![vec![cell('h', CellColor::Default, CellColor::Default); 5]]),
         };
         let img = p.paint(&snap);
         let (w, h) = p.image_dims(&snap);
@@ -293,7 +289,7 @@ mod tests {
             bg: HexColor::from_rgb(0x1a, 0x1b, 0x26),
             fg: HexColor::from_rgb(0xc0, 0xca, 0xf5),
             palette: PaletteOverrides::new(),
-            grid: Grid(vec![
+            grid: Grid::from_unchecked(vec![
                 vec![cell('h', CellColor::Default, CellColor::Default),
                      cell('i', CellColor::Default, CellColor::Default)],
             ]),

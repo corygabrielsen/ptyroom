@@ -122,7 +122,10 @@ fn leak_str(s: String) -> &'static str {
 
 // ─────────────── Snapshot loading ───────────────
 
-pub fn load_snapshots_dir(dir: &Path) -> anyhow::Result<Vec<Snapshot>> {
+/// List numbered `*.json` snapshot paths in `dir`, sorted ascending.
+/// Filters to entries whose stem is all ASCII digits (`0001.json`, etc.).
+/// Returns `Err` when the dir is unreadable or has zero matching entries.
+pub fn list_numbered_snapshots(dir: &Path) -> anyhow::Result<Vec<std::path::PathBuf>> {
     let mut paths: Vec<_> = std::fs::read_dir(dir)?
         .filter_map(Result::ok)
         .map(|e| e.path())
@@ -134,7 +137,11 @@ pub fn load_snapshots_dir(dir: &Path) -> anyhow::Result<Vec<Snapshot>> {
     if paths.is_empty() {
         anyhow::bail!("no numbered snapshots in {}", dir.display());
     }
-    paths.iter().map(Snapshot::load).collect()
+    Ok(paths)
+}
+
+pub fn load_snapshots_dir(dir: &Path) -> anyhow::Result<Vec<Snapshot>> {
+    list_numbered_snapshots(dir)?.iter().map(Snapshot::load).collect()
 }
 
 #[cfg(test)]
@@ -148,7 +155,7 @@ mod tests {
             bg,
             fg: HexColor::from_rgb(0xff, 0xff, 0xff),
             palette: PaletteOverrides::new(),
-            grid: Grid(vec![vec![Some(Cell {
+            grid: Grid::from_unchecked(vec![vec![Some(Cell {
                 ch: ch.to_string(),
                 fg: CellColor::Default, bg: CellColor::Default,
                 bold:0,dim:0,italic:0,underline:0,inverse:0,
@@ -199,7 +206,7 @@ mod tests {
         }
         let snaps = vec![Snapshot {
             bg: HexColor::from_rgb(0,0,0), fg: HexColor::from_rgb(255,255,255),
-            palette: PaletteOverrides::new(), grid: Grid(grid),
+            palette: PaletteOverrides::new(), grid: Grid::from_unchecked(grid),
         }];
         assert!((picker_scroll_indicator_visible().eval)(&snaps).passed());
     }

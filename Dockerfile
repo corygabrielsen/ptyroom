@@ -11,14 +11,27 @@
 FROM rust:1-bookworm AS builder
 
 WORKDIR /build
-COPY Cargo.toml ./
-# Workspace Cargo.lock isn't required (we have one project), but if present
-# we copy it for reproducible builds. Allow-missing via wildcard.
-COPY Cargo.lock* ./
+
+# Pre-fetch the dependency graph in its own layer so editing src/ doesn't
+# re-download or recompile crates.io packages on every build. We need a
+# placeholder lib + bin so cargo will resolve the manifest's [[bin]] entries.
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir -p src src/bin scenes && \
+    echo "fn main() {}" > src/bin/encode.rs && \
+    cp src/bin/encode.rs src/bin/paint.rs && \
+    cp src/bin/encode.rs src/bin/inspect.rs && \
+    cp src/bin/encode.rs src/bin/verify.rs && \
+    cp src/bin/encode.rs scenes/smoke.rs && \
+    cp src/bin/encode.rs scenes/demo_full.rs && \
+    echo "" > src/lib.rs && \
+    cargo fetch --locked
+
+# Real sources — cargo build now compiles only our code, not deps.
 COPY src ./src
 COPY scenes ./scenes
 COPY assets ./assets
-RUN cargo build --release --bins
+RUN touch src/lib.rs src/bin/*.rs scenes/*.rs && \
+    cargo build --release --bins --locked
 
 # ───── runtime ─────
 FROM debian:12-slim

@@ -96,7 +96,21 @@ impl Cast {
     }
 
     pub fn write(&self, path: impl AsRef<Path>) -> anyhow::Result<()> {
-        std::fs::write(path.as_ref(), self.to_string())?;
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, self.to_string())?;
+        Ok(())
+    }
+
+    /// Convenience for scene binaries: write the cast and print a one-line
+    /// summary (`wrote PATH (BYTES bytes, N events)`).
+    pub fn write_with_summary(&self, path: impl AsRef<Path>) -> anyhow::Result<()> {
+        let path = path.as_ref();
+        self.write(path)?;
+        println!("wrote {} ({} bytes, {} events)",
+            path.display(), std::fs::metadata(path)?.len(), self.events.len());
         Ok(())
     }
 
