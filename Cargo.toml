@@ -24,6 +24,22 @@ path = "scenes/smoke.rs"
 name = "demo_full"
 path = "scenes/demo_full.rs"
 
+[[bin]]
+name = "picker"
+path = "scenes/picker.rs"
+
+[[bin]]
+name = "cli"
+path = "scenes/cli.rs"
+
+[[bin]]
+name = "cd_hook"
+path = "scenes/cd_hook.rs"
+
+[[bin]]
+name = "custom_theme"
+path = "scenes/custom_theme.rs"
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }

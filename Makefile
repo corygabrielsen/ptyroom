@@ -1,4 +1,4 @@
-.PHONY: setup build build-image demo smoke verify clean
+.PHONY: setup build build-image render demo smoke picker cli cd-hook custom-theme all-scenes verify clean
 
 SCENE     ?= demo_full
 CAST       = assets/$(SCENE).cast
@@ -11,10 +11,11 @@ setup:
 	@command -v cargo  >/dev/null && echo "cargo:  $$(cargo --version)"  || (echo "missing cargo"  && exit 1)
 	@command -v docker >/dev/null && echo "docker: $$(docker --version)" || (echo "missing docker" && exit 1)
 
-# Compile the host-side scene binaries (smoke, demo_full). They drive the
-# container via PTY; rendering happens inside the image.
+# Compile every host-side scene binary. They drive the container via PTY;
+# rendering happens inside the image.
 build:
-	cargo build --release --bin smoke --bin demo_full
+	cargo build --release --bin smoke --bin demo_full \
+	            --bin picker --bin cli --bin cd_hook --bin custom_theme
 
 # Build the demo image. Includes its own Rust builder stage so the
 # in-container binaries (paint/encode/inspect/verify) match exactly.
@@ -31,6 +32,27 @@ demo: build build-image render
 
 smoke: SCENE=smoke
 smoke: build build-image render
+
+# Per-feature scenes (each gets its own GIF + verify contract).
+picker: SCENE=picker
+picker: build build-image render
+
+cli: SCENE=cli
+cli: build build-image render
+
+cd-hook: SCENE=cd_hook
+cd-hook: build build-image render
+
+custom-theme: SCENE=custom_theme
+custom-theme: build build-image render
+
+# Build everything once, then render every scene against the same image.
+all-scenes: build build-image
+	$(MAKE) render SCENE=picker
+	$(MAKE) render SCENE=cli
+	$(MAKE) render SCENE=cd_hook
+	$(MAKE) render SCENE=custom_theme
+	$(MAKE) render SCENE=demo_full
 
 # Two phases: scene binary on host (drives docker for the bash session,
 # writes the cast to ./assets/), then docker mounts ./assets/ and runs
