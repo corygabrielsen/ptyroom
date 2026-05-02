@@ -195,6 +195,7 @@ impl Recorder {
         };
         let mut events = Vec::new();
         let mut t_ms: u64 = 0;
+        let mut last_output_t_ms: u64 = 0;
         for ev in &self.events {
             if !ev.output.is_empty() {
                 let data = String::from_utf8_lossy(&ev.output).into_owned();
@@ -203,8 +204,25 @@ impl Recorder {
                     kind: EventKind::Output,
                     data,
                 });
+                last_output_t_ms = t_ms;
             }
             t_ms = t_ms.saturating_add(duration_to_ms(ev.dwell));
+        }
+        // Trailing-dwell preservation. Empty-output events are dropped from
+        // the cast, so any dwell after the final real event was previously
+        // lost. The downstream xterm.js replayer (snapshot.ts) gives the
+        // last cast event a hardcoded 1s dwell — which silently capped the
+        // recorder's outro dwell at 1s no matter what scene authors wrote.
+        // Fix: emit a synthetic empty-data terminal event at the final
+        // cumulative timestamp. xterm.js's term.write("") is a no-op
+        // visually, but the timestamp difference between the last real
+        // event and this synthetic one becomes the last frame's dwell.
+        if t_ms > last_output_t_ms && !events.is_empty() {
+            events.push(CastEvent {
+                time_s: ms_to_seconds(t_ms),
+                kind: EventKind::Output,
+                data: String::new(),
+            });
         }
         Cast { header, events }
     }

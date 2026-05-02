@@ -25,8 +25,8 @@ const MONOKAI:          HexColor = rgb(0x27, 0x28, 0x22);
 const PALE_EMERALD:     HexColor = rgb(0xba, 0xde, 0xc3);
 const PALE_AMBER:       HexColor = rgb(0xde, 0xd5, 0xba);
 const MATRIX:           HexColor = rgb(0x00, 0x11, 0x00);
-/// Snapshot bg after `tint reset` — matches the recorder/snapshot.ts
-/// startup default (#1a1b26). Used by demo_full's act-5 reset assertion.
+/// Snapshot bg after `tint reset` — matches the `recorder/snapshot.ts`
+/// startup default (`#1a1b26`). Used by `demo_full`'s act-5 reset check.
 const DEFAULT_BG:       HexColor = rgb(0x1a, 0x1b, 0x26);
 
 #[must_use]
