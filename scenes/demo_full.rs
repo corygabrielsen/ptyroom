@@ -60,7 +60,11 @@ fn main() -> anyhow::Result<()> {
     // - 2500ms outro dwell after reset: long enough to register "back
     //   to normal" before the loop restarts; shorter than the previous
     //   3500ms because reset itself is a quieter beat.
-    let mut r = Recorder::start(RecorderConfig::default())?;
+    // 36 rows: counted what the demo prints (preamble + 5 acts = ~30
+    // command rows + blanks + heredoc wrap), default 30 was clipping
+    // the trailing reset. TODO: programmatic fit (measure max used row
+    // across snapshots, crop output to that).
+    let mut r = Recorder::start(RecorderConfig { rows: 36, ..RecorderConfig::default() })?;
     r.dwell(ms(800), ms(600))?;
     run_preamble(&mut r)?;
     // Short blank between preamble and act 1: the preamble is framing,
