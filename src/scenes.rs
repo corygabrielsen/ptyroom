@@ -75,25 +75,49 @@ pub fn lookup_picker_idx(tint_path: &Path, theme: &str) -> anyhow::Result<usize>
 /// target by 3 to demo navigation, scrolls back up 3 to land on the
 /// target, accepts with Enter.
 ///
+/// **Pacing decisions** (each `ms()` value below has narrative intent):
+/// - 800ms initial dwell with 600ms settle: bash needs time to set up
+///   echo before the first keystroke, otherwise input bytes leak into
+///   the top-left of the terminal.
+/// - "tint" command typed, then 700ms pause *before* Enter: viewer must
+///   register what command is about to run; firing Enter immediately
+///   reads as magic.
+/// - Down-by-(target+3): overshoot by three so the viewer sees
+///   navigation behavior, not just an on-rails snap to the answer.
+/// - 700ms pause at overshoot: register that we *can* keep going.
+/// - Up-by-3 (slower per-key 80ms vs 50ms going down): slowing the
+///   return makes the "we picked this one" feel deliberate.
+/// - 1000ms dwell on target before Enter: let the chosen theme's
+///   preview settle visually before commit.
+///
 /// # Errors
 /// Any [`Recorder`] IO error.
 pub fn run_picker(r: &mut Recorder, target_idx: usize) -> anyhow::Result<()> {
     r.dwell(ms(800), ms(600))?;
     line(r, "# tint — terminal theme switcher", ms(35), ms(400), ms(1000))?;
 
+    // Type "tint", then pause so the viewer can read it before invocation.
     r.type_text("tint", ms(80))?;
+    r.dwell(ms(700), ms(100))?;
     r.key(Key::Enter, ms(400))?;
-    r.dwell(ms(900), ms(100))?;
+    r.dwell(ms(900), ms(100))?; // picker takes ~900ms to fully render
 
+    // Overshoot by three to demo navigation, pause, scroll back.
     r.keys(Key::Down, ms(50), target_idx + 3)?;
     r.dwell(ms(700), ms(100))?;
     r.keys(Key::Up, ms(80), 3)?;
-    r.dwell(ms(1000), ms(100))?;
+    r.dwell(ms(1000), ms(100))?; // hold on the target so the preview registers
     r.key(Key::Enter, ms(500))?;
     Ok(())
 }
 
 /// CLI feature: apply built-in themes by name.
+///
+/// **Pacing:**
+/// - Comment line types fast (24ms/char) — it's narration, not action.
+/// - Each `tint <theme>` types slower (35ms/char) — it's a real command.
+/// - 900ms settle after each command so the viewer sees the new theme
+///   land before the next one fires.
 ///
 /// # Errors
 /// Any [`Recorder`] IO error.
@@ -109,6 +133,13 @@ pub fn run_cli(r: &mut Recorder) -> anyhow::Result<()> {
 /// cd-hook feature: install the bash hook, then `cd` into directories whose
 /// `.tint` file auto-applies a theme on entry.
 ///
+/// **Pacing:**
+/// - Setup commands (`eval`, `cd /tmp`, `mkdir`+`echo`) settle for 300-
+///   600ms each — short, since each one is just plumbing the demo.
+/// - Each `cd <theme-room>` settles for 900ms — this is the *payload*
+///   moment where the theme actually changes; viewer needs to register
+///   the new bg.
+///
 /// # Errors
 /// Any [`Recorder`] IO error.
 pub fn run_cd_hook(r: &mut Recorder) -> anyhow::Result<()> {
@@ -117,10 +148,14 @@ pub fn run_cd_hook(r: &mut Recorder) -> anyhow::Result<()> {
     line(r, "eval \"$(tint hook bash)\"", ms(24), ms(300), ms(600))?;
     line(r, "cd /tmp", ms(24), ms(250), ms(300))?;
 
+    // First room: write a .tint, cd in — bg should change to blue.
     line(r, "mkdir blueroom && echo blue > blueroom/.tint",
          ms(24), ms(250), ms(400))?;
     line(r, "cd blueroom", ms(24), ms(300), ms(900))?;
 
+    // Second room: same pattern with a different theme. Two rooms instead
+    // of one because seeing the bg change *twice* makes the mechanism
+    // unmistakable; one could be coincidence.
     line(r, "cd ..", ms(24), ms(250), ms(300))?;
     line(r, "mkdir roseroom && echo pale-rose > roseroom/.tint",
          ms(24), ms(250), ms(400))?;
@@ -131,6 +166,15 @@ pub fn run_cd_hook(r: &mut Recorder) -> anyhow::Result<()> {
 /// Custom-theme feature: drop a `.theme` file in the user's themes dir,
 /// then apply it by name.
 ///
+/// **Pacing:**
+/// - The heredoc body (`CUSTOM_THEME_LINE`) types fast (11ms/char) —
+///   it's a long color spec; full speed reads as "real config", slower
+///   makes it feel laborious to write.
+/// - The `EOF` and final `tint hot` line use normal command speed
+///   (24-32ms/char).
+/// - 1200ms settle after `tint hot` — the climax of the demo, hold a
+///   beat longer than other commands so the custom color lands clearly.
+///
 /// # Errors
 /// Any [`Recorder`] IO error.
 pub fn run_custom_theme(r: &mut Recorder) -> anyhow::Result<()> {
@@ -139,6 +183,8 @@ pub fn run_custom_theme(r: &mut Recorder) -> anyhow::Result<()> {
     line(r, "mkdir -p ~/.config/tint/themes",
          ms(24), ms(250), ms(300))?;
 
+    // Heredoc into the themes dir. Body line types fast since it's a
+    // mechanical color spec, not a thing the viewer is meant to read.
     r.type_text("cat > ~/.config/tint/themes/hot.theme <<EOF", ms(24))?;
     r.key(Key::Enter, ms(200))?;
     r.dwell(ms(300), ms(100))?;
@@ -151,6 +197,7 @@ pub fn run_custom_theme(r: &mut Recorder) -> anyhow::Result<()> {
     r.key(Key::Enter, ms(300))?;
     r.dwell(ms(500), ms(100))?;
 
+    // Apply the theme we just wrote. 1200ms settle for the demo finale.
     line(r, "tint hot", ms(32), ms(300), ms(1200))?;
     Ok(())
 }

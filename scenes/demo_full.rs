@@ -13,6 +13,9 @@ use tint_recorder::scenes::{
     blank, lookup_picker_idx, ms, run_cd_hook, run_cli, run_custom_theme, run_picker,
 };
 
+/// Theme the picker lands on. Picked deliberately for the cool/blue
+/// register — reads better as the demo's first reveal than a warm/orange
+/// theme, which can look default-terminal-ish at a glance.
 const PICKER_TARGET: &str = "dark-azure";
 
 #[derive(Parser)]
@@ -27,7 +30,12 @@ fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let target_idx = lookup_picker_idx(&args.tint_path, PICKER_TARGET)?;
 
-    // Single blank line between every act for consistent visual spacing.
+    // Composition pacing:
+    // - One blank Enter (500ms dwell) between every act for consistent
+    //   visual breathing room — anything more reads heavy, anything less
+    //   makes acts run together.
+    // - 3500ms outro dwell at the end so the final "hot" theme has time
+    //   to register before the loop restarts; shorter felt clipped.
     let mut r = Recorder::start(RecorderConfig::default())?;
     run_picker(&mut r, target_idx)?;
     blank(&mut r, ms(500))?;
