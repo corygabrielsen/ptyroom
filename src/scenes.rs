@@ -181,19 +181,22 @@ pub fn run_cd_hook(r: &mut Recorder) -> anyhow::Result<()> {
     line(r, "eval \"$(tint hook bash)\"", ms(24), ms(300), ms(600))?;
     line(r, "cd /tmp", ms(24), ms(250), ms(300))?;
 
-    // First room: write a .tint, cd in — bg should change to pale-emerald.
-    line(r, "mkdir emeraldroom && echo pale-emerald > emeraldroom/.tint",
+    // First room: write a .tint, cd in — bg should change to pale-blue.
+    line(r, "mkdir blueroom && echo pale-blue > blueroom/.tint",
          ms(24), ms(250), ms(400))?;
-    line(r, "cd emeraldroom", ms(24), ms(300), ms(900))?;
+    line(r, "cd blueroom", ms(24), ms(300), ms(900))?;
 
-    // Second room: same pattern with a contrasting theme (warm pale-amber
-    // vs cool pale-emerald). Two rooms instead of one because seeing the
-    // bg change *twice* makes the mechanism unmistakable; one could be
-    // coincidence.
+    // Second room: same pattern with a contrasting theme (warm pale-yellow
+    // vs cool pale-blue). Two rooms instead of one because seeing the bg
+    // change *twice* makes the mechanism unmistakable; one could be
+    // coincidence. Avoid theme names ending in `r` for *room directories:
+    // `amberroom`/`emeraldroom`-style names with trailing-r colors stutter
+    // against `room`'s leading r. `blue`/`yellow` end on vowels/glides and
+    // read cleanly.
     line(r, "cd ..", ms(24), ms(250), ms(300))?;
-    line(r, "mkdir amberroom && echo pale-amber > amberroom/.tint",
+    line(r, "mkdir yellowroom && echo pale-yellow > yellowroom/.tint",
          ms(24), ms(250), ms(400))?;
-    line(r, "cd amberroom", ms(24), ms(300), ms(900))?;
+    line(r, "cd yellowroom", ms(24), ms(300), ms(900))?;
     Ok(())
 }
 
