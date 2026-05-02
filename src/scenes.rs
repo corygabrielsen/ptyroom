@@ -71,8 +71,9 @@ pub fn lookup_picker_idx(tint_path: &Path, theme: &str) -> anyhow::Result<usize>
 // They are reused by both `demo_full` (full marketing reel) and the
 // per-feature scene binaries (picker, cli, cd_hook, custom_theme).
 
-/// Picker feature: `tint` opens the interactive picker, scroll to a target
-/// theme by index, accept with Enter.
+/// Picker feature: `tint` opens the interactive picker, overshoots the
+/// target by 3 to demo navigation, scrolls back up 3 to land on the
+/// target, accepts with Enter.
 ///
 /// # Errors
 /// Any [`Recorder`] IO error.
@@ -84,7 +85,9 @@ pub fn run_picker(r: &mut Recorder, target_idx: usize) -> anyhow::Result<()> {
     r.key(Key::Enter, ms(400))?;
     r.dwell(ms(900), ms(100))?;
 
-    r.keys(Key::Down, ms(50), target_idx)?;
+    r.keys(Key::Down, ms(50), target_idx + 3)?;
+    r.dwell(ms(700), ms(100))?;
+    r.keys(Key::Up, ms(80), 3)?;
     r.dwell(ms(1000), ms(100))?;
     r.key(Key::Enter, ms(500))?;
     Ok(())
