@@ -41,7 +41,13 @@ fn main() -> anyhow::Result<()> {
     //   already carried the count.
     // - One blank Enter (500ms dwell) between every act for consistent
     //   visual breathing room — anything more reads heavy, anything less
-    //   makes acts run together.
+    //   makes acts run together. *Exception:* picker → cli gets two
+    //   blanks because the picker exits via alt-screen (\e[?1049l), which
+    //   leaves no trace in the main buffer — the visual state goes
+    //   straight from "tint" prompt to next prompt, swallowing the
+    //   between-act gap that other transitions get for free from the
+    //   prior act's trailing output. A second blank restores the
+    //   between-act spacing parity.
     // - 3500ms outro dwell at the end so the final "hot" theme has time
     //   to register before the loop restarts; shorter felt clipped.
     let mut r = Recorder::start(RecorderConfig::default())?;
@@ -49,6 +55,7 @@ fn main() -> anyhow::Result<()> {
     run_preamble(&mut r)?;
     blank(&mut r, ms(500))?;
     run_picker(&mut r, target_idx)?;
+    blank(&mut r, ms(250))?;
     blank(&mut r, ms(500))?;
     run_cli(&mut r)?;
     blank(&mut r, ms(500))?;

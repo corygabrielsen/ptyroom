@@ -77,27 +77,21 @@ pub fn lookup_picker_idx(tint_path: &Path, theme: &str) -> anyhow::Result<usize>
 // internally so they compose cleanly when chained in demo_full (only the
 // first call needs the long settle).
 
-/// Demo preamble: a numbered list of features the viewer is about to see.
-/// Sets a "this is 4 things, here's what they are" contract before act 1
-/// starts. The per-act headers later are bare descriptions (no numbers)
-/// because the preamble already enumerated everything.
+/// Demo preamble: the value-prop line that runs before act 1. Sets the
+/// frame ("this is the tint demo") without a numbered list (an earlier
+/// iteration tried enumerating "1. pick / 2. apply by name / ..." but
+/// the list felt heavy; the title alone is enough to set the scene).
 ///
 /// **Pacing:**
-/// - Title: 28ms/char, normal — it's the value-prop line, viewer reads it.
-/// - Menu items: 24ms/char, tighter dwells (150ms enter, 200ms settle) —
-///   reads as a list being typed, not four separate commands.
-/// - 1500ms final settle after item 4: long enough for the viewer to
-///   absorb the whole menu before act 1 starts pushing fresh content.
+/// - Title: 28ms/char, normal speed — it's the value-prop line.
+/// - 1200ms final settle so the viewer reads the line and registers
+///   the framing before the first act starts typing.
 ///
 /// # Errors
 /// Any [`Recorder`] IO error.
 pub fn run_preamble(r: &mut Recorder) -> anyhow::Result<()> {
     line(r, "# tint — 4 ways to theme your terminal:",
-         ms(28), ms(300), ms(400))?;
-    line(r, "#   1. pick interactively",   ms(24), ms(150), ms(200))?;
-    line(r, "#   2. apply by name",        ms(24), ms(150), ms(200))?;
-    line(r, "#   3. auto-apply on cd",     ms(24), ms(150), ms(200))?;
-    line(r, "#   4. bring your own theme", ms(24), ms(150), ms(1500))?;
+         ms(28), ms(300), ms(1200))?;
     Ok(())
 }
 
