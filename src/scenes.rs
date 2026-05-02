@@ -253,3 +253,15 @@ pub fn run_reset(r: &mut Recorder) -> anyhow::Result<()> {
     line(r, "tint reset", ms(35), ms(300), ms(1200))?;
     Ok(())
 }
+
+/// `clear` the screen. Reusable end-cap for looping demos: wipes the
+/// accumulated output, leaving the prompt at row 1. The GIF then loops
+/// from "blank prompt" → "blank prompt" so the wrap-around reads as if
+/// the user themselves cleared the terminal to start the demo over.
+///
+/// # Errors
+/// Any [`Recorder`] IO error.
+pub fn run_clear(r: &mut Recorder) -> anyhow::Result<()> {
+    line(r, "clear", ms(50), ms(300), ms(0))?;
+    Ok(())
+}

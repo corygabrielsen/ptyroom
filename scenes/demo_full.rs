@@ -11,7 +11,8 @@ use clap::Parser;
 use tint_recorder::recorder::{Recorder, RecorderConfig};
 use tint_recorder::scenes::{
     blank, lookup_picker_idx, ms,
-    run_cd_hook, run_cli, run_custom_theme, run_picker, run_preamble, run_reset,
+    run_cd_hook, run_clear, run_cli, run_custom_theme, run_picker,
+    run_preamble, run_reset,
 };
 
 /// Theme the picker lands on. Picked deliberately for the cool/blue
@@ -54,14 +55,15 @@ fn main() -> anyhow::Result<()> {
     //   swallowing the between-act gap that other transitions get for
     //   free from the prior act's trailing output. A second blank
     //   restores the between-act spacing parity.
-    // - Act 5 is a short coda: `tint reset` returns to default. Doubles
-    //   as a graceful loop transition — GIF ends on default-dark which
-    //   matches the loop's start state, so the wrap-around isn't jarring.
-    // - 3000ms outro dwell after reset: holds the final frame long
-    //   enough for the viewer to absorb "demo done, back to default"
-    //   before the loop wraps. (Earlier iterations bumped this to 12s
-    //   trying to compensate for a bug where trailing dwells were
-    //   silently capped at 1s — fixed now, so a normal value works.)
+    // - Act 5: `tint reset` returns to default colors.
+    // - 3000ms beat: viewer reads accumulated output one last time.
+    // - Act 6: `clear` wipes the screen. The GIF then loops from a
+    //   blank prompt back to the demo's blank-prompt start state, so
+    //   the wrap-around reads as if the user typed `clear` to start
+    //   the demo over. Reusable end-cap — keep `run_clear` available
+    //   for future composed scenes.
+    // - 800ms tail dwell: brief pause on the cleared state before
+    //   the GIF wraps, so the loop transition has its own beat.
     // 36 rows: counted what the demo prints (preamble + 5 acts = ~30
     // command rows + blanks + heredoc wrap), default 30 was clipping
     // the trailing reset. TODO: programmatic fit (measure max used row
@@ -84,6 +86,8 @@ fn main() -> anyhow::Result<()> {
     blank(&mut r, ms(500))?;
     run_reset(&mut r)?;
     r.dwell(ms(3000), ms(100))?;
+    run_clear(&mut r)?;
+    r.dwell(ms(800), ms(100))?;
 
     let cast = r.stop()?;
     cast.write_with_summary(&args.cast)?;
