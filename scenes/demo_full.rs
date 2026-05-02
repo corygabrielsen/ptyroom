@@ -39,25 +39,31 @@ fn main() -> anyhow::Result<()> {
     //   the viewer knows what they're investing attention in. Per-act
     //   headers later are bare descriptions (no numbers) — the preamble
     //   already carried the count.
+    // Act order: cli → picker → cd-hook → custom-theme. Cli first
+    // because it's the fastest demonstration of "this is what tint
+    // does" — `tint dracula` flips the bg in 1-2s, no UI to navigate.
+    // Picker is the visually impressive moment, but it lands harder
+    // *after* the viewer already understands the basic verb.
+    //
     // - One blank Enter (500ms dwell) between every act for consistent
     //   visual breathing room — anything more reads heavy, anything less
-    //   makes acts run together. *Exception:* picker → cli gets two
-    //   blanks because the picker exits via alt-screen (\e[?1049l), which
-    //   leaves no trace in the main buffer — the visual state goes
-    //   straight from "tint" prompt to next prompt, swallowing the
-    //   between-act gap that other transitions get for free from the
-    //   prior act's trailing output. A second blank restores the
-    //   between-act spacing parity.
+    //   makes acts run together. *Exception:* the act AFTER the picker
+    //   gets two blanks because the picker exits via alt-screen
+    //   (\e[?1049l), which leaves no trace in the main buffer — the
+    //   visual state goes straight from "tint" prompt to next prompt,
+    //   swallowing the between-act gap that other transitions get for
+    //   free from the prior act's trailing output. A second blank
+    //   restores the between-act spacing parity.
     // - 3500ms outro dwell at the end so the final "hot" theme has time
     //   to register before the loop restarts; shorter felt clipped.
     let mut r = Recorder::start(RecorderConfig::default())?;
     r.dwell(ms(800), ms(600))?;
     run_preamble(&mut r)?;
     blank(&mut r, ms(500))?;
+    run_cli(&mut r)?;
+    blank(&mut r, ms(500))?;
     run_picker(&mut r, target_idx)?;
     blank(&mut r, ms(250))?;
-    blank(&mut r, ms(500))?;
-    run_cli(&mut r)?;
     blank(&mut r, ms(500))?;
     run_cd_hook(&mut r)?;
     blank(&mut r, ms(500))?;
