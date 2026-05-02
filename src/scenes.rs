@@ -70,15 +70,42 @@ pub fn lookup_picker_idx(tint_path: &Path, theme: &str) -> anyhow::Result<usize>
 // Each `run_*` function drives one feature end-to-end through the recorder.
 // They are reused by both `demo_full` (full marketing reel) and the
 // per-feature scene binaries (picker, cli, cd_hook, custom_theme).
+//
+// CONVENTION: callers are responsible for the initial bash-setup dwell
+// (`r.dwell(ms(800), ms(600))?;` — 600ms settle is required so bash sets
+// up echo before the first keystroke). Helpers do NOT include it
+// internally so they compose cleanly when chained in demo_full (only the
+// first call needs the long settle).
+
+/// Demo preamble: a numbered list of features the viewer is about to see.
+/// Sets a "this is 4 things, here's what they are" contract before act 1
+/// starts. The per-act headers later are bare descriptions (no numbers)
+/// because the preamble already enumerated everything.
+///
+/// **Pacing:**
+/// - Title: 28ms/char, normal — it's the value-prop line, viewer reads it.
+/// - Menu items: 24ms/char, tighter dwells (150ms enter, 200ms settle) —
+///   reads as a list being typed, not four separate commands.
+/// - 1500ms final settle after item 4: long enough for the viewer to
+///   absorb the whole menu before act 1 starts pushing fresh content.
+///
+/// # Errors
+/// Any [`Recorder`] IO error.
+pub fn run_preamble(r: &mut Recorder) -> anyhow::Result<()> {
+    line(r, "# tint — 4 ways to theme your terminal:",
+         ms(28), ms(300), ms(400))?;
+    line(r, "#   1. pick interactively",   ms(24), ms(150), ms(200))?;
+    line(r, "#   2. apply by name",        ms(24), ms(150), ms(200))?;
+    line(r, "#   3. auto-apply on cd",     ms(24), ms(150), ms(200))?;
+    line(r, "#   4. bring your own theme", ms(24), ms(150), ms(1500))?;
+    Ok(())
+}
 
 /// Picker feature: `tint` opens the interactive picker, overshoots the
 /// target by 3 to demo navigation, scrolls back up 3 to land on the
 /// target, accepts with Enter.
 ///
 /// **Pacing decisions** (each `ms()` value below has narrative intent):
-/// - 800ms initial dwell with 600ms settle: bash needs time to set up
-///   echo before the first keystroke, otherwise input bytes leak into
-///   the top-left of the terminal.
 /// - "tint" command typed, then 700ms pause *before* Enter: viewer must
 ///   register what command is about to run; firing Enter immediately
 ///   reads as magic.
@@ -99,8 +126,7 @@ pub fn lookup_picker_idx(tint_path: &Path, theme: &str) -> anyhow::Result<usize>
 /// # Errors
 /// Any [`Recorder`] IO error.
 pub fn run_picker(r: &mut Recorder, target_idx: usize) -> anyhow::Result<()> {
-    r.dwell(ms(800), ms(600))?;
-    line(r, "# tint — terminal theme switcher", ms(35), ms(400), ms(1000))?;
+    line(r, "# pick interactively", ms(28), ms(300), ms(700))?;
 
     // Type "tint", then pause so the viewer can read it before invocation.
     r.type_text("tint", ms(80))?;
@@ -129,8 +155,7 @@ pub fn run_picker(r: &mut Recorder, target_idx: usize) -> anyhow::Result<()> {
 /// # Errors
 /// Any [`Recorder`] IO error.
 pub fn run_cli(r: &mut Recorder) -> anyhow::Result<()> {
-    line(r, "# apply themes by name from the command line",
-         ms(24), ms(300), ms(700))?;
+    line(r, "# apply by name", ms(24), ms(300), ms(700))?;
     for theme in ["dracula", "solarized-light"] {
         line(r, &format!("tint {theme}"), ms(35), ms(300), ms(900))?;
     }
@@ -150,8 +175,7 @@ pub fn run_cli(r: &mut Recorder) -> anyhow::Result<()> {
 /// # Errors
 /// Any [`Recorder`] IO error.
 pub fn run_cd_hook(r: &mut Recorder) -> anyhow::Result<()> {
-    line(r, "# install the cd hook so .tint files auto-apply",
-         ms(24), ms(300), ms(600))?;
+    line(r, "# auto-apply on cd", ms(24), ms(300), ms(600))?;
     line(r, "eval \"$(tint hook bash)\"", ms(24), ms(300), ms(600))?;
     line(r, "cd /tmp", ms(24), ms(250), ms(300))?;
 
@@ -185,8 +209,7 @@ pub fn run_cd_hook(r: &mut Recorder) -> anyhow::Result<()> {
 /// # Errors
 /// Any [`Recorder`] IO error.
 pub fn run_custom_theme(r: &mut Recorder) -> anyhow::Result<()> {
-    line(r, "# drop .theme files in ~/.config/tint/themes/",
-         ms(24), ms(300), ms(900))?;
+    line(r, "# bring your own theme", ms(24), ms(300), ms(900))?;
     line(r, "mkdir -p ~/.config/tint/themes",
          ms(24), ms(250), ms(300))?;
 

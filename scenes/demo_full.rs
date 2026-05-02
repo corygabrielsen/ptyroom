@@ -10,7 +10,8 @@ use std::path::PathBuf;
 use clap::Parser;
 use tint_recorder::recorder::{Recorder, RecorderConfig};
 use tint_recorder::scenes::{
-    blank, lookup_picker_idx, ms, run_cd_hook, run_cli, run_custom_theme, run_picker,
+    blank, lookup_picker_idx, ms,
+    run_cd_hook, run_cli, run_custom_theme, run_picker, run_preamble,
 };
 
 /// Theme the picker lands on. Picked deliberately for the cool/blue
@@ -31,12 +32,22 @@ fn main() -> anyhow::Result<()> {
     let target_idx = lookup_picker_idx(&args.tint_path, PICKER_TARGET)?;
 
     // Composition pacing:
+    // - 800/600ms initial dwell: bash needs ~600ms to set up echo before
+    //   the first keystroke or input bytes leak into the top-left.
+    //   Required on every recording's first call (per scenes.rs convention).
+    // - run_preamble enumerates the four features as a numbered list, so
+    //   the viewer knows what they're investing attention in. Per-act
+    //   headers later are bare descriptions (no numbers) — the preamble
+    //   already carried the count.
     // - One blank Enter (500ms dwell) between every act for consistent
     //   visual breathing room — anything more reads heavy, anything less
     //   makes acts run together.
     // - 3500ms outro dwell at the end so the final "hot" theme has time
     //   to register before the loop restarts; shorter felt clipped.
     let mut r = Recorder::start(RecorderConfig::default())?;
+    r.dwell(ms(800), ms(600))?;
+    run_preamble(&mut r)?;
+    blank(&mut r, ms(500))?;
     run_picker(&mut r, target_idx)?;
     blank(&mut r, ms(500))?;
     run_cli(&mut r)?;

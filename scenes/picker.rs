@@ -22,6 +22,7 @@ fn main() -> anyhow::Result<()> {
     let target_idx = lookup_picker_idx(&args.tint_path, PICKER_TARGET)?;
 
     let mut r = Recorder::start(RecorderConfig::default())?;
+    r.dwell(ms(800), ms(600))?; // bash echo setup, per scenes.rs convention
     run_picker(&mut r, target_idx)?;
     r.dwell(ms(2500), ms(100))?;
 
