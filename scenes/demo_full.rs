@@ -69,7 +69,10 @@ fn main() -> anyhow::Result<()> {
     // the trailing reset. TODO: programmatic fit (measure max used row
     // across snapshots, crop output to that).
     let mut r = Recorder::start(RecorderConfig { rows: 36, ..RecorderConfig::default() })?;
-    r.dwell(ms(800), ms(600))?;
+    // Initial: zero visible dwell, but keep 600ms wall-clock settle so
+    // bash sets up echo before any keystrokes (otherwise input bytes
+    // leak into the top-left of the terminal).
+    r.dwell(ms(0), ms(600))?;
     run_preamble(&mut r)?;
     // Short blank between preamble and act 1: the preamble is framing,
     // not a peer act, so it gets a tighter join than the standard 500ms
@@ -87,7 +90,8 @@ fn main() -> anyhow::Result<()> {
     run_reset(&mut r)?;
     r.dwell(ms(3000), ms(100))?;
     run_clear(&mut r)?;
-    r.dwell(ms(800), ms(100))?;
+    // Zero tail dwell: loop straight from cleared state into the next cycle.
+    r.dwell(ms(0), ms(100))?;
 
     let cast = r.stop()?;
     cast.write_with_summary(&args.cast)?;
