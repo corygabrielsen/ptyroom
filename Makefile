@@ -1,4 +1,4 @@
-.PHONY: setup build-image demo smoke clean
+.PHONY: setup build-image demo smoke verify clean
 
 PY        := python3
 SCENE     ?= demo_full
@@ -35,6 +35,12 @@ render:
 	docker run --rm -v $(CURDIR)/assets:/work $(IMAGE) \
 		/app/render-cast.sh /work/$(SCENE).cast /work/$(SCENE).gif
 	@echo "wrote $(GIF)"
+	@$(MAKE) -s verify SCENE=$(SCENE)
+
+# Verify a scene's recorded snapshots against its assertion contract.
+# Run after `make demo` or `make smoke`. Exits non-zero on any failure.
+verify:
+	$(PY) -m tools.verify $(SCENE)
 
 clean:
 	rm -rf assets/snapshots assets/frames assets/concat.txt
