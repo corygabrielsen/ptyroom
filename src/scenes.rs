@@ -89,6 +89,12 @@ pub fn lookup_picker_idx(tint_path: &Path, theme: &str) -> anyhow::Result<usize>
 ///   return makes the "we picked this one" feel deliberate.
 /// - 1000ms dwell on target before Enter: let the chosen theme's
 ///   preview settle visually before commit.
+/// - 1200ms post-accept breath: after Enter commits and the picker
+///   collapses back to the prompt with the new bg, hold a beat
+///   before the next act starts typing — otherwise the chosen theme
+///   doesn't get its moment of "this is what you picked" before the
+///   composition's between-act blank line and the next header
+///   begin pushing fresh content.
 ///
 /// # Errors
 /// Any [`Recorder`] IO error.
@@ -108,6 +114,7 @@ pub fn run_picker(r: &mut Recorder, target_idx: usize) -> anyhow::Result<()> {
     r.keys(Key::Up, ms(80), 3)?;
     r.dwell(ms(1000), ms(100))?; // hold on the target so the preview registers
     r.key(Key::Enter, ms(500))?;
+    r.dwell(ms(1200), ms(100))?; // breathe on the chosen theme before the next act
     Ok(())
 }
 
