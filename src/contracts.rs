@@ -22,7 +22,7 @@ const DARK_AZURE:       HexColor = rgb(0x3a, 0x59, 0x78);
 const DRACULA:          HexColor = rgb(0x28, 0x2a, 0x36);
 const SOLARIZED_LIGHT:  HexColor = rgb(0xfd, 0xf6, 0xe3);
 const MONOKAI:          HexColor = rgb(0x27, 0x28, 0x22);
-const PALE_BLUE:        HexColor = rgb(0xba, 0xba, 0xde);
+const PALE_SKY_BLUE:    HexColor = rgb(0xba, 0xd5, 0xde);
 const PALE_YELLOW:      HexColor = rgb(0xde, 0xde, 0xba);
 const MATRIX:           HexColor = rgb(0x00, 0x11, 0x00);
 /// Snapshot bg after `tint reset` — matches the `recorder/snapshot.ts`
@@ -49,7 +49,7 @@ fn demo_full() -> Contract {
         bg_reaches("dracula",              DRACULA),
         bg_reaches("solarized-light",      SOLARIZED_LIGHT),
         bg_reaches("monokai",              MONOKAI),
-        bg_reaches("pale-blue-cd-hook",    PALE_BLUE),
+        bg_reaches("pale-sky-blue-cd-hook", PALE_SKY_BLUE),
         bg_reaches("pale-yellow-cd-hook",  PALE_YELLOW),
         bg_reaches("matrix-custom",        MATRIX),
         // Act 5: `tint reset` returns to the snapshot's default bg.
@@ -90,7 +90,7 @@ fn cd_hook() -> Contract {
     Contract {
         scene: "cd_hook",
         checks: vec![
-            bg_reaches("pale-blue",    PALE_BLUE),
+            bg_reaches("pale-sky-blue",    PALE_SKY_BLUE),
             bg_reaches("pale-yellow",  PALE_YELLOW),
             final_bg_is("pale-yellow", PALE_YELLOW),
         ],

@@ -181,13 +181,13 @@ pub fn run_cd_hook(r: &mut Recorder) -> anyhow::Result<()> {
     line(r, "eval \"$(tint hook bash)\"", ms(24), ms(300), ms(600))?;
     line(r, "cd /tmp", ms(24), ms(250), ms(300))?;
 
-    // First room: write a .tint, cd in — bg should change to pale-blue.
-    line(r, "mkdir blueroom && echo pale-blue > blueroom/.tint",
+    // First room: write a .tint, cd in — bg should change to pale-sky-blue.
+    line(r, "mkdir skyroom && echo pale-sky-blue > skyroom/.tint",
          ms(24), ms(250), ms(400))?;
-    line(r, "cd blueroom", ms(24), ms(300), ms(900))?;
+    line(r, "cd skyroom", ms(24), ms(300), ms(900))?;
 
     // Second room: same pattern with a contrasting theme (warm pale-yellow
-    // vs cool pale-blue). Two rooms instead of one because seeing the bg
+    // vs cool pale-sky-blue). Two rooms instead of one because seeing the bg
     // change *twice* makes the mechanism unmistakable; one could be
     // coincidence. Avoid theme names ending in `r` for *room directories:
     // `amberroom`/`emeraldroom`-style names with trailing-r colors stutter
