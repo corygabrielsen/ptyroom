@@ -32,16 +32,17 @@ impl Default for StubColors {
 
 impl StubColors {
     /// Build the OSC reply for a given OSC code (b"10" or b"11"), or `None`
-    /// if the code isn't one we stub.
+    /// if the code isn't one we stub. The two recognized codes are ASCII;
+    /// the function returns `None` for any other byte sequence.
+    #[must_use]
     pub fn reply_for(self, code: &[u8]) -> Option<Vec<u8>> {
-        let color = match code {
-            b"11" => self.bg,
-            b"10" => self.fg,
+        let (code_str, color) = match code {
+            b"11" => ("11", self.bg),
+            b"10" => ("10", self.fg),
             _ => return None,
         };
         Some(format!(
-            "\x1b]{};rgb:{:02x}/{:02x}/{:02x}\x1b\\",
-            std::str::from_utf8(code).expect("ASCII code"),
+            "\x1b]{code_str};rgb:{:02x}/{:02x}/{:02x}\x1b\\",
             color.r(), color.g(), color.b(),
         ).into_bytes())
     }

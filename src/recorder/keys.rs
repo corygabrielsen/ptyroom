@@ -16,6 +16,7 @@ pub enum Key {
 }
 
 impl Key {
+    #[must_use] 
     pub const fn bytes(self) -> &'static [u8] {
         match self {
             Key::Down   => b"\x1b[B",

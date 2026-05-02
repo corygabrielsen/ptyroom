@@ -32,14 +32,20 @@ pub struct Cell {
 }
 
 impl Cell {
+    #[must_use] 
     pub fn is_bold(&self)      -> bool { self.bold != 0 }
+    #[must_use] 
     pub fn is_dim(&self)       -> bool { self.dim != 0 }
+    #[must_use] 
     pub fn is_italic(&self)    -> bool { self.italic != 0 }
+    #[must_use] 
     pub fn is_underline(&self) -> bool { self.underline != 0 }
+    #[must_use] 
     pub fn is_inverse(&self)   -> bool { self.inverse != 0 }
 
     /// First grapheme as a `char`, or space if the cell is empty/multi-byte.
     /// Used for ASCII row dumps where we want one column per cell.
+    #[must_use] 
     pub fn first_char(&self) -> char {
         self.ch.chars().next().unwrap_or(' ')
     }
@@ -48,6 +54,7 @@ impl Cell {
     /// layer defaults and palette overrides, applying the `inverse`
     /// attribute as a final swap. Single source of truth — both the PNG
     /// renderer and the ASCII inspector go through here.
+    #[must_use] 
     pub fn resolve_layers(&self, snap: &Snapshot) -> (HexColor, HexColor) {
         let mut fg = self.fg.resolve(snap.fg, &snap.palette);
         let mut bg = self.bg.resolve(snap.bg, &snap.palette);
@@ -69,6 +76,10 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    /// Read and validate a snapshot JSON file.
+    ///
+    /// # Errors
+    /// IO error, JSON parse error, or non-rectangular/empty grid.
     pub fn load(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let bytes = std::fs::read(path.as_ref())?;
         let snap: Snapshot = serde_json::from_slice(&bytes)?;
@@ -76,15 +87,18 @@ impl Snapshot {
         Ok(snap)
     }
 
+    #[must_use] 
     pub fn rows(&self) -> usize { self.grid.rows() }
+    #[must_use] 
     pub fn cols(&self) -> usize { self.grid.cols() }
 
     /// Render row `y` as a `String` of `first_char()` per cell, right-trimmed.
     /// Returns `None` if `y` is out of range.
+    #[must_use] 
     pub fn row_text(&self, y: usize) -> Option<String> {
         let row = self.grid.row(y)?;
         let mut s: String = row.iter()
-            .map(|c| c.as_ref().map(Cell::first_char).unwrap_or(' '))
+            .map(|c| c.as_ref().map_or(' ', Cell::first_char))
             .collect();
         let trimmed_len = s.trim_end().len();
         s.truncate(trimmed_len);
@@ -110,8 +124,11 @@ impl Snapshot {
 pub struct Grid(Vec<Vec<Option<Cell>>>);
 
 impl Grid {
-    /// Validating constructor. Returns `Err` if the grid is empty or any
-    /// row has a different length than the first row.
+    /// Validating constructor.
+    ///
+    /// # Errors
+    /// Empty grid (zero rows or zero cols), or any row whose length
+    /// differs from the first row's length.
     pub fn new(rows: Vec<Vec<Option<Cell>>>) -> anyhow::Result<Self> {
         let g = Grid(rows);
         g.validate()?;
@@ -125,13 +142,15 @@ impl Grid {
         Grid(rows)
     }
 
+    #[must_use] 
     pub fn rows(&self) -> usize { self.0.len() }
-    pub fn cols(&self) -> usize { self.0.first().map(Vec::len).unwrap_or(0) }
+    pub fn cols(&self) -> usize { self.0.first().map_or(0, Vec::len) }
 
     pub fn row(&self, y: usize) -> Option<&[Option<Cell>]> {
         self.0.get(y).map(Vec::as_slice)
     }
 
+    #[must_use] 
     pub fn cell(&self, x: usize, y: usize) -> Option<&Cell> {
         self.row(y)?.get(x)?.as_ref()
     }
@@ -161,13 +180,13 @@ impl Grid {
 mod tests {
     use super::*;
 
-    fn solid_cell(ch: char) -> Option<Cell> {
-        Some(Cell {
+    fn solid_cell(ch: char) -> Cell {
+        Cell {
             ch: ch.to_string(),
             fg: CellColor::Default,
             bg: CellColor::Default,
             bold: 0, dim: 0, italic: 0, underline: 0, inverse: 0,
-        })
+        }
     }
 
     #[test]
@@ -187,8 +206,8 @@ mod tests {
     #[test]
     fn grid_rejects_non_rectangular() {
         let g = Grid::from_unchecked(vec![
-            vec![solid_cell('a'), solid_cell('b')],
-            vec![solid_cell('c')], // ragged
+            vec![Some(solid_cell('a')), Some(solid_cell('b'))],
+            vec![Some(solid_cell('c'))], // ragged
         ]);
         assert!(g.validate().is_err());
     }
@@ -202,7 +221,7 @@ mod tests {
     #[test]
     fn snapshot_row_text_right_trims() {
         let g = Grid::from_unchecked(vec![
-            vec![solid_cell('h'), solid_cell('i'), solid_cell(' '), solid_cell(' ')],
+            vec![Some(solid_cell('h')), Some(solid_cell('i')), Some(solid_cell(' ')), Some(solid_cell(' '))],
         ]);
         let s = Snapshot {
             bg: HexColor::from_rgb(0, 0, 0),
@@ -216,7 +235,7 @@ mod tests {
     #[test]
     fn snapshot_row_text_handles_none_cells_as_space() {
         let g = Grid::from_unchecked(vec![
-            vec![solid_cell('a'), None, solid_cell('b')],
+            vec![Some(solid_cell('a')), None, Some(solid_cell('b'))],
         ]);
         let s = Snapshot {
             bg: HexColor::from_rgb(0, 0, 0),
@@ -233,7 +252,7 @@ mod tests {
             bg: HexColor::from_rgb(0x1a, 0x1b, 0x26),
             fg: HexColor::from_rgb(0xc0, 0xca, 0xf5),
             palette: PaletteOverrides::new(),
-            grid: Grid::from_unchecked(vec![vec![solid_cell('x')]]),
+            grid: Grid::from_unchecked(vec![vec![Some(solid_cell('x'))]]),
         };
         let json = serde_json::to_string(&s).unwrap();
         let back: Snapshot = serde_json::from_str(&json).unwrap();

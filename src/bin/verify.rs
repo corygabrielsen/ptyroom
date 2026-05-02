@@ -29,5 +29,6 @@ fn run(args: &Args) -> anyhow::Result<ExitCode> {
     let snaps = load_snapshots_dir(&args.snapshots_dir)?;
     let report = contract.run(&snaps);
     report.print();
-    Ok(ExitCode::from(report.exit_code() as u8))
+    let code = u8::try_from(report.exit_code()).unwrap_or(1);
+    Ok(ExitCode::from(code))
 }

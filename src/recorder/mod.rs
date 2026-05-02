@@ -47,7 +47,7 @@ impl Default for RecorderConfig {
             cols: 80, rows: 30,
             image: "tint-recorder:demo".into(),
             stubs: StubColors::default(),
-            max_runtime: Duration::from_secs(240),
+            max_runtime: Duration::from_mins(4),
         }
     }
 }
@@ -74,6 +74,9 @@ impl Recorder {
     /// Spawn `docker run` whose container runs interactive bash.
     /// The docker-side TTY size is set via `-e LINES/COLUMNS` and inherited
     /// from the host PTY's winsize (TIOCSWINSZ via `forkpty`).
+    ///
+    /// # Errors
+    /// rcfile write fails, or `forkpty` / `execvp("docker")` fails.
     pub fn start(cfg: RecorderConfig) -> anyhow::Result<Self> {
         let rcfile = build_rcfile().context("write rcfile")?;
         let lines_env = format!("LINES={}", cfg.rows);
@@ -96,22 +99,34 @@ impl Recorder {
         })
     }
 
+    #[must_use] 
     pub fn event_count(&self) -> usize { self.events.len() }
+    #[must_use] 
     pub fn cols(&self) -> u16 { self.cfg.cols }
+    #[must_use] 
     pub fn rows(&self) -> u16 { self.cfg.rows }
 
     /// Dwell at the current state for `dwell` of playback time, with `settle`
     /// of real wall-clock time to let the container produce output.
+    ///
+    /// # Errors
+    /// Recording exceeded `max_runtime`, or PTY write/read failed.
     pub fn dwell(&mut self, dwell: Duration, settle: Duration) -> anyhow::Result<()> {
         self.send_and_capture(&[], dwell, settle)
     }
 
     /// Send a single key, dwell `dwell` after.
+    ///
+    /// # Errors
+    /// As [`Recorder::dwell`].
     pub fn key(&mut self, key: Key, dwell: Duration) -> anyhow::Result<()> {
         self.send_and_capture(key.bytes(), dwell, DEFAULT_SETTLE)
     }
 
     /// Send a key `repeat` times, with `dwell` between each.
+    ///
+    /// # Errors
+    /// As [`Recorder::dwell`].
     pub fn keys(&mut self, key: Key, dwell: Duration, repeat: usize) -> anyhow::Result<()> {
         for _ in 0..repeat { self.key(key, dwell)?; }
         Ok(())
@@ -119,6 +134,9 @@ impl Recorder {
 
     /// Type a UTF-8 string, one codepoint at a time, dwelling `per_char`
     /// after each byte sequence.
+    ///
+    /// # Errors
+    /// As [`Recorder::dwell`].
     pub fn type_text(&mut self, text: &str, per_char: Duration) -> anyhow::Result<()> {
         for ch in text.chars() {
             let mut buf = [0u8; 4];
@@ -129,6 +147,9 @@ impl Recorder {
     }
 
     /// Send raw bytes (escape sequences, control codes) with the given dwell.
+    ///
+    /// # Errors
+    /// As [`Recorder::dwell`].
     pub fn send_raw(&mut self, bytes: &[u8], dwell: Duration) -> anyhow::Result<()> {
         self.send_and_capture(bytes, dwell, DEFAULT_SETTLE)
     }
@@ -153,6 +174,10 @@ impl Recorder {
 
     /// Terminate the child and stop the drainer. The recorder is consumed —
     /// call `write_cast` afterwards via `into_cast`.
+    ///
+    /// # Errors
+    /// SIGKILL or waitpid failed (other than `ESRCH`, which is treated
+    /// as already-exited).
     pub fn stop(self) -> anyhow::Result<Cast> {
         let cast = self.build_cast();
         self.pty.terminate_child()?;
@@ -174,24 +199,38 @@ impl Recorder {
             if !ev.output.is_empty() {
                 let data = String::from_utf8_lossy(&ev.output).into_owned();
                 events.push(CastEvent {
-                    time_s: t_ms as f64 / 1000.0,
+                    time_s: ms_to_seconds(t_ms),
                     kind: EventKind::Output,
                     data,
                 });
             }
-            t_ms = t_ms.saturating_add(ev.dwell.as_millis() as u64);
+            t_ms = t_ms.saturating_add(duration_to_ms(ev.dwell));
         }
         Cast { header, events }
     }
 }
 
+/// `Duration::as_millis` returns `u128`; we saturate to `u64` for cast
+/// timestamps which are bounded well below `u64::MAX` ms (~584 million years).
+fn duration_to_ms(d: Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
+}
+
+/// Convert a `u64` ms count to a `f64` seconds value. Lossy above 2^53 ms,
+/// which is ~285 thousand years — not a concern for any cast we record.
+#[allow(clippy::cast_precision_loss)]
+fn ms_to_seconds(ms: u64) -> f64 {
+    ms as f64 / 1000.0
+}
+
 fn write_all(fd: i32, mut bytes: &[u8]) -> anyhow::Result<()> {
     while !bytes.is_empty() {
+        // Safety: caller holds an OwnedFd whose lifetime exceeds this call.
         let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
         match write(borrowed, bytes) {
             Ok(0) => anyhow::bail!("pty write returned 0"),
             Ok(n) => bytes = &bytes[n..],
-            Err(nix::errno::Errno::EINTR) => continue,
+            Err(nix::errno::Errno::EINTR) => {}
             Err(e) => return Err(e.into()),
         }
     }
@@ -201,6 +240,9 @@ fn write_all(fd: i32, mut bytes: &[u8]) -> anyhow::Result<()> {
 /// Write the rcfile bash will source at startup. Two responsibilities:
 /// pin PWD to `$HOME` so the cd hook can't escape the demo container, and
 /// install a colored PS1 that visibly reflects ANSI palette changes.
+///
+/// # Errors
+/// IO error creating or writing the temp file.
 fn build_rcfile() -> std::io::Result<NamedTempFile> {
     use std::io::Write;
     // PS1 spells "tint" in red/yellow/green/cyan (ANSI 1/3/2/6) followed by

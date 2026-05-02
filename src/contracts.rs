@@ -9,6 +9,7 @@ use crate::verify::{
 
 const fn rgb(r: u8, g: u8, b: u8) -> HexColor { HexColor::from_rgb(r, g, b) }
 
+#[must_use] 
 pub fn registry(scene: &str) -> Option<Contract> {
     match scene {
         "demo_full" => Some(demo_full()),

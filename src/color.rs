@@ -20,19 +20,25 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 pub struct HexColor(u32);
 
 impl HexColor {
+    #[must_use] 
     pub const fn from_rgb(r: u8, g: u8, b: u8) -> Self {
         HexColor(((r as u32) << 16) | ((g as u32) << 8) | (b as u32))
     }
 
+    #[must_use] 
     pub const fn r(self) -> u8 { ((self.0 >> 16) & 0xff) as u8 }
+    #[must_use] 
     pub const fn g(self) -> u8 { ((self.0 >> 8) & 0xff) as u8 }
+    #[must_use] 
     pub const fn b(self) -> u8 { (self.0 & 0xff) as u8 }
 
+    #[must_use] 
     pub const fn rgb(self) -> (u8, u8, u8) { (self.r(), self.g(), self.b()) }
 
     /// Parse `#rrggbb`, `rrggbb`, or the xterm OSC color reply form
     /// `rgb:RR[RR]/GG[GG]/BB[BB]`. Case-insensitive. Returns `None` on any
     /// malformed input. Total — never panics.
+    #[must_use] 
     pub fn parse(s: &str) -> Option<Self> {
         let s = s.trim();
         if let Some(rest) = s.strip_prefix("rgb:") {
@@ -85,7 +91,7 @@ impl fmt::Display for HexColor {
 
 impl fmt::Debug for HexColor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "HexColor({})", self)
+        write!(f, "HexColor({self})")
     }
 }
 
@@ -142,6 +148,7 @@ impl CellColor {
     /// terminal default and OSC 4 palette overrides. Falls back to the
     /// xterm default 16-color palette for indices 0-15 if no override is
     /// available, then to `default_for_layer` as the ultimate fallback.
+    #[must_use] 
     pub fn resolve(
         &self,
         default_for_layer: HexColor,
@@ -211,8 +218,10 @@ impl<'de> Deserialize<'de> for CellColor {
 pub struct PaletteOverrides(Vec<(u8, HexColor)>);
 
 impl PaletteOverrides {
+    #[must_use] 
     pub fn new() -> Self { Self(Vec::new()) }
 
+    #[must_use] 
     pub fn get(&self, idx: u8) -> Option<HexColor> {
         self.0.iter().find_map(|(k, v)| (*k == idx).then_some(*v))
     }
@@ -229,6 +238,7 @@ impl PaletteOverrides {
         self.0.iter().copied()
     }
 
+    #[must_use] 
     pub fn is_empty(&self) -> bool { self.0.is_empty() }
 }
 

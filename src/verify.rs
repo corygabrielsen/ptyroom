@@ -10,10 +10,13 @@ use std::path::Path;
 use crate::color::HexColor;
 use crate::snapshot::Snapshot;
 
+/// A check function: takes the loaded snapshots, returns pass/fail with detail.
+pub type CheckFn = Box<dyn Fn(&[Snapshot]) -> CheckResult + Send + Sync>;
+
 /// A single named check, evaluated against the loaded snapshots.
 pub struct Check {
     pub name: &'static str,
-    pub eval: Box<dyn Fn(&[Snapshot]) -> CheckResult + Send + Sync>,
+    pub eval: CheckFn,
 }
 
 #[derive(Debug, Clone)]
@@ -23,7 +26,9 @@ pub enum CheckResult {
 }
 
 impl CheckResult {
+    #[must_use] 
     pub fn passed(&self) -> bool { matches!(self, CheckResult::Pass(_)) }
+    #[must_use] 
     pub fn detail(&self) -> &str {
         match self { CheckResult::Pass(d) | CheckResult::Fail(d) => d }
     }
@@ -35,6 +40,7 @@ pub struct Contract {
 }
 
 impl Contract {
+    #[must_use] 
     pub fn run(&self, snaps: &[Snapshot]) -> ContractReport {
         let results: Vec<(String, CheckResult)> = self.checks.iter()
             .map(|c| (c.name.to_string(), (c.eval)(snaps)))
@@ -60,11 +66,13 @@ impl ContractReport {
         }
     }
 
-    pub fn exit_code(&self) -> i32 { if self.failed == 0 { 0 } else { 1 } }
+    #[must_use]
+    pub fn exit_code(&self) -> i32 { i32::from(self.failed != 0) }
 }
 
 // ─────────────── Builders ───────────────
 
+#[must_use] 
 pub fn bg_reaches(label: &'static str, color: HexColor) -> Check {
     Check {
         name: leak_str(format!("bg_reaches_{label}")),
@@ -77,6 +85,7 @@ pub fn bg_reaches(label: &'static str, color: HexColor) -> Check {
     }
 }
 
+#[must_use] 
 pub fn final_bg_is(label: &'static str, color: HexColor) -> Check {
     Check {
         name: leak_str(format!("final_bg_{label}")),
@@ -90,6 +99,7 @@ pub fn final_bg_is(label: &'static str, color: HexColor) -> Check {
     }
 }
 
+#[must_use] 
 pub fn picker_scroll_indicator_visible() -> Check {
     Check {
         name: "picker_scroll_indicator_visible",
@@ -124,7 +134,9 @@ fn leak_str(s: String) -> &'static str {
 
 /// List numbered `*.json` snapshot paths in `dir`, sorted ascending.
 /// Filters to entries whose stem is all ASCII digits (`0001.json`, etc.).
-/// Returns `Err` when the dir is unreadable or has zero matching entries.
+///
+/// # Errors
+/// IO error reading `dir`, or zero matching entries.
 pub fn list_numbered_snapshots(dir: &Path) -> anyhow::Result<Vec<std::path::PathBuf>> {
     let mut paths: Vec<_> = std::fs::read_dir(dir)?
         .filter_map(Result::ok)
@@ -140,6 +152,10 @@ pub fn list_numbered_snapshots(dir: &Path) -> anyhow::Result<Vec<std::path::Path
     Ok(paths)
 }
 
+/// Load every numbered snapshot under `dir`, in order.
+///
+/// # Errors
+/// Any error from [`list_numbered_snapshots`] or per-snapshot load.
 pub fn load_snapshots_dir(dir: &Path) -> anyhow::Result<Vec<Snapshot>> {
     list_numbered_snapshots(dir)?.iter().map(Snapshot::load).collect()
 }

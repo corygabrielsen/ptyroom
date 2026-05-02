@@ -4,7 +4,6 @@
 //! Mirrors `paint.py`'s color resolution path, so what you see in the
 //! terminal matches what `paint.rs` would emit to PNG.
 
-use crate::color::HexColor;
 use crate::snapshot::{Cell, Snapshot};
 
 /// Half-open `[start, end)` row range; out-of-range bounds clamp.
@@ -17,14 +16,17 @@ pub struct RowRange {
 impl RowRange {
     /// Parse `start:end`, `:end`, `start:`, or `N` (single row).
     /// Out-of-range values clamp; never panics.
+    ///
+    /// # Errors
+    /// Either side of the colon (or the whole spec for the single-row form)
+    /// fails to parse as `usize`.
     pub fn parse(spec: &str, total: usize) -> Result<Self, String> {
         let clamp = |n: usize| n.min(total);
-        if !spec.contains(':') {
+        let Some((a, b)) = spec.split_once(':') else {
             let n: usize = spec.parse().map_err(|_| format!("not a number: {spec:?}"))?;
             let n = clamp(n);
             return Ok(Self { start: n, end: clamp(n + 1) });
-        }
-        let (a, b) = spec.split_once(':').unwrap();
+        };
         let start = if a.is_empty() { 0 } else {
             clamp(a.parse().map_err(|_| format!("not a number: {a:?}"))?)
         };
@@ -43,7 +45,9 @@ pub enum InspectMode {
 }
 
 /// Render `snap` to lines numbered with their 1-based row index.
+#[must_use]
 pub fn render(snap: &Snapshot, range: RowRange, mode: InspectMode) -> String {
+    use std::fmt::Write as _;
     let mut out = String::new();
     let width = snap.rows().to_string().len();
     for y in range.start..range.end {
@@ -51,19 +55,21 @@ pub fn render(snap: &Snapshot, range: RowRange, mode: InspectMode) -> String {
             InspectMode::Plain => render_row_plain(snap, y),
             InspectMode::Color => render_row_color(snap, y),
         };
-        out.push_str(&format!("{:>width$}  {}\n", y + 1, line, width = width));
+        // Width formatter discards Display impl errors only on OOM — fine for a tool.
+        let _ = writeln!(out, "{:>width$}  {line}", y + 1);
     }
     out
 }
 
 fn render_row_plain(snap: &Snapshot, y: usize) -> String {
     snap.grid.row(y).map(|row| {
-        row.iter().map(|c| c.as_ref().map(Cell::first_char).unwrap_or(' ')).collect()
+        row.iter().map(|c| c.as_ref().map_or(' ', Cell::first_char)).collect()
     }).unwrap_or_default()
 }
 
 fn render_row_color(snap: &Snapshot, y: usize) -> String {
-    let row = match snap.grid.row(y) { Some(r) => r, None => return String::new() };
+    use std::fmt::Write as _;
+    let Some(row) = snap.grid.row(y) else { return String::new() };
     let mut out = String::new();
     for cell in row {
         match cell {
@@ -72,21 +78,14 @@ fn render_row_color(snap: &Snapshot, y: usize) -> String {
                 // Goes through Cell::resolve_layers so the inverse attribute
                 // applies here just like it does in the PNG renderer.
                 let (fg, bg) = c.resolve_layers(snap);
-                push_ansi_bg(&mut out, bg);
-                push_ansi_fg(&mut out, fg);
+                let _ = write!(out, "\x1b[48;2;{};{};{}m", bg.r(), bg.g(), bg.b());
+                let _ = write!(out, "\x1b[38;2;{};{};{}m", fg.r(), fg.g(), fg.b());
                 out.push(c.first_char());
             }
         }
     }
     out.push_str("\x1b[0m");
     out
-}
-
-fn push_ansi_bg(s: &mut String, c: HexColor) {
-    s.push_str(&format!("\x1b[48;2;{};{};{}m", c.r(), c.g(), c.b()));
-}
-fn push_ansi_fg(s: &mut String, c: HexColor) {
-    s.push_str(&format!("\x1b[38;2;{};{};{}m", c.r(), c.g(), c.b()));
 }
 
 #[cfg(test)]

@@ -19,6 +19,7 @@ pub struct TimingEntry {
 }
 
 impl TimingEntry {
+    #[must_use] 
     pub fn dwell_seconds(&self) -> f64 {
         f64::from(self.dwell_ms) / 1000.0
     }
@@ -34,22 +35,30 @@ pub struct EncodeRequest {
 
 /// Render the GIF. Returns `Ok(())` on ffmpeg success; the caller prints
 /// the command before invoking so failures can be reproduced.
+///
+/// # Errors
+/// Empty timing list, missing PNG frame, IO error writing the concat file,
+/// or non-zero exit status from ffmpeg.
 pub fn encode(req: &EncodeRequest) -> anyhow::Result<()> {
+    use std::fmt::Write as _;
+
     if req.timing.is_empty() {
         anyhow::bail!("encode: timing has no frames");
     }
 
     let concat_path = req.frames_dir.parent()
-        .ok_or_else(|| anyhow::anyhow!("frames_dir has no parent: {:?}", req.frames_dir))?
+        .ok_or_else(|| anyhow::anyhow!("frames_dir has no parent: {}", req.frames_dir.display()))?
         .join("concat.txt");
 
     let concat_text = build_concat(&req.frames_dir, &req.timing)?;
     std::fs::write(&concat_path, concat_text)?;
 
-    let filter = format!(
+    let mut filter = String::new();
+    write!(
+        filter,
         "fps={fps},split[a][b];[a]palettegen=stats_mode=full[p];[b][p]paletteuse=dither=bayer:bayer_scale=5",
         fps = req.fps,
-    );
+    )?;
     let mut cmd = Command::new("ffmpeg");
     cmd.args(["-y", "-f", "concat", "-safe", "0", "-i"])
        .arg(&concat_path)
@@ -64,19 +73,21 @@ pub fn encode(req: &EncodeRequest) -> anyhow::Result<()> {
 }
 
 fn build_concat(frames_dir: &Path, timing: &[TimingEntry]) -> anyhow::Result<String> {
+    use std::fmt::Write as _;
+
     let mut s = String::new();
     for entry in timing {
         let png = frames_dir.join(format!("{}.png", entry.frame));
         if !png.exists() {
             anyhow::bail!("missing frame PNG: {}", png.display());
         }
-        s.push_str(&format!("file '{}'\n", png.display()));
-        s.push_str(&format!("duration {:.4}\n", entry.dwell_seconds()));
+        writeln!(s, "file '{}'", png.display())?;
+        writeln!(s, "duration {:.4}", entry.dwell_seconds())?;
     }
     // ffmpeg concat demuxer quirk: last frame is repeated, its duration ignored.
     let last = &timing[timing.len() - 1];
     let last_png = frames_dir.join(format!("{}.png", last.frame));
-    s.push_str(&format!("file '{}'\n", last_png.display()));
+    writeln!(s, "file '{}'", last_png.display())?;
     Ok(s)
 }
 

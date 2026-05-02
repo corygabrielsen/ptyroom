@@ -59,6 +59,10 @@ impl Drop for Drainer {
     }
 }
 
+// `Arc` parameters are moved in but only their refs are used inside the
+// loop; the closure that spawns the thread is the actual consumer of the
+// owned Arcs (it captures them).
+#[allow(clippy::needless_pass_by_value)]
 fn drain_loop(
     fd: RawFd, stubs: StubColors,
     buf: Arc<Mutex<Buffer>>, stop: Arc<AtomicBool>,
@@ -66,13 +70,15 @@ fn drain_loop(
     let mut chunk = vec![0u8; 64 * 1024];
     while !stop.load(Ordering::SeqCst) {
         let mut set = FdSet::new();
+        // Safety: `fd` is the master end of a PTY whose lifetime exceeds
+        // this thread (the parent `Recorder` joins us in `Drop` before
+        // dropping the OwnedFd).
         let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
         set.insert(borrowed);
         let mut tv = TimeVal::milliseconds(50);
         match select(Some(fd + 1), Some(&mut set), None, None, Some(&mut tv)) {
-            Ok(0) => continue,
+            Ok(0) | Err(nix::errno::Errno::EINTR) => continue,
             Ok(_) => {}
-            Err(nix::errno::Errno::EINTR) => continue,
             Err(_) => break,
         }
         let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
@@ -91,7 +97,7 @@ fn drain_loop(
                 match write(borrowed, &reply[written..]) {
                     Ok(0) => break,
                     Ok(k) => written += k,
-                    Err(nix::errno::Errno::EINTR) => continue,
+                    Err(nix::errno::Errno::EINTR) => {}
                     Err(_) => break,
                 }
             }

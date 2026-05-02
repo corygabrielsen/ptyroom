@@ -2,9 +2,12 @@
 name = "tint-recorder"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.95"
 license = "MIT"
 description = "Deterministic GIF recorder for tint demos."
+
+[lints.clippy]
+pedantic = { level = "deny", priority = -1 }
 
 [lib]
 name = "tint_recorder"

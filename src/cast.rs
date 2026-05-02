@@ -29,6 +29,7 @@ pub enum EventKind {
 }
 
 impl EventKind {
+    #[must_use] 
     pub const fn as_str(self) -> &'static str {
         match self {
             EventKind::Output => "o",
@@ -80,11 +81,19 @@ pub struct Cast {
 }
 
 impl Cast {
+    /// Read a cast file from disk.
+    ///
+    /// # Errors
+    /// IO error reading the file, or JSON parse error on header/events.
     pub fn read(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let text = std::fs::read_to_string(path.as_ref())?;
         Self::parse(&text)
     }
 
+    /// Parse a cast from its JSONL text.
+    ///
+    /// # Errors
+    /// Empty input, or JSON parse error on the header or any event line.
     pub fn parse(text: &str) -> anyhow::Result<Self> {
         let mut lines = text.lines().filter(|l| !l.is_empty());
         let header_line = lines.next().ok_or_else(|| anyhow::anyhow!("empty cast"))?;
@@ -95,6 +104,10 @@ impl Cast {
         Ok(Cast { header, events })
     }
 
+    /// Write the cast to `path`, creating parent directories as needed.
+    ///
+    /// # Errors
+    /// IO error creating the parent directory or writing the file.
     pub fn write(&self, path: impl AsRef<Path>) -> anyhow::Result<()> {
         let path = path.as_ref();
         if let Some(parent) = path.parent() {
@@ -106,6 +119,10 @@ impl Cast {
 
     /// Convenience for scene binaries: write the cast and print a one-line
     /// summary (`wrote PATH (BYTES bytes, N events)`).
+    ///
+    /// # Errors
+    /// Same as [`Cast::write`]; additionally fails if file metadata can't
+    /// be read for the byte-count summary.
     pub fn write_with_summary(&self, path: impl AsRef<Path>) -> anyhow::Result<()> {
         let path = path.as_ref();
         self.write(path)?;
@@ -113,15 +130,21 @@ impl Cast {
             path.display(), std::fs::metadata(path)?.len(), self.events.len());
         Ok(())
     }
+}
 
-    pub fn to_string(&self) -> String {
-        let mut out = serde_json::to_string(&self.header).expect("header serializable");
+impl std::fmt::Display for Cast {
+    /// Emit the cast as JSONL text. Panics only if `serde_json` fails to
+    /// serialize a struct that is, by construction, always serializable.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let header = serde_json::to_string(&self.header)
+            .map_err(|_| std::fmt::Error)?;
+        f.write_str(&header)?;
         for ev in &self.events {
-            out.push('\n');
-            out.push_str(&serde_json::to_string(ev).expect("event serializable"));
+            let line = serde_json::to_string(ev).map_err(|_| std::fmt::Error)?;
+            f.write_str("\n")?;
+            f.write_str(&line)?;
         }
-        out.push('\n');
-        out
+        f.write_str("\n")
     }
 }
 
@@ -158,7 +181,7 @@ mod tests {
     #[test]
     fn event_deserializes_from_3_array() {
         let ev: CastEvent = serde_json::from_str(r#"[2.5,"i","x"]"#).unwrap();
-        assert_eq!(ev.time_s, 2.5);
+        assert!((ev.time_s - 2.5).abs() < 1e-9);
         assert_eq!(ev.kind, EventKind::Input);
         assert_eq!(ev.data, "x");
     }
@@ -172,7 +195,10 @@ mod tests {
     #[test]
     fn cast_round_trip() {
         let c = Cast {
-            header: CastHeader { version: 2, width: 80, height: 30, env: Default::default() },
+            header: CastHeader {
+                version: 2, width: 80, height: 30,
+                env: std::collections::BTreeMap::default(),
+            },
             events: vec![
                 CastEvent { time_s: 0.0,  kind: EventKind::Output, data: "hello".into() },
                 CastEvent { time_s: 0.5,  kind: EventKind::Output, data: " world".into() },

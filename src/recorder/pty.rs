@@ -20,9 +20,13 @@ pub struct PtyMaster {
 }
 
 impl PtyMaster {
+    #[must_use]
     pub fn fd(&self) -> RawFd { self.fd.as_raw_fd() }
 
     /// Send SIGKILL to the child and reap it. Idempotent — safe if already dead.
+    ///
+    /// # Errors
+    /// `kill` or `waitpid` returned an error other than `ESRCH` (already gone).
     pub fn terminate_child(&self) -> anyhow::Result<()> {
         match kill(self.child, Signal::SIGKILL) {
             Ok(()) => {}
@@ -36,6 +40,9 @@ impl PtyMaster {
 
 /// Spawn `argv[0]` with `argv[1..]` as a child whose stdio is a fresh PTY.
 /// The slave is sized to `cols × rows` before exec.
+///
+/// # Errors
+/// Empty `argv`, or `forkpty` syscall failure.
 pub fn spawn(argv: &[&str], cols: u16, rows: u16) -> anyhow::Result<PtyMaster> {
     if argv.is_empty() { anyhow::bail!("spawn: empty argv"); }
     let winsize = Winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
@@ -53,7 +60,7 @@ pub fn spawn(argv: &[&str], cols: u16, rows: u16) -> anyhow::Result<PtyMaster> {
                     // SAFETY: arg with NUL byte — fail loudly via _exit.
                     unsafe { libc::_exit(127) }
                 })).collect();
-            let arg_refs: Vec<&std::ffi::CStr> = owned.iter().map(|c| c.as_c_str()).collect();
+            let arg_refs: Vec<&std::ffi::CStr> = owned.iter().map(std::ffi::CString::as_c_str).collect();
             let _ = execvp(arg_refs[0], &arg_refs);
             // execvp only returns on failure
             unsafe { libc::_exit(127) };
