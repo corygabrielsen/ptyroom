@@ -19,7 +19,7 @@ use nix::sys::select::{FdSet, select};
 use nix::sys::time::{TimeVal, TimeValLike};
 use nix::unistd::{read, write};
 
-use super::osc::{StubColors, replies_for_chunk};
+use super::osc::{StubColors, replies_for_chunk, setters_in_chunk};
 
 /// Bytes buffered by the drainer between consume calls.
 #[derive(Default)]
@@ -62,9 +62,15 @@ impl Drop for Drainer {
 // `Arc` parameters are moved in but only their refs are used inside the
 // loop; the closure that spawns the thread is the actual consumer of the
 // owned Arcs (it captures them).
+//
+// The `stubs` value is the *initial* state. The drainer updates it in place
+// as it observes OSC 10/11 setter writes from the child, so subsequent
+// query responses reflect the most recently set bg/fg — what tint expects
+// when it queries the terminal for the "original" color before opening the
+// picker.
 #[allow(clippy::needless_pass_by_value)]
 fn drain_loop(
-    fd: RawFd, stubs: StubColors,
+    fd: RawFd, mut stubs: StubColors,
     buf: Arc<Mutex<Buffer>>, stop: Arc<AtomicBool>,
 ) {
     let mut chunk = vec![0u8; 64 * 1024];
@@ -89,6 +95,17 @@ fn drain_loop(
             Err(_) => break,
         };
         let read_slice = &chunk[..n];
+
+        // Apply setter writes before answering queries — if a single chunk
+        // contains both, tint expects the query to reflect the just-set
+        // value.
+        for (code, color) in setters_in_chunk(read_slice) {
+            match code {
+                10 => stubs.fg = color,
+                11 => stubs.bg = color,
+                _ => {}
+            }
+        }
 
         for reply in replies_for_chunk(read_slice, stubs) {
             let mut written = 0;

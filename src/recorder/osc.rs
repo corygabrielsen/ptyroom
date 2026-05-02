@@ -55,6 +55,41 @@ fn query_re() -> &'static Regex {
     R.get_or_init(|| Regex::new(r"\x1b\](10|11);\?(?:\x1b\\|\x07)").unwrap())
 }
 
+/// Matches `ESC ] 1[01] ; <color> ( ESC \\ | BEL )` where `<color>` is either
+/// `#RRGGBB` (tint's wire format) or `rgb:R/G/B` (xterm-spec form some
+/// clients use). Accepts 1-4 hex digits per channel for the rgb: form.
+fn setter_re() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| {
+        let pat = concat!(
+            r"\x1b\](10|11);",
+            r"(#[0-9a-fA-F]{6}|rgb:[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4})",
+            r"(?:\x1b\\|\x07)",
+        );
+        Regex::new(pat).unwrap()
+    })
+}
+
+/// Scan `chunk` for OSC 10/11 setter sequences. Returns `(code, color)`
+/// pairs in chunk order so callers can apply them as a sequence of state
+/// updates.
+#[must_use]
+pub fn setters_in_chunk(chunk: &[u8]) -> Vec<(u8, HexColor)> {
+    setter_re().captures_iter(chunk)
+        .filter_map(|cap| {
+            let code_b = cap.get(1)?.as_bytes();
+            let code: u8 = match code_b {
+                b"10" => 10,
+                b"11" => 11,
+                _ => return None,
+            };
+            let color_str = std::str::from_utf8(cap.get(2)?.as_bytes()).ok()?;
+            let color = HexColor::parse(color_str)?;
+            Some((code, color))
+        })
+        .collect()
+}
+
 /// Scan `chunk` for OSC queries and emit the canned replies.
 pub fn replies_for_chunk(chunk: &[u8], stubs: StubColors) -> Vec<Vec<u8>> {
     query_re().captures_iter(chunk)
@@ -110,5 +145,41 @@ mod tests {
         // OSC 4 (palette) query — we don't stub it
         let q = b"\x1b]4;?\x1b\\";
         assert!(replies_for_chunk(q, StubColors::default()).is_empty());
+    }
+
+    #[test]
+    fn setter_hash_form_st_terminated() {
+        let s = b"\x1b]11;#282a36\x1b\\";
+        let setters = setters_in_chunk(s);
+        assert_eq!(setters.len(), 1);
+        assert_eq!(setters[0].0, 11);
+        assert_eq!(setters[0].1, HexColor::from_rgb(0x28, 0x2a, 0x36));
+    }
+
+    #[test]
+    fn setter_rgb_form_bel_terminated() {
+        let s = b"\x1b]10;rgb:c0/ca/f5\x07";
+        let setters = setters_in_chunk(s);
+        assert_eq!(setters.len(), 1);
+        assert_eq!(setters[0].0, 10);
+        assert_eq!(setters[0].1, HexColor::from_rgb(0xc0, 0xca, 0xf5));
+    }
+
+    #[test]
+    fn setter_ignores_query() {
+        let q = b"\x1b]11;?\x1b\\";
+        assert!(setters_in_chunk(q).is_empty());
+    }
+
+    #[test]
+    fn setter_finds_multiple_in_one_chunk() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"\x1b]11;#282a36\x1b\\");
+        buf.extend_from_slice(b"some output");
+        buf.extend_from_slice(b"\x1b]10;#f8f8f2\x1b\\");
+        let setters = setters_in_chunk(&buf);
+        assert_eq!(setters.len(), 2);
+        assert_eq!(setters[0].0, 11);
+        assert_eq!(setters[1].0, 10);
     }
 }
