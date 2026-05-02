@@ -11,7 +11,7 @@ use clap::Parser;
 use tint_recorder::recorder::{Recorder, RecorderConfig};
 use tint_recorder::scenes::{
     blank, lookup_picker_idx, ms,
-    run_cd_hook, run_cli, run_custom_theme, run_picker, run_preamble,
+    run_cd_hook, run_cli, run_custom_theme, run_picker, run_preamble, run_reset,
 };
 
 /// Theme the picker lands on. Picked deliberately for the cool/blue
@@ -54,8 +54,12 @@ fn main() -> anyhow::Result<()> {
     //   swallowing the between-act gap that other transitions get for
     //   free from the prior act's trailing output. A second blank
     //   restores the between-act spacing parity.
-    // - 3500ms outro dwell at the end so the final "hot" theme has time
-    //   to register before the loop restarts; shorter felt clipped.
+    // - Act 5 is a short coda: `tint reset` returns to default. Doubles
+    //   as a graceful loop transition — GIF ends on default-dark which
+    //   matches the loop's start state, so the wrap-around isn't jarring.
+    // - 2500ms outro dwell after reset: long enough to register "back
+    //   to normal" before the loop restarts; shorter than the previous
+    //   3500ms because reset itself is a quieter beat.
     let mut r = Recorder::start(RecorderConfig::default())?;
     r.dwell(ms(800), ms(600))?;
     run_preamble(&mut r)?;
@@ -68,7 +72,9 @@ fn main() -> anyhow::Result<()> {
     run_cd_hook(&mut r)?;
     blank(&mut r, ms(500))?;
     run_custom_theme(&mut r)?;
-    r.dwell(ms(3500), ms(100))?;
+    blank(&mut r, ms(500))?;
+    run_reset(&mut r)?;
+    r.dwell(ms(2500), ms(100))?;
 
     let cast = r.stop()?;
     cast.write_with_summary(&args.cast)?;

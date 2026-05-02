@@ -24,7 +24,10 @@ const SOLARIZED_LIGHT:  HexColor = rgb(0xfd, 0xf6, 0xe3);
 const MONOKAI:          HexColor = rgb(0x27, 0x28, 0x22);
 const PALE_EMERALD:     HexColor = rgb(0xba, 0xde, 0xc3);
 const PALE_AMBER:       HexColor = rgb(0xde, 0xd5, 0xba);
-const HOT:              HexColor = rgb(0xff, 0x00, 0x6e);
+const MATRIX:           HexColor = rgb(0x00, 0xff, 0x41);
+/// Snapshot bg after `tint reset` — matches the recorder/snapshot.ts
+/// startup default (#1a1b26). Used by demo_full's act-5 reset assertion.
+const DEFAULT_BG:       HexColor = rgb(0x1a, 0x1b, 0x26);
 
 #[must_use]
 pub fn registry(scene: &str) -> Option<Contract> {
@@ -48,8 +51,10 @@ fn demo_full() -> Contract {
         bg_reaches("monokai",              MONOKAI),
         bg_reaches("pale-emerald-cd-hook", PALE_EMERALD),
         bg_reaches("pale-amber-cd-hook",   PALE_AMBER),
-        bg_reaches("hot-custom",           HOT),
-        final_bg_is("hot-custom",          HOT),
+        bg_reaches("matrix-custom",        MATRIX),
+        // Act 5: `tint reset` returns to the snapshot's default bg.
+        // Matches the loop's start state — graceful wrap-around.
+        final_bg_is("reset-default",       DEFAULT_BG),
     ];
     Contract { scene: "demo_full", checks }
 }
@@ -96,8 +101,8 @@ fn custom_theme() -> Contract {
     Contract {
         scene: "custom_theme",
         checks: vec![
-            bg_reaches("hot",  HOT),
-            final_bg_is("hot", HOT),
+            bg_reaches("matrix",  MATRIX),
+            final_bg_is("matrix", MATRIX),
         ],
     }
 }

@@ -153,9 +153,16 @@ async function run(castPath: string, outDir: string): Promise<void> {
     allowProposedApi: true,
   });
 
+  // Defaults — both the snapshot's startup state AND the target for
+  // reset (OSC 111/110/104). Match the recorder driver's stub default
+  // so a `tint reset` returns to the same bg the demo started on,
+  // making the GIF loop wrap around without a jarring transition.
+  const DEFAULT_BG = "#1a1b26";
+  const DEFAULT_FG = "#c0caf5";
+
   const state: ReplayState = {
-    bg: "#1a1b26", // matches the recorder driver's stub default
-    fg: "#c0caf5",
+    bg: DEFAULT_BG,
+    fg: DEFAULT_FG,
     palette: {},
   };
 
@@ -179,6 +186,13 @@ async function run(castPath: string, outDir: string): Promise<void> {
     }
     return true;
   });
+  // OSC 111/110/104: reset bg/fg/palette to terminal defaults.
+  // tint emits these on `tint reset`. Without these handlers, the
+  // last-applied colors would persist visually even though the user
+  // asked for a reset.
+  term.parser.registerOscHandler(111, () => { state.bg = DEFAULT_BG; return true; });
+  term.parser.registerOscHandler(110, () => { state.fg = DEFAULT_FG; return true; });
+  term.parser.registerOscHandler(104, () => { state.palette = {}; return true; });
 
   const timing: TimingEntry[] = [];
   for (let i = 0; i < events.length; i++) {

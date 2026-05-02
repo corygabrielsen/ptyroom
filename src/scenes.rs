@@ -10,9 +10,11 @@ use std::time::Duration;
 use crate::recorder::{Key, Recorder};
 
 /// Custom palette emitted by `run_custom_theme`. 17 colors after the
-/// `name:bg:fg:` triple — bg/fg/16 ANSI slots.
+/// `name:bg:fg:` triple — bg/fg/16 ANSI slots. Matrix phosphor green:
+/// bright green bg with near-black fg. ANSI ramp stays dark grey so the
+/// PS1's t/i/n/t letters render as readable dark glyphs on the bright bg.
 pub const CUSTOM_THEME_LINE: &str = concat!(
-    "hot:#ff006e:#ffffff:",
+    "matrix:#00ff41:#001100:",
     "#111111:#222222:#333333:#444444:#555555:#666666:#777777:#888888:",
     "#999999:#aaaaaa:#bbbbbb:#cccccc:#dddddd:#eeeeee:#f0f0f0:#ffffff",
 );
@@ -184,8 +186,7 @@ pub fn run_cd_hook(r: &mut Recorder) -> anyhow::Result<()> {
     // Second room: same pattern with a contrasting theme (warm pale-amber
     // vs cool pale-emerald). Two rooms instead of one because seeing the
     // bg change *twice* makes the mechanism unmistakable; one could be
-    // coincidence. Cool↔warm contrast also keeps the demo from skewing
-    // pink in the back half — act 4's `hot` is the only pink theme.
+    // coincidence.
     line(r, "cd ..", ms(24), ms(250), ms(300))?;
     line(r, "mkdir amberroom && echo pale-amber > amberroom/.tint",
          ms(24), ms(250), ms(400))?;
@@ -200,10 +201,10 @@ pub fn run_cd_hook(r: &mut Recorder) -> anyhow::Result<()> {
 /// - The heredoc body (`CUSTOM_THEME_LINE`) types fast (11ms/char) —
 ///   it's a long color spec; full speed reads as "real config", slower
 ///   makes it feel laborious to write.
-/// - The `EOF` and final `tint hot` line use normal command speed
+/// - The `EOF` and final `tint matrix` line use normal command speed
 ///   (24-32ms/char).
-/// - 1200ms settle after `tint hot` — the climax of the demo, hold a
-///   beat longer than other commands so the custom color lands clearly.
+/// - 1200ms settle after `tint matrix` — the climax of the demo, hold
+///   a beat longer than other commands so the custom color lands.
 ///
 /// # Errors
 /// Any [`Recorder`] IO error.
@@ -214,7 +215,7 @@ pub fn run_custom_theme(r: &mut Recorder) -> anyhow::Result<()> {
 
     // Heredoc into the themes dir. Body line types fast since it's a
     // mechanical color spec, not a thing the viewer is meant to read.
-    r.type_text("cat > ~/.config/tint/themes/hot.theme <<EOF", ms(24))?;
+    r.type_text("cat > ~/.config/tint/themes/matrix.theme <<EOF", ms(24))?;
     r.key(Key::Enter, ms(200))?;
     r.dwell(ms(300), ms(100))?;
 
@@ -227,6 +228,22 @@ pub fn run_custom_theme(r: &mut Recorder) -> anyhow::Result<()> {
     r.dwell(ms(500), ms(100))?;
 
     // Apply the theme we just wrote. 1200ms settle for the demo finale.
-    line(r, "tint hot", ms(32), ms(300), ms(1200))?;
+    line(r, "tint matrix", ms(32), ms(300), ms(1200))?;
+    Ok(())
+}
+
+/// Reset feature: short coda after the custom theme. `tint reset`
+/// returns the terminal to its default colors. Doubles as a graceful
+/// loop transition — the GIF ends on default-dark, which matches the
+/// loop's start state, so the wrap-around isn't jarring.
+///
+/// **Pacing:** kept very short (one command, no narration). The viewer
+/// doesn't need framing — they see the bright matrix-green flip back to
+/// neutral and understand "you can undo it" without prose.
+///
+/// # Errors
+/// Any [`Recorder`] IO error.
+pub fn run_reset(r: &mut Recorder) -> anyhow::Result<()> {
+    line(r, "tint reset", ms(35), ms(300), ms(1200))?;
     Ok(())
 }
