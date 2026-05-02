@@ -2,8 +2,8 @@
 
 PY        := python3
 SCENE     ?= demo_full
-CAST      := assets/$(SCENE).cast
-GIF       := assets/$(SCENE).gif
+CAST       = assets/$(SCENE).cast
+GIF        = assets/$(SCENE).gif
 IMAGE     := tint-recorder:demo
 TINT_PATH ?= /home/cory/code/tint/tint
 
@@ -17,7 +17,7 @@ setup:
 # the host's tint script, the Dockerfile, or render code changes.
 build-image:
 	tar -c Dockerfile render-cast.sh package.json package-lock.json \
-	       requirements.txt renderer assets/fonts \
+	       tsconfig.json requirements.txt renderer assets/fonts \
 	       -C $(dir $(TINT_PATH)) $(notdir $(TINT_PATH)) | \
 		docker build -t $(IMAGE) -
 

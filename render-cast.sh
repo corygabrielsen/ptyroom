@@ -8,6 +8,6 @@ CAST="$1"
 GIF="$2"
 DIR=$(dirname "$CAST")
 
-node /app/renderer/snapshot.js "$CAST" "$DIR/snapshots"
+npx tsx /app/renderer/snapshot.ts "$CAST" "$DIR/snapshots"
 python3 /app/renderer/paint.py "$DIR/snapshots" "$DIR/frames"
 python3 /app/renderer/encode.py "$DIR/frames" "$DIR/snapshots/timing.json" "$GIF"

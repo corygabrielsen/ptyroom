@@ -25,7 +25,9 @@ RUN chmod +x /usr/local/bin/tint
 # Renderer code + deps. Installed at the image level (read-only at runtime).
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm install --omit=dev --no-audit --no-fund
+# devDeps include tsx + typescript so renderer/snapshot.ts runs without
+# a pre-build compile step. Image stays under control by being pinned.
+RUN npm install --no-audit --no-fund
 COPY requirements.txt ./
 RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
 COPY renderer ./renderer
