@@ -7,7 +7,7 @@ use clap::Parser;
 use tint_recorder::recorder::{Recorder, RecorderConfig};
 use tint_recorder::scenes::{lookup_picker_idx, ms, run_picker};
 
-const PICKER_TARGET: &str = "dark-orange";
+const PICKER_TARGET: &str = "dark-azure";
 
 #[derive(Parser)]
 struct Args {

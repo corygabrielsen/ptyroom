@@ -18,7 +18,7 @@ pub const SCENES: &[&str] = &[
 
 const fn rgb(r: u8, g: u8, b: u8) -> HexColor { HexColor::from_rgb(r, g, b) }
 
-const DARK_ORANGE:      HexColor = rgb(0x78, 0x59, 0x3a);
+const DARK_AZURE:       HexColor = rgb(0x3a, 0x59, 0x78);
 const DRACULA:          HexColor = rgb(0x28, 0x2a, 0x36);
 const SOLARIZED_LIGHT:  HexColor = rgb(0xfd, 0xf6, 0xe3);
 const BLUE:             HexColor = rgb(0x53, 0x53, 0xac);
@@ -41,7 +41,7 @@ pub fn registry(scene: &str) -> Option<Contract> {
 fn demo_full() -> Contract {
     let checks: Vec<Check> = vec![
         picker_scroll_indicator_visible(),
-        bg_reaches("dark-orange",       DARK_ORANGE),
+        bg_reaches("dark-azure",       DARK_AZURE),
         bg_reaches("dracula",           DRACULA),
         bg_reaches("solarized-light",   SOLARIZED_LIGHT),
         bg_reaches("blue-cd-hook",      BLUE),
@@ -61,8 +61,8 @@ fn picker() -> Contract {
         scene: "picker",
         checks: vec![
             picker_scroll_indicator_visible(),
-            bg_reaches("dark-orange", DARK_ORANGE),
-            final_bg_is("dark-orange", DARK_ORANGE),
+            bg_reaches("dark-azure", DARK_AZURE),
+            final_bg_is("dark-azure", DARK_AZURE),
         ],
     }
 }

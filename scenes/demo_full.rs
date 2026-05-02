@@ -13,7 +13,7 @@ use tint_recorder::scenes::{
     blank, lookup_picker_idx, ms, run_cd_hook, run_cli, run_custom_theme, run_picker,
 };
 
-const PICKER_TARGET: &str = "dark-orange";
+const PICKER_TARGET: &str = "dark-azure";
 
 #[derive(Parser)]
 struct Args {
