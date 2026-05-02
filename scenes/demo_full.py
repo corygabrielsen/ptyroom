@@ -1,12 +1,13 @@
 """Full 4-act marketing demo.
 
-Every prerequisite (directories, .tint files, .theme files) is created
-on screen during the recording. No magic pre-prepared state — the viewer
-sees cause and effect without making invisible assumptions.
+Every prerequisite (directories, .tint files, .theme files) is created on
+screen during the recording. No magic pre-prepared state — viewer sees
+cause and effect without making invisible assumptions. Hermeticity is
+provided by the Docker container the recorder spawns.
 
-Act 1: picker tour     — slow scroll with hero pauses on dracula, solarized-dark, nord
-Act 2: CLI direct      — `tint dracula`, `tint solarized-light`, `tint gruvbox-dark`
-Act 3: cd hook         — mkdir + echo > .tint + cd, twice
+Act 1: typed banner + `tint` launches picker → brisk scroll to a hero theme
+Act 2: CLI direct      — `tint dracula`, `tint solarized-light`
+Act 3: cd hook         — install hook + mkdir + echo > .tint + cd, twice
 Act 4: custom theme    — heredoc a .theme file, then `tint hot`
 
 One continuous PTY → terminal state persists across all four acts.
@@ -14,10 +15,11 @@ One continuous PTY → terminal state persists across all four acts.
 Banners (`# ...` typed at the prompt) are bash comments — bash treats
 them as no-ops, leaving the explanatory text on screen.
 
-Run from project root:  python -m scenes.demo_full
+Run from project root:  make demo
 """
 
-import shutil
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -25,26 +27,39 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from recorder.driver import Recorder
 
+# Path to the tint script on the host. Same script gets baked into the demo
+# image (see Makefile build-image), so listing themes here matches what the
+# recording will see.
+TINT_PATH = os.environ.get("TINT_PATH", "/home/cory/code/tint/tint")
 
-def reset_state() -> None:
-    """Clear dirs/files the recording creates, so the scene is re-runnable.
-
-    Cleanup runs in Python BEFORE recording starts — it never appears in
-    the cast. (Per self-sufficiency rule, the recording itself shows every
-    `mkdir`/`echo`/`heredoc` that produces state the demo references.)
-    """
-    for p in (Path("/tmp/blueroom"), Path("/tmp/roseroom"),
-              Path("/tmp/tint-recorder-home/.config/tint/themes")):
-        if p.exists():
-            shutil.rmtree(p)
+# Act 1 landing theme — looked up by name at scene start so adding new themes
+# upstream of this one doesn't shift its picker index.
+ACT1_TARGET = "dark-orange"
 
 # Hot-pink custom theme — vibrant, distinct from anything in the picker.
-# Theme spec: name + 18 #RRGGBB fields (bg + fg + ANSI 0-15).
 CUSTOM_THEME_LINE = (
     "hot:#ff006e:#ffffff:"
     "#111111:#222222:#333333:#444444:#555555:#666666:#777777:#888888:"
     "#999999:#aaaaaa:#bbbbbb:#cccccc:#dddddd:#eeeeee:#f0f0f0:#ffffff"
 )
+
+
+def lookup_picker_idx(theme_name: str) -> int:
+    """Return 1-based picker idx for a built-in theme.
+
+    Picker row 0 is the "(unchanged)" no-op; row N corresponds to line N of
+    `tint -l`. Runs the tint script directly (no docker) for speed —
+    output is identical because the same script is in the image.
+    """
+    result = subprocess.run(
+        [TINT_PATH, "-l"],
+        capture_output=True, text=True, check=True,
+        env={"TINT_PALETTE_DIR": "", "PATH": "/usr/bin:/bin"},
+    )
+    themes = result.stdout.splitlines()
+    if theme_name not in themes:
+        raise ValueError(f"theme not found in `tint -l`: {theme_name!r}")
+    return themes.index(theme_name) + 1
 
 
 def line(r: Recorder, text: str, *, per_char_ms: int = 80,
@@ -61,43 +76,25 @@ def blank(r: Recorder, dwell_ms: int = 500) -> None:
     r.key("enter", dwell_ms=dwell_ms)
 
 
-def act1_picker(r: Recorder) -> None:
-    """Picker tour — slow intro, then fast-scroll deep into the 224-theme library.
+def act1_picker(r: Recorder, target_idx: int) -> None:
+    """Banner + typed `tint` launch + brisk scroll to the Act 1 target theme."""
+    r.dwell(800, settle_ms=600)            # let initial prompt settle
+    line(r, "# tint — terminal theme switcher",
+         per_char_ms=35, dwell_after_ms=400, settle_after_ms=1000)
 
-    Key cadence reflects how a real terminal user would explore: slow at
-    first to read controls, then hold-down-arrow speed (~70 ms/key) once
-    they're scrolling to find something. Pauses on hero spots so the eye
-    can land.
-    """
-    r.dwell(1800, settle_ms=600)            # opening hold (controls visible)
-    r.key("down", dwell_ms=220, repeat=8)   # → idx 8: dracula (slow intro)
-    r.dwell(1500)                           # hero pause: dracula
+    r.type_text("tint", per_char_ms=80)    # launch picker
+    r.key("enter", dwell_ms=400)
+    r.dwell(900)                           # picker opens, controls visible
 
-    # Fast scroll through the rest of curated + into the rainbow deep/dark tiers.
-    r.key("down", dwell_ms=70, repeat=50)   # → idx 58 (well into rainbow)
-    r.dwell(1200)                           # hero pause: deep-color tier
-
-    # Continue fast — into muted/light/pale tiers
-    r.key("down", dwell_ms=70, repeat=40)   # → idx 98 (light/pale tiers)
-    r.dwell(1200)                           # hero pause: lighter palette
-
-    # Fast scroll deep into neon tier and back-half rainbow
-    r.key("down", dwell_ms=70, repeat=40)   # → idx 138 (neon tier)
-    r.dwell(1500)                           # hero pause: neon
-
-    # Quick reverse trip showing up-direction also smooths
-    r.key("up", dwell_ms=80, repeat=12)
-    r.dwell(800)
-    # Enter accepts the highlighted theme — bash prompt appears IN that theme.
-    # (Esc would restore the original state, undoing all the exploration.)
-    r.key("enter", dwell_ms=500)
+    # Brisk scroll past curated into the dark-rainbow tier — viewer sees
+    # color tier transitions without belaboring the inventory.
+    r.key("down", dwell_ms=50, repeat=target_idx)
+    r.dwell(1000)                          # hero pause
+    r.key("enter", dwell_ms=500)           # accept
 
 
 def act2_cli(r: Recorder) -> None:
     """Type tint commands at the prompt."""
-    # Hold the picker's last theme on screen long enough for the viewer to
-    # register that Enter accepted the selection — bash prompt is now in
-    # that theme's bg + fg + ANSI palette.
     r.dwell(800, settle_ms=400)
     for theme in ("dracula", "solarized-light"):
         line(r, f"tint {theme}", per_char_ms=35, dwell_after_ms=300,
@@ -106,7 +103,6 @@ def act2_cli(r: Recorder) -> None:
 
 def act3_cd_hook(r: Recorder) -> None:
     """Self-sufficient cd hook demo — hook install + every dir + .tint on screen."""
-    # Banner: bash treats `# ...` lines as no-ops, leaving text on screen.
     line(r, "# install the cd hook so .tint files auto-apply", per_char_ms=24,
          dwell_after_ms=300, settle_after_ms=600)
     line(r, 'eval "$(tint hook bash)"', per_char_ms=24,
@@ -155,17 +151,11 @@ def act4_custom_theme(r: Recorder) -> None:
 
 
 def main():
-    reset_state()
-    r = Recorder(
-        cols=80, rows=24, max_runtime_s=240.0,
-        interactive_followup=True,
-        # Point tint at the hermetic XDG dir for drop-in themes. The dir
-        # doesn't exist until the recording mkdir's it — that's the point.
-        palette_dir="/tmp/tint-recorder-home/.config/tint/themes",
-    )
+    target_idx = lookup_picker_idx(ACT1_TARGET)
+    r = Recorder(cols=80, rows=30, max_runtime_s=240.0)
     r.start()
 
-    act1_picker(r)
+    act1_picker(r, target_idx)
     act2_cli(r)
     blank(r)                # spacing before Act 3
     act3_cd_hook(r)

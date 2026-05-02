@@ -1,13 +1,14 @@
 """PTY-based recorder for tint demos.
 
-Spawns bash + tint inside a fully isolated environment, sends scripted
-keystrokes, captures every byte tint writes, and emits an asciinema v2
-cast file with deterministic timestamps.
+Spawns bash inside a Docker container (hermetic environment), sends
+scripted keystrokes, captures every byte tint writes, and emits an
+asciinema v2 cast file with deterministic timestamps.
 
 Determinism strategy:
-  - All env vars set explicitly (env -i pattern)
+  - Demo runs inside a pinned Docker image (no host $HOME / $PATH leakage)
   - PTY winsize fixed via TIOCSWINSZ before exec
-  - Tint's OSC 11/10 queries stubbed in the spawned bash
+  - Recorder acts as terminal emulator: answers tint's OSC 11/10 queries
+    with canned RGB replies so the real tint binary runs unmodified
   - Cast timestamps derived from intended dwell_ms, NEVER wall-clock
   - Background drainer keeps PTY buffers flowing so tint never blocks
 """
@@ -18,8 +19,10 @@ import fcntl
 import json
 import os
 import pty
+import re
 import select
 import struct
+import tempfile
 import termios
 import threading
 import time
@@ -50,20 +53,29 @@ class Event:
     dwell_ms: int              # how long this frame should hold in playback
 
 
-class _PtyDrainer:
-    """Background reader that keeps the PTY master fd from blocking writers.
+_OSC_QUERY = re.compile(rb'\x1b\](10|11);\?(?:\x1b\\|\x07)')
 
-    Without continuous draining, tint's slave-side writes block when the kernel's
-    PTY buffer fills. The drainer empties the buffer into a thread-safe bytearray
-    that consumers atomically swap out.
+
+class _PtyDrainer:
+    """Drain the PTY master fd and act as terminal emulator for tint.
+
+    Continuous draining keeps tint's slave-side writes from blocking. The
+    same loop also intercepts OSC 11/10 *query* sequences (`\\e]11;?\\e\\\\`)
+    and writes back canned RGB replies so the real tint binary, running
+    inside the container, gets a valid terminal response without any
+    in-shell stubs.
     """
 
-    def __init__(self, fd: int):
+    def __init__(self, fd: int, stub_bg: str, stub_fg: str):
         self._fd = fd
         self._buf = bytearray()
         self._lock = threading.Lock()
         self._done = threading.Event()
         self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._osc_replies = {
+            b"11": _hex_to_osc_reply("11", stub_bg),
+            b"10": _hex_to_osc_reply("10", stub_fg),
+        }
 
     def start(self) -> None:
         self._thread.start()
@@ -87,109 +99,81 @@ class _PtyDrainer:
                 chunk = os.read(self._fd, 65536)
                 if not chunk:
                     break
+                self._answer_osc_queries(chunk)
                 with self._lock:
                     self._buf.extend(chunk)
             except OSError:
                 break
+
+    def _answer_osc_queries(self, chunk: bytes) -> None:
+        """Synthesize and inject OSC 11/10 query responses back into the PTY."""
+        for match in _OSC_QUERY.finditer(chunk):
+            reply = self._osc_replies.get(match.group(1))
+            if reply is not None:
+                try:
+                    os.write(self._fd, reply)
+                except OSError:
+                    pass
+
+
+def _hex_to_osc_reply(code: str, hex_color: str) -> bytes:
+    """Build an OSC <code> reply: \\x1b]CODE;rgb:RR/GG/BB\\x1b\\\\."""
+    h = hex_color.lstrip("#")
+    rr, gg, bb = h[0:2], h[2:4], h[4:6]
+    return f"\x1b]{code};rgb:{rr}/{gg}/{bb}\x1b\\".encode()
 
 
 @dataclass
 class Recorder:
     cols: int = 100
     rows: int = 30
-    tint_path: str = "/home/cory/code/tint/tint"
-    palette_dir: str = ""      # "" = hermetic; tint's drop-in dir disabled
-    stub_bg: str = "#1a1b26"   # color tint will see when querying terminal bg
-    stub_fg: str = "#c0caf5"
-    bash_path: str = "/bin/bash"
-    max_runtime_s: float = 120.0  # watchdog: fail fast on hung child
-
-    # When True, drop to an interactive bash prompt after `tint_pick` exits.
-    # The follow-on shell has the `tint` CLI on PATH and the cd hook installed,
-    # enabling scenes to demo `tint dracula` (Act 2) and cd-into-.tint-dir
-    # auto-apply (Act 3) within the same continuous PTY/terminal state.
-    interactive_followup: bool = False
+    image: str = "tint-recorder:demo"  # Docker image holding bash + tint
+    stub_bg: str = "#1a1b26"   # color reported when tint queries OSC 11
+    stub_fg: str = "#c0caf5"   # color reported when tint queries OSC 10
+    max_runtime_s: float = 240.0  # watchdog: fail fast on hung child
 
     _master_fd: int = field(default=-1, init=False)
     _child_pid: int = field(default=-1, init=False)
     _events: list[Event] = field(default_factory=list, init=False)
     _drainer: _PtyDrainer | None = field(default=None, init=False)
     _start_monotonic: float = field(default=0.0, init=False)
+    _rcfile_host: Path | None = field(default=None, init=False)
 
     def start(self) -> None:
-        """Fork + exec bash with hermetic env, sourced tint, query stubs in place."""
-        # Hermetic env: explicit allow-list, no host leakage. tint's parent dir
-        # is on PATH so `tint <theme>` works as a CLI in the follow-on prompt.
-        tint_dir = str(Path(self.tint_path).parent)
-        clean_env = {
-            "TERM": "xterm-256color",
-            "LC_ALL": "C.UTF-8",
-            "LANG": "C.UTF-8",
-            "TZ": "UTC",
-            "PATH": f"{tint_dir}:/usr/bin:/bin",
-            "HOME": "/tmp/tint-recorder-home",
-            "XDG_CONFIG_HOME": "/tmp/tint-recorder-home/.config",
-            "TINT_PALETTE_DIR": self.palette_dir,
-            "COLUMNS": str(self.cols),
-            "LINES": str(self.rows),
-            "SHELL": self.bash_path,
-            "PS1": "$ ",
-        }
+        """Spawn `docker run` whose container runs interactive bash.
 
-        # Create the empty home dir before fork (to avoid HOME=/nonexistent surprises)
-        Path(clean_env["HOME"]).mkdir(parents=True, exist_ok=True)
-
-        # Build the bash command:
-        #   1. Source tint so functions are defined
-        #   2. Stub the OSC color queries (otherwise tint blocks on PTY input)
-        #   3. Call tint_pick — the interactive picker entry point
-        #   4. (optional) exec into a follow-on interactive bash with hook installed
-        stubs = (
-            f' _tint_query_terminal_bg() {{ printf "%s" "{self.stub_bg}"; }};'
-            f' _tint_query_terminal_fg() {{ printf "%s" "{self.stub_fg}"; }};'
+        The container provides hermeticity (empty $HOME, no leftover state,
+        pinned image). Scenes drive bash via PTY; the recorder also answers
+        tint's OSC 11/10 queries so real `tint` runs unmodified.
+        """
+        # PS1 spells "tint" in four ANSI palette indices (red/yellow/green/cyan)
+        # so the prompt's letter colors visibly change across themes via OSC 4.
+        ps1 = (
+            r"\[\e[31m\]t\[\e[33m\]i\[\e[32m\]n\[\e[36m\]t\[\e[0m\] $ "
         )
-        bash_cmd = f"source {self.tint_path};{stubs} tint_pick"
+        rc_fd, rc_path = tempfile.mkstemp(prefix="tint-recorder-rc-", suffix=".rc")
+        with os.fdopen(rc_fd, "w") as f:
+            f.write(f'cd "$HOME"\nPS1=\'{ps1}\'\nclear\n')
+        self._rcfile_host = Path(rc_path)
 
-        if self.interactive_followup:
-            # Write rcfile so the follow-on `bash --rcfile FILE -i` re-applies
-            # the same setup (sourced tint, stubbed queries, hook eval, PS1).
-            rcfile = Path(clean_env["HOME"]) / ".recorderrc"
-            # PS1 spells "tint" in four ANSI palette indices (red/yellow/green/
-            # cyan = ANSI 1/3/2/6) followed by `$ `. Themes set ANSI 0–15 via
-            # OSC 4, so the prompt's letter colors visibly change across themes
-            # — making it obvious the demo is changing more than bg + fg.
-            ps1 = (
-                r"\[\e[31m\]t"   # red
-                r"\[\e[33m\]i"   # yellow
-                r"\[\e[32m\]n"   # green
-                r"\[\e[36m\]t"   # cyan
-                r"\[\e[0m\] $ "  # reset, plain prompt tail
-            )
-            rcfile.write_text(
-                f"source {self.tint_path}\n"
-                f'_tint_query_terminal_bg() {{ printf "%s" "{self.stub_bg}"; }}\n'
-                f'_tint_query_terminal_fg() {{ printf "%s" "{self.stub_fg}"; }}\n'
-                f"PS1='{ps1}'\n"
-                # /etc/bash.bashrc on Debian/Ubuntu/WSL prints a sudo-MOTD on
-                # interactive startup. --rcfile doesn't suppress that. Wipe
-                # the screen so the demo starts at a clean prompt.
-                f"clear\n"
-                # Note: the cd-hook is intentionally NOT installed here —
-                # scenes that demo it must `eval "$(tint hook bash)"` on
-                # screen so the viewer sees how it's set up.
-            )
-            bash_cmd += f"; exec {self.bash_path} --rcfile {rcfile} -i"
+        docker_args = [
+            "docker", "run", "--rm", "-i", "-t",
+            # Pass size via env in case in-container winsize lags at startup.
+            "-e", f"LINES={self.rows}",
+            "-e", f"COLUMNS={self.cols}",
+            "-v", f"{self._rcfile_host}:/tmp/recorderrc:ro",
+            self.image,
+            "bash", "--rcfile", "/tmp/recorderrc", "-i",
+        ]
 
         self._child_pid, self._master_fd = pty.fork()
         if self._child_pid == 0:
-            # Child: set winsize via the slave side (its stdin)
             winsize = struct.pack("HHHH", self.rows, self.cols, 0, 0)
             fcntl.ioctl(0, termios.TIOCSWINSZ, winsize)
-            os.execvpe(self.bash_path, [self.bash_path, "-c", bash_cmd], clean_env)
+            os.execvp("docker", docker_args)
             os._exit(127)
 
-        # Parent: start the background drainer so the PTY never fills
-        self._drainer = _PtyDrainer(self._master_fd)
+        self._drainer = _PtyDrainer(self._master_fd, self.stub_bg, self.stub_fg)
         self._drainer.start()
         self._start_monotonic = time.monotonic()
 
@@ -254,6 +238,11 @@ class Recorder:
             os.close(self._master_fd)
         except OSError:
             pass
+        if self._rcfile_host is not None:
+            try:
+                self._rcfile_host.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     # ── output: asciinema v2 cast ─────────────────────────────────────
 
@@ -268,7 +257,7 @@ class Recorder:
             "version": 2,
             "width": self.cols,
             "height": self.rows,
-            "env": {"TERM": "xterm-256color", "SHELL": self.bash_path},
+            "env": {"TERM": "xterm-256color", "SHELL": "/bin/bash"},
         }
         lines = [json.dumps(header, sort_keys=True, separators=(",", ":"))]
 
