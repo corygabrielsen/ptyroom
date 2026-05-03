@@ -84,10 +84,11 @@ pub const PICKER_DIGEST: Duration = ms(2000);
 pub const PICKER_OVERSHOOT: Duration = ms(500);
 /// Dwell on the selected target before the commit Enter.
 pub const PICKER_HOLD: Duration = ms(1000);
-/// Down-arrow cadence in the picker.
-pub const PICKER_DOWN_PER_KEY: Duration = ms(50);
-/// Up-arrow cadence — deliberately slower than down to feel decisive.
-pub const PICKER_UP_PER_KEY: Duration = ms(80);
+/// Per-key cadence for picker navigation. Same speed in both
+/// directions — varying it creates a barely-perceptible rhythm shift
+/// when the picker scrolls back; the OVERSHOOT and HOLD beats carry
+/// the "this is the chosen one" narrative weight instead.
+pub const PICKER_NAV_PER_KEY: Duration = ms(50);
 /// Post-Enter dwell on the commit keystroke (real-time the picker
 /// uses to write the chosen-bg OSC and exit alt-screen). Combined
 /// with PICKER_DIGEST, total post-commit time is 2.5s.
@@ -209,9 +210,9 @@ pub fn run_picker(r: &mut Recorder, target_idx: usize) -> anyhow::Result<()> {
     r.dwell(PICKER_STARTUP, ms(100))?;
 
     // Overshoot by three to demo navigation, pause, scroll back.
-    r.keys(Key::Down, PICKER_DOWN_PER_KEY, target_idx + 3)?;
+    r.keys(Key::Down, PICKER_NAV_PER_KEY, target_idx + 3)?;
     r.dwell(PICKER_OVERSHOOT, ms(100))?;
-    r.keys(Key::Up, PICKER_UP_PER_KEY, 3)?;
+    r.keys(Key::Up, PICKER_NAV_PER_KEY, 3)?;
     r.dwell(PICKER_HOLD, ms(100))?;
     r.key(Key::Enter, PICKER_COMMIT_AFTER)?;
     r.dwell(PICKER_DIGEST, ms(100))?;
