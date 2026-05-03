@@ -1,4 +1,4 @@
-.PHONY: setup build build-image render demo demo-par demo-all demo-all-par demo-readme demo-web smoke picker cli cd-hook custom-theme bench-tiny bench-churn bench-subloops bench-subloops-par bench all-scenes verify verify-all clean
+.PHONY: setup build build-image render demo demo-parallel demo-all demo-all-parallel demo-readme demo-web smoke picker cli cd-hook custom-theme bench-tiny bench-churn bench-subloops bench-subloops-parallel bench all-scenes verify verify-all clean
 
 SCENE     ?= demo_full
 CAST       = assets/$(SCENE).cast
@@ -42,9 +42,9 @@ demo: build build-image render
 # instead of the sum (~46s sequential).
 #
 # Override OUT_EXT and FONT_SIZE for high-res variants:
-#   make demo-par                       # default GIF, FONT_SIZE=14
-#   make demo-par OUT_EXT=.mp4 FONT_SIZE=28
-demo-par: build build-image
+#   make demo-parallel                       # default GIF, FONT_SIZE=14
+#   make demo-parallel OUT_EXT=.mp4 FONT_SIZE=28
+demo-parallel: build build-image
 	@echo "=== parallel record: 4 demo subloops ==="
 	@printf '0\n1\n2\n3\n' | \
 		xargs -P 4 -I{} ./target/release/demo_full \
@@ -71,8 +71,8 @@ demo-par: build build-image
 # in parallel. Saves duplicate paint work and lets the two encoders
 # share CPU cores via parallel ffmpeg invocations.
 #
-# Pairs with demo-par's parallel record. Full marketing render flow:
-#   make demo-all-par  →  parallel record + stitch + paint + parallel encode
+# Pairs with demo-parallel's parallel record. Full marketing render flow:
+#   make demo-all-parallel  →  parallel record + stitch + paint + parallel encode
 demo-all: SCENE=demo_full
 demo-all: FONT_SIZE=28
 demo-all: build build-image
@@ -86,7 +86,7 @@ demo-all: build build-image
 	./target/release/verify $(SCENE) --snapshots-dir assets/snapshots
 	@echo "wrote assets/$(SCENE).mp4 + assets/$(SCENE).gif"
 
-demo-all-par: build build-image
+demo-all-parallel: build build-image
 	@echo "=== parallel record: 4 demo subloops ==="
 	@printf '0\n1\n2\n3\n' | \
 		xargs -P 4 -I{} ./target/release/demo_full \
@@ -176,9 +176,9 @@ bench-subloops: build build-image render
 # the slowest single-subloop record (~5s) instead of N times that.
 #
 # This is the proof-of-concept for the same parallelization applied
-# to demo_full. Today bench-subloops takes ~40s; bench-subloops-par
+# to demo_full. Today bench-subloops takes ~40s; bench-subloops-parallel
 # should land closer to ~10s.
-bench-subloops-par: build build-image
+bench-subloops-parallel: build build-image
 	@echo "=== parallel record: 4 subloops ==="
 	@printf '0\n1\n2\n3\n' | \
 		xargs -P 4 -I{} ./target/release/bench_subloops \

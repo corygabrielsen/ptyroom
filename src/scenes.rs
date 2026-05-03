@@ -129,12 +129,11 @@ pub fn run_preamble(r: &mut Recorder) -> anyhow::Result<()> {
 /// # Errors
 /// Any [`Recorder`] IO error.
 pub fn run_picker(r: &mut Recorder, target_idx: usize) -> anyhow::Result<()> {
-    line(r, "# pick interactively", ms(28), ms(300), ms(700))?;
+    line(r, "# pick interactively", ms(28), ms(0), ms(0))?;
 
-    // Type "tint", then pause so the viewer can read it before invocation.
+    // Type "tint" and fire immediately — picker opening IS the beat.
     r.type_text("tint", ms(80))?;
-    r.dwell(ms(700), ms(100))?;
-    r.key(Key::Enter, ms(400))?;
+    r.key(Key::Enter, ms(0))?;
     // Picker startup dwell. Was 900ms but ^[[B started leaking into the
     // top-left of the alt-screen buffer and into the post-exit prompt
     // line — bash was still echoing the down-arrow keystrokes because
@@ -163,7 +162,7 @@ pub fn run_picker(r: &mut Recorder, target_idx: usize) -> anyhow::Result<()> {
 /// # Errors
 /// Any [`Recorder`] IO error.
 pub fn run_cli(r: &mut Recorder) -> anyhow::Result<()> {
-    line(r, "# apply by name", ms(24), ms(300), ms(700))?;
+    line(r, "# apply by name", ms(24), ms(0), ms(0))?;
     // Three themes: dracula (dark purple) → solarized-light (cream) →
     // monokai (classic dark with vivid accents). Three is the rule-of-
     // three rhythm — completes the "you can pick anything by name" beat
@@ -188,7 +187,7 @@ pub fn run_cli(r: &mut Recorder) -> anyhow::Result<()> {
 /// # Errors
 /// Any [`Recorder`] IO error.
 pub fn run_cd_hook(r: &mut Recorder) -> anyhow::Result<()> {
-    line(r, "# auto-apply on cd", ms(24), ms(300), ms(600))?;
+    line(r, "# auto-apply on cd", ms(24), ms(0), ms(0))?;
     line(r, "eval \"$(tint hook bash)\"", ms(24), ms(300), ms(600))?;
     line(r, "cd /tmp", ms(24), ms(250), ms(300))?;
 
@@ -227,7 +226,7 @@ pub fn run_cd_hook(r: &mut Recorder) -> anyhow::Result<()> {
 /// # Errors
 /// Any [`Recorder`] IO error.
 pub fn run_custom_theme(r: &mut Recorder) -> anyhow::Result<()> {
-    line(r, "# bring your own theme", ms(24), ms(300), ms(900))?;
+    line(r, "# bring your own theme", ms(24), ms(0), ms(0))?;
     line(r, "mkdir -p ~/.config/tint/themes",
          ms(24), ms(250), ms(300))?;
 

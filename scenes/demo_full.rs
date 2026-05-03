@@ -17,7 +17,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use tint_recorder::recorder::{Recorder, RecorderConfig};
+use tint_recorder::recorder::{Key, Recorder, RecorderConfig};
 use tint_recorder::scenes::{
     blank, line, lookup_picker_idx, ms, run_cd_hook, run_cli, run_custom_theme, run_picker,
 };
@@ -69,13 +69,17 @@ fn run_subloop(
     feature(r)?;
     blank(r, ms(0))?;
     line(r, "tint reset", ms(35), ms(0), ms(0))?;
-    blank(r, ms(0))?;
-    // 100ms post-clear beat — applies at every subloop boundary, including
-    // the loop wrap (the last subloop's beat IS the loop tail). Keeping
-    // the value identical at every seam preserves the loop-wrap-is-
-    // invisible invariant; the only thing the beat changes is the
-    // breath-on-cleared-screen duration.
-    line(r, "clear", ms(50), ms(0), ms(100))?;
+    // No blank between reset and clear — they sit on subsequent prompt
+    // lines so the viewer reads the wrap-up as one tight pair.
+    // Type `clear` but pause for a beat with the word visible on the
+    // prompt before pressing Enter. Lets the viewer register what's
+    // about to happen — the "you've seen everything; clearing now"
+    // moment — instead of `clear` flashing past as the screen wipes
+    // simultaneously. Identical timing at every subloop boundary
+    // (including the loop wrap), so the wrap stays indistinguishable.
+    r.type_text("clear", ms(50))?;
+    r.dwell(ms(250), ms(100))?;
+    r.key(Key::Enter, ms(0))?;
     Ok(())
 }
 
