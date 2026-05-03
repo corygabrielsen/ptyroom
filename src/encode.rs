@@ -31,6 +31,12 @@ pub struct EncodeRequest {
     pub timing: Vec<TimingEntry>,
     pub out_gif: PathBuf,
     pub fps: u32,
+    /// Optional output width in pixels. When set, ffmpeg's lanczos scale
+    /// filter resizes frames to this width preserving aspect ratio
+    /// (height auto-computed). Used to render a single high-resolution
+    /// frame set into multiple output sizes (e.g. paint at FONT_SIZE=28
+    /// once, encode native MP4 + scaled-down GIF for the README).
+    pub width: Option<u32>,
 }
 
 /// Render the GIF. Returns `Ok(())` on ffmpeg success; the caller prints
@@ -77,10 +83,15 @@ fn encode_gif(req: &EncodeRequest, concat_path: &Path) -> anyhow::Result<()> {
     use std::fmt::Write as _;
 
     let mut filter = String::new();
+    write!(filter, "fps={fps}", fps = req.fps)?;
+    if let Some(w) = req.width {
+        // -2 keeps the aspect ratio and rounds height to an even number
+        // (required by yuv420p; harmless for GIF).
+        write!(filter, ",scale={w}:-2:flags=lanczos")?;
+    }
     write!(
         filter,
-        "fps={fps},split[a][b];[a]palettegen=stats_mode=full[p];[b][p]paletteuse=dither=bayer:bayer_scale=5",
-        fps = req.fps,
+        ",split[a][b];[a]palettegen=stats_mode=full[p];[b][p]paletteuse=dither=bayer:bayer_scale=5",
     )?;
     let mut cmd = Command::new("ffmpeg");
     cmd.args(["-y", "-f", "concat", "-safe", "0", "-i"])
@@ -106,7 +117,11 @@ fn encode_mp4(req: &EncodeRequest, concat_path: &Path) -> anyhow::Result<()> {
     use std::fmt::Write as _;
 
     let mut filter = String::new();
-    write!(filter, "fps={fps},format=yuv420p", fps = req.fps)?;
+    write!(filter, "fps={fps}", fps = req.fps)?;
+    if let Some(w) = req.width {
+        write!(filter, ",scale={w}:-2:flags=lanczos")?;
+    }
+    write!(filter, ",format=yuv420p")?;
     let mut cmd = Command::new("ffmpeg");
     cmd.args(["-y", "-f", "concat", "-safe", "0", "-i"])
        .arg(concat_path)

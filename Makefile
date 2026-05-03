@@ -1,4 +1,4 @@
-.PHONY: setup build build-image render demo demo-par demo-readme demo-web smoke picker cli cd-hook custom-theme bench-tiny bench-churn bench-subloops bench-subloops-par bench all-scenes verify verify-all clean
+.PHONY: setup build build-image render demo demo-par demo-all demo-all-par demo-readme demo-web smoke picker cli cd-hook custom-theme bench-tiny bench-churn bench-subloops bench-subloops-par bench all-scenes verify verify-all clean
 
 SCENE     ?= demo_full
 CAST       = assets/$(SCENE).cast
@@ -64,6 +64,51 @@ demo-par: build build-image
 	./target/release/encode assets/frames assets/snapshots/timing.json assets/demo_full$(OUT_EXT)
 	./target/release/verify demo_full --snapshots-dir assets/snapshots
 	@echo "wrote assets/demo_full$(OUT_EXT)"
+
+# Render BOTH the MP4 (for the website) and the GIF (for the README)
+# from a single set of paint frames. Paint at FONT_SIZE=28 once
+# (1144x624), then encode MP4 native + GIF scaled-down to width=824
+# in parallel. Saves duplicate paint work and lets the two encoders
+# share CPU cores via parallel ffmpeg invocations.
+#
+# Pairs with demo-par's parallel record. Full marketing render flow:
+#   make demo-all-par  →  parallel record + stitch + paint + parallel encode
+demo-all: SCENE=demo_full
+demo-all: FONT_SIZE=28
+demo-all: build build-image
+	./target/release/$(SCENE) --cast assets/$(SCENE).cast
+	rm -rf assets/snapshots assets/frames
+	./node_modules/.bin/tsx ./renderer/snapshot.ts assets/$(SCENE).cast assets/snapshots
+	./target/release/paint --font-size $(FONT_SIZE) assets/snapshots assets/frames
+	./target/release/encode assets/frames assets/snapshots/timing.json assets/$(SCENE).mp4 & \
+	./target/release/encode assets/frames assets/snapshots/timing.json assets/$(SCENE).gif --width 824 & \
+	wait
+	./target/release/verify $(SCENE) --snapshots-dir assets/snapshots
+	@echo "wrote assets/$(SCENE).mp4 + assets/$(SCENE).gif"
+
+demo-all-par: build build-image
+	@echo "=== parallel record: 4 demo subloops ==="
+	@printf '0\n1\n2\n3\n' | \
+		xargs -P 4 -I{} ./target/release/demo_full \
+		    --subloop-only {} \
+		    --cast assets/demo_full_{}.cast
+	@echo "=== stitch ==="
+	./target/release/stitch \
+	    --out assets/demo_full.cast \
+	    assets/demo_full_0.cast \
+	    assets/demo_full_1.cast \
+	    assets/demo_full_2.cast \
+	    assets/demo_full_3.cast
+	@echo "=== paint at FONT_SIZE=28 ==="
+	rm -rf assets/snapshots assets/frames
+	./node_modules/.bin/tsx ./renderer/snapshot.ts assets/demo_full.cast assets/snapshots
+	./target/release/paint --font-size 28 assets/snapshots assets/frames
+	@echo "=== parallel encode: mp4 + scaled gif ==="
+	./target/release/encode assets/frames assets/snapshots/timing.json assets/demo_full.mp4 & \
+	./target/release/encode assets/frames assets/snapshots/timing.json assets/demo_full.gif --width 824 & \
+	wait
+	./target/release/verify demo_full --snapshots-dir assets/snapshots
+	@echo "wrote assets/demo_full.mp4 + assets/demo_full.gif"
 
 # Marketing-quality renders. Both use FONT_SIZE bumps so cell metrics
 # scale up proportionally. Dimensions are 80 cols × 20 rows × cell.

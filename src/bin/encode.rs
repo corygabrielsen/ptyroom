@@ -16,11 +16,17 @@ struct Args {
     frames_dir: PathBuf,
     /// Path to `timing.json` written by the snapshot stage.
     timing_json: PathBuf,
-    /// Output GIF path.
-    out_gif: PathBuf,
-    /// Output GIF frame rate.
+    /// Output path. Format is detected from the extension (.gif or .mp4).
+    out_path: PathBuf,
+    /// Output frame rate.
     #[arg(long, default_value_t = 25)]
     fps: u32,
+    /// Optional output width in pixels. When set, frames are scaled
+    /// (lanczos) to this width with height auto-computed to preserve
+    /// aspect ratio. Used by the demo-all flow to encode a single
+    /// high-resolution frame set into multiple output sizes.
+    #[arg(long)]
+    width: Option<u32>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -30,8 +36,9 @@ fn main() -> anyhow::Result<()> {
     encode(&EncodeRequest {
         frames_dir: args.frames_dir,
         timing,
-        out_gif: args.out_gif,
+        out_gif: args.out_path,
         fps: args.fps,
+        width: args.width,
     })?;
     Ok(())
 }
