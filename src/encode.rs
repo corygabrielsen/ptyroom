@@ -44,11 +44,22 @@ pub fn encode(req: &EncodeRequest) -> anyhow::Result<()> {
         anyhow::bail!("encode: timing has no frames");
     }
 
-    let concat_path = req.frames_dir.parent()
-        .ok_or_else(|| anyhow::anyhow!("frames_dir has no parent: {}", req.frames_dir.display()))?
+    // Canonicalize frames_dir so the concat file's `file '...'` entries
+    // are absolute paths. ffmpeg's concat demuxer resolves relative
+    // entries against the concat file's directory, not the current
+    // working directory — making any relative input path order-fragile
+    // depending on whether we're running inside the container (where
+    // cwd is /work and frames_dir is "/work/frames") or on the host
+    // (where cwd is the project root and frames_dir is "assets/frames").
+    let frames_dir = req.frames_dir.canonicalize()
+        .map_err(|e| anyhow::anyhow!("frames_dir does not exist or is unreadable: {}: {e}",
+                                      req.frames_dir.display()))?;
+
+    let concat_path = frames_dir.parent()
+        .ok_or_else(|| anyhow::anyhow!("frames_dir has no parent: {}", frames_dir.display()))?
         .join("concat.txt");
 
-    let concat_text = build_concat(&req.frames_dir, &req.timing)?;
+    let concat_text = build_concat(&frames_dir, &req.timing)?;
     std::fs::write(&concat_path, concat_text)?;
 
     let ext = req.out_gif.extension()
@@ -82,6 +93,15 @@ fn encode_gif(req: &EncodeRequest, concat_path: &Path) -> anyhow::Result<()> {
 /// H.264 MP4 with browser-friendly defaults: yuv420p (universal compat),
 /// faststart (moov atom upfront for progressive playback), crf 20 (visually
 /// lossless for terminal content while staying small — typically <500KB).
+///
+/// Pacing knobs:
+/// - `-preset medium` instead of slow: terminal content is mostly static
+///   text, so the slower presets buy little quality but cost ~30% more
+///   wall time. Medium is the libx264 default and produces visually
+///   indistinguishable output for our content.
+/// - `-tune stillimage` biases the encoder toward static-image content,
+///   which matches a screen-recording workload (long stretches of
+///   identical frames).
 fn encode_mp4(req: &EncodeRequest, concat_path: &Path) -> anyhow::Result<()> {
     use std::fmt::Write as _;
 
@@ -91,7 +111,7 @@ fn encode_mp4(req: &EncodeRequest, concat_path: &Path) -> anyhow::Result<()> {
     cmd.args(["-y", "-f", "concat", "-safe", "0", "-i"])
        .arg(concat_path)
        .args(["-vf", &filter])
-       .args(["-c:v", "libx264", "-crf", "20", "-preset", "slow"])
+       .args(["-c:v", "libx264", "-crf", "20", "-preset", "medium", "-tune", "stillimage"])
        .args(["-profile:v", "high", "-level", "4.0"])
        .args(["-movflags", "+faststart"])
        .arg(&req.out_gif);

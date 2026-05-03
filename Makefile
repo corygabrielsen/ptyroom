@@ -24,14 +24,11 @@ build:
 	            --bin picker --bin cli --bin cd_hook --bin custom_theme \
 	            --bin bench_tiny --bin bench_churn --bin bench_subloops
 
-# Build the demo image. Includes its own Rust builder stage so the
-# in-container binaries (paint/encode/inspect/verify) match exactly.
-# Build context is a tar stream — no temp dir.
+# Build the recording-only image. Just Dockerfile + the tint script —
+# everything post-recording (snapshot replay, paint, encode, verify)
+# runs on the host. Build context is a tar stream — no temp dir.
 build-image:
-	tar -c Dockerfile render-cast.sh \
-	       package.json package-lock.json tsconfig.json \
-	       renderer src scenes assets Cargo.toml Cargo.lock \
-	       -C $(dir $(TINT_PATH)) $(notdir $(TINT_PATH)) | \
+	tar -c Dockerfile -C $(dir $(TINT_PATH)) $(notdir $(TINT_PATH)) | \
 		docker build -t $(IMAGE) -
 
 demo: SCENE=demo_full
@@ -106,13 +103,19 @@ all-scenes: build build-image
 	$(MAKE) render SCENE=custom_theme
 	$(MAKE) render SCENE=demo_full
 
-# Two phases: scene binary on host (drives docker for the bash session,
-# writes the cast to ./assets/), then docker mounts ./assets/ and runs
-# render-cast.sh which calls tint-paint, tint-encode, tint-verify.
+# Two phases. Recording stage runs the scene binary on the host, which
+# drives docker for the bash session and writes the cast to assets/.
+# Post-recording (snapshot replay → paint → encode → verify) runs
+# entirely on the host: tsx + target/release/ binaries + ffmpeg are
+# all available without docker, so eliminating the second container
+# saves the docker run startup overhead per render.
 render:
 	./target/release/$(SCENE) --cast $(CAST)
-	docker run --rm -v $(CURDIR)/assets:/work -e FONT_SIZE=$(FONT_SIZE) $(IMAGE) \
-		render-cast.sh $(SCENE) /work/$(SCENE).cast /work/$(SCENE)$(OUT_EXT)
+	rm -rf assets/snapshots assets/frames
+	./node_modules/.bin/tsx ./renderer/snapshot.ts $(CAST) assets/snapshots
+	./target/release/paint --font-size $(FONT_SIZE) assets/snapshots assets/frames
+	./target/release/encode assets/frames assets/snapshots/timing.json $(OUT)
+	./target/release/verify $(SCENE) --snapshots-dir assets/snapshots
 	@echo "wrote $(OUT)"
 
 # Manual verify (rerun against existing snapshots).
