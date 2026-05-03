@@ -1,7 +1,14 @@
 //! CLI: snapshots dir → frames dir of PNGs.
+//!
+//! Frames are painted in parallel. Each frame is independent of every
+//! other (load snapshot, paint to RGB image, save PNG), so rayon's
+//! par_iter scales linearly with available cores. The painter struct
+//! is `Sync` (font + scale + immutable metrics), shareable across
+//! worker threads without locking.
 use std::path::PathBuf;
 
 use clap::Parser;
+use rayon::prelude::*;
 use tint_recorder::paint::{FONT_BYTES, PaintConfig, Painter};
 use tint_recorder::snapshot::Snapshot;
 use tint_recorder::verify::list_numbered_snapshots;
@@ -29,12 +36,15 @@ fn main() -> anyhow::Result<()> {
     let entries = list_numbered_snapshots(&args.snap_dir)?;
     let m = painter.metrics();
     println!("painting {} frames at cell {}x{}", entries.len(), m.width, m.height);
-    for path in entries {
-        let snap = Snapshot::load(&path)?;
+
+    entries.par_iter().try_for_each(|path| -> anyhow::Result<()> {
+        let snap = Snapshot::load(path)?;
         let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
         let out = args.out_dir.join(format!("{stem}.png"));
         painter.save_png(&snap, &out)?;
-    }
+        Ok(())
+    })?;
+
     println!("wrote PNGs to {}", args.out_dir.display());
     Ok(())
 }
