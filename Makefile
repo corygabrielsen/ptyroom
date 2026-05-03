@@ -1,10 +1,16 @@
-.PHONY: setup build build-image render demo smoke picker cli cd-hook custom-theme all-scenes verify verify-all clean
+.PHONY: setup build build-image render demo demo-readme demo-web smoke picker cli cd-hook custom-theme all-scenes verify verify-all clean
 
 SCENE     ?= demo_full
 CAST       = assets/$(SCENE).cast
-GIF        = assets/$(SCENE).gif
+OUT_EXT   ?= .gif
+OUT        = assets/$(SCENE)$(OUT_EXT)
 IMAGE     := tint-recorder:demo
 TINT_PATH ?= /home/cory/code/tint/tint
+# Painter font size in pixels. Cell width and height scale linearly.
+# Default 14 → 7×16 cells → 80×20 grid renders at 584×344 (good for dev
+# loops; smaller files; not crisp on HiDPI). Marketing targets bump this
+# in the demo-readme / demo-web targets below.
+FONT_SIZE ?= 14
 
 # Host requirements: cargo (build scene binaries) + docker (run them).
 setup:
@@ -29,6 +35,25 @@ build-image:
 
 demo: SCENE=demo_full
 demo: build build-image render
+
+# Marketing-quality renders. Both use FONT_SIZE bumps so cell metrics
+# scale up proportionally. Dimensions are 80 cols × 20 rows × cell.
+#
+# - demo-readme: GIF at FONT_SIZE=20 → ~824×464. Fits the GitHub
+#   README content area (~924px) without scaling, stays under the
+#   per-image size budget, and is crisp at 1× DPR.
+# - demo-web:    MP4 at FONT_SIZE=28 → ~1144×624 (≈2× the dev default).
+#   MP4's compression handles this resolution at <500KB; the same
+#   content as a GIF would be several MB. Crisp on HiDPI displays.
+demo-readme: SCENE=demo_full
+demo-readme: FONT_SIZE=20
+demo-readme: OUT_EXT=.gif
+demo-readme: build build-image render
+
+demo-web: SCENE=demo_full
+demo-web: FONT_SIZE=28
+demo-web: OUT_EXT=.mp4
+demo-web: build build-image render
 
 smoke: SCENE=smoke
 smoke: build build-image render
@@ -59,9 +84,9 @@ all-scenes: build build-image
 # render-cast.sh which calls tint-paint, tint-encode, tint-verify.
 render:
 	./target/release/$(SCENE) --cast $(CAST)
-	docker run --rm -v $(CURDIR)/assets:/work $(IMAGE) \
-		render-cast.sh $(SCENE) /work/$(SCENE).cast /work/$(SCENE).gif
-	@echo "wrote $(GIF)"
+	docker run --rm -v $(CURDIR)/assets:/work -e FONT_SIZE=$(FONT_SIZE) $(IMAGE) \
+		render-cast.sh $(SCENE) /work/$(SCENE).cast /work/$(SCENE)$(OUT_EXT)
+	@echo "wrote $(OUT)"
 
 # Manual verify (rerun against existing snapshots).
 verify:
@@ -91,4 +116,4 @@ verify-all: build build-image
 
 clean:
 	rm -rf assets/snapshots assets/frames assets/concat.txt
-	rm -f assets/*.cast assets/*.gif
+	rm -f assets/*.cast assets/*.gif assets/*.mp4

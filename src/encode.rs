@@ -40,8 +40,6 @@ pub struct EncodeRequest {
 /// Empty timing list, missing PNG frame, IO error writing the concat file,
 /// or non-zero exit status from ffmpeg.
 pub fn encode(req: &EncodeRequest) -> anyhow::Result<()> {
-    use std::fmt::Write as _;
-
     if req.timing.is_empty() {
         anyhow::bail!("encode: timing has no frames");
     }
@@ -53,6 +51,20 @@ pub fn encode(req: &EncodeRequest) -> anyhow::Result<()> {
     let concat_text = build_concat(&req.frames_dir, &req.timing)?;
     std::fs::write(&concat_path, concat_text)?;
 
+    let ext = req.out_gif.extension()
+        .and_then(|s| s.to_str())
+        .map(str::to_ascii_lowercase);
+    match ext.as_deref() {
+        Some("gif") => encode_gif(req, &concat_path),
+        Some("mp4") => encode_mp4(req, &concat_path),
+        Some(other) => anyhow::bail!("encode: unsupported output extension '.{other}' (expected .gif or .mp4)"),
+        None => anyhow::bail!("encode: output path has no extension: {}", req.out_gif.display()),
+    }
+}
+
+fn encode_gif(req: &EncodeRequest, concat_path: &Path) -> anyhow::Result<()> {
+    use std::fmt::Write as _;
+
     let mut filter = String::new();
     write!(
         filter,
@@ -61,9 +73,32 @@ pub fn encode(req: &EncodeRequest) -> anyhow::Result<()> {
     )?;
     let mut cmd = Command::new("ffmpeg");
     cmd.args(["-y", "-f", "concat", "-safe", "0", "-i"])
-       .arg(&concat_path)
+       .arg(concat_path)
        .args(["-vf", &filter, "-loop", "0"])
        .arg(&req.out_gif);
+    run_ffmpeg(&mut cmd)
+}
+
+/// H.264 MP4 with browser-friendly defaults: yuv420p (universal compat),
+/// faststart (moov atom upfront for progressive playback), crf 20 (visually
+/// lossless for terminal content while staying small — typically <500KB).
+fn encode_mp4(req: &EncodeRequest, concat_path: &Path) -> anyhow::Result<()> {
+    use std::fmt::Write as _;
+
+    let mut filter = String::new();
+    write!(filter, "fps={fps},format=yuv420p", fps = req.fps)?;
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args(["-y", "-f", "concat", "-safe", "0", "-i"])
+       .arg(concat_path)
+       .args(["-vf", &filter])
+       .args(["-c:v", "libx264", "-crf", "20", "-preset", "slow"])
+       .args(["-profile:v", "high", "-level", "4.0"])
+       .args(["-movflags", "+faststart"])
+       .arg(&req.out_gif);
+    run_ffmpeg(&mut cmd)
+}
+
+fn run_ffmpeg(cmd: &mut Command) -> anyhow::Result<()> {
     eprintln!("$ {cmd:?}");
     let status = cmd.status()?;
     if !status.success() {
