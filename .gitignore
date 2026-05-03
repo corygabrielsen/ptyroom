@@ -6,7 +6,9 @@ node_modules/
 
 # Generated demo artifacts
 assets/*.gif
+assets/*.mp4
 assets/*.cast
+assets/*.png
 assets/snapshots/
 assets/frames/
 assets/concat.txt
