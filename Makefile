@@ -1,4 +1,4 @@
-.PHONY: setup build build-image render demo demo-readme demo-web smoke picker cli cd-hook custom-theme all-scenes verify verify-all clean
+.PHONY: setup build build-image render demo demo-readme demo-web smoke picker cli cd-hook custom-theme bench-tiny bench-churn bench-subloops bench all-scenes verify verify-all clean
 
 SCENE     ?= demo_full
 CAST       = assets/$(SCENE).cast
@@ -21,7 +21,8 @@ setup:
 # rendering happens inside the image.
 build:
 	cargo build --release --bin smoke --bin demo_full \
-	            --bin picker --bin cli --bin cd_hook --bin custom_theme
+	            --bin picker --bin cli --bin cd_hook --bin custom_theme \
+	            --bin bench_tiny --bin bench_churn --bin bench_subloops
 
 # Build the demo image. Includes its own Rust builder stage so the
 # in-container binaries (paint/encode/inspect/verify) match exactly.
@@ -70,6 +71,32 @@ cd-hook: build build-image render
 
 custom-theme: SCENE=custom_theme
 custom-theme: build build-image render
+
+# Benchmark scenes for measuring pipeline performance. All use the
+# default FONT_SIZE so timings reflect the dev-loop render path.
+#
+# - bench-tiny: ~3s of cast time, isolates fixed pipeline overhead
+#   (tsx startup, paint init, ffmpeg cold-start, docker run setup).
+# - bench-churn: ~12s of rapid theme cycling, stresses per-frame work
+#   (palette diversity for GIF, inter-frame deltas for MP4).
+# - bench-subloops: 4 uniform subloops sequentially. Sequential
+#   baseline for the future parallelize-and-stitch refactor of the
+#   demo_full subloop pattern. Same shape as `make demo` but with
+#   uniform synthetic content so subloop count is the only variable.
+#
+# Use `time make bench-tiny` / `time make bench-churn` /
+# `time make bench-subloops` to see how each stage scales. `make
+# bench` runs all three back-to-back.
+bench-tiny: SCENE=bench_tiny
+bench-tiny: build build-image render
+
+bench-churn: SCENE=bench_churn
+bench-churn: build build-image render
+
+bench-subloops: SCENE=bench_subloops
+bench-subloops: build build-image render
+
+bench: bench-tiny bench-churn bench-subloops
 
 # Build everything once, then render every scene against the same image.
 all-scenes: build build-image

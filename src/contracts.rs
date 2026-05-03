@@ -14,6 +14,7 @@ use crate::verify::{
 pub const SCENES: &[&str] = &[
     "demo_full", "smoke",
     "picker", "cli", "cd_hook", "custom_theme",
+    "bench_tiny", "bench_churn", "bench_subloops",
 ];
 
 const fn rgb(r: u8, g: u8, b: u8) -> HexColor { HexColor::from_rgb(r, g, b) }
@@ -38,7 +39,10 @@ pub fn registry(scene: &str) -> Option<Contract> {
         "cli"          => Some(cli()),
         "cd_hook"      => Some(cd_hook()),
         "custom_theme" => Some(custom_theme()),
-        _              => None,
+        "bench_tiny"     => Some(open_contract("bench_tiny")),
+        "bench_churn"    => Some(open_contract("bench_churn")),
+        "bench_subloops" => Some(open_contract("bench_subloops")),
+        _                => None,
     }
 }
 

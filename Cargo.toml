@@ -40,6 +40,18 @@ path = "scenes/cd_hook.rs"
 name = "custom_theme"
 path = "scenes/custom_theme.rs"
 
+[[bin]]
+name = "bench_tiny"
+path = "scenes/bench_tiny.rs"
+
+[[bin]]
+name = "bench_churn"
+path = "scenes/bench_churn.rs"
+
+[[bin]]
+name = "bench_subloops"
+path = "scenes/bench_subloops.rs"
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
