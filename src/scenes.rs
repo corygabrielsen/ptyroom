@@ -23,8 +23,76 @@ pub const CUSTOM_THEME_LINE: &str = concat!(
     "#003311:#00bb22:#33ff44:#bbff44:#006644:#00cc66:#44ff77:#ddffdd",
 );
 
-#[must_use] 
+#[must_use]
 pub const fn ms(n: u64) -> Duration { Duration::from_millis(n) }
+
+// ─── Pacing knobs ─────────────────────────────────────────────────────
+//
+// All hand-tuned timing values for the demo composition live here as
+// named constants instead of scattered `ms(…)` calls. Three axes:
+//
+//   1. Typing speeds   (per-char) — character cadence
+//   2. Beats           (full-second order) — pre/post-Enter dwells
+//   3. Picker          (specific to the picker scene's mechanics)
+//
+// Plus one infrastructure value (BASH_SETTLE_WALL) and one loop-seam
+// constraint that intentionally stays at zero (POST_CLEAR_INTRA = 0).
+//
+// To tweak the demo's feel, reach for one of these by name; e.g.
+// "feels rushed when bg flips" → bump PAYLOAD_SETTLE.
+
+// Typing speeds (per character).
+/// Long mechanical content (the 18-color matrix theme spec).
+pub const TYPE_FAST: Duration = ms(11);
+/// Plumbing commands and "# auto-apply on cd"-style headers.
+pub const TYPE_NORMAL: Duration = ms(24);
+/// Preambles and "# pick interactively"-style intro lines.
+pub const TYPE_INTRO: Duration = ms(28);
+/// Payload commands the viewer is meant to read (`tint <theme>`, `tint reset`).
+pub const TYPE_PAYLOAD: Duration = ms(35);
+/// `clear` — deliberately weighty before the screen wipes.
+pub const TYPE_CLEAR: Duration = ms(50);
+/// `tint` when invoking the picker — slow build before the reveal.
+pub const TYPE_PICKER_INVOKE: Duration = ms(80);
+
+// Beats (Enter dwells).
+/// Pre-Enter on bg-flip commands — viewer registers what's about to happen.
+pub const PAYLOAD_PRE: Duration = ms(300);
+/// Post-Enter on bg-flip commands — bg lands, viewer absorbs.
+pub const PAYLOAD_SETTLE: Duration = ms(1000);
+/// Post-Enter on the final feature's payload (the demo's climax).
+pub const CLIMAX_SETTLE: Duration = ms(1200);
+/// Pre-Enter on intermediate plumbing commands (mkdir, cd, eval).
+pub const PLUMB_PRE: Duration = ms(250);
+/// Post-Enter on intermediate plumbing commands.
+pub const PLUMB_SETTLE: Duration = ms(400);
+/// Pre-Enter on `clear` — "you've seen everything; clearing now" beat
+/// with the typed `clear` visible on the prompt.
+pub const CLEAR_REGISTER: Duration = ms(250);
+
+// Picker.
+/// Real-time wait for the picker process to claim stdin. Decreasing
+/// this risks `^[[B` leaking before the picker is ready.
+pub const PICKER_STARTUP: Duration = ms(1600);
+/// Post-accept dwell — longest because the picker did the most visual work.
+pub const PICKER_DIGEST: Duration = ms(2000);
+/// Dwell at overshoot before scrolling back to the target.
+pub const PICKER_OVERSHOOT: Duration = ms(500);
+/// Dwell on the selected target before the commit Enter.
+pub const PICKER_HOLD: Duration = ms(1000);
+/// Down-arrow cadence in the picker.
+pub const PICKER_DOWN_PER_KEY: Duration = ms(50);
+/// Up-arrow cadence — deliberately slower than down to feel decisive.
+pub const PICKER_UP_PER_KEY: Duration = ms(80);
+/// Post-Enter dwell on the commit keystroke (real-time the picker
+/// uses to write the chosen-bg OSC and exit alt-screen). Combined
+/// with PICKER_DIGEST, total post-commit time is 2.5s.
+pub const PICKER_COMMIT_AFTER: Duration = ms(500);
+
+// Infrastructure.
+/// Wall-time bash-echo settle at the start of every recording.
+/// Visible time is zero (invisible to the GIF).
+pub const BASH_SETTLE_WALL: Duration = ms(600);
 
 /// Type `text`, press Enter, dwell.
 ///
@@ -129,25 +197,20 @@ pub fn run_preamble(r: &mut Recorder) -> anyhow::Result<()> {
 /// # Errors
 /// Any [`Recorder`] IO error.
 pub fn run_picker(r: &mut Recorder, target_idx: usize) -> anyhow::Result<()> {
-    line(r, "# pick interactively", ms(28), ms(0), ms(0))?;
+    line(r, "# pick interactively", TYPE_INTRO, ms(0), ms(0))?;
 
     // Type "tint" and fire immediately — picker opening IS the beat.
-    r.type_text("tint", ms(80))?;
+    r.type_text("tint", TYPE_PICKER_INVOKE)?;
     r.key(Key::Enter, ms(0))?;
-    // Picker startup dwell. Was 900ms but ^[[B started leaking into the
-    // top-left of the alt-screen buffer and into the post-exit prompt
-    // line — bash was still echoing the down-arrow keystrokes because
-    // the picker process hadn't fully claimed stdin yet. Bumped to
-    // 1600ms with margin so the picker is reliably ready.
-    r.dwell(ms(1600), ms(100))?;
+    r.dwell(PICKER_STARTUP, ms(100))?;
 
     // Overshoot by three to demo navigation, pause, scroll back.
-    r.keys(Key::Down, ms(50), target_idx + 3)?;
-    r.dwell(ms(500), ms(100))?;
-    r.keys(Key::Up, ms(80), 3)?;
-    r.dwell(ms(1000), ms(100))?; // hold on the target so the preview registers
-    r.key(Key::Enter, ms(500))?;
-    r.dwell(ms(2000), ms(100))?; // digest beat on the chosen theme before the next act
+    r.keys(Key::Down, PICKER_DOWN_PER_KEY, target_idx + 3)?;
+    r.dwell(PICKER_OVERSHOOT, ms(100))?;
+    r.keys(Key::Up, PICKER_UP_PER_KEY, 3)?;
+    r.dwell(PICKER_HOLD, ms(100))?;
+    r.key(Key::Enter, PICKER_COMMIT_AFTER)?;
+    r.dwell(PICKER_DIGEST, ms(100))?;
     Ok(())
 }
 
@@ -162,14 +225,14 @@ pub fn run_picker(r: &mut Recorder, target_idx: usize) -> anyhow::Result<()> {
 /// # Errors
 /// Any [`Recorder`] IO error.
 pub fn run_cli(r: &mut Recorder) -> anyhow::Result<()> {
-    line(r, "# apply by name", ms(24), ms(0), ms(0))?;
+    line(r, "# apply by name", TYPE_NORMAL, ms(0), ms(0))?;
     // Three themes: dracula (dark purple) → solarized-light (cream) →
     // monokai (classic dark with vivid accents). Three is the rule-of-
     // three rhythm — completes the "you can pick anything by name" beat
     // without dragging. Sequence dark→light→dark gives visual contrast
     // each step instead of monotonically darkening or lightening.
     for theme in ["dracula", "solarized-light", "monokai"] {
-        line(r, &format!("tint {theme}"), ms(35), ms(300), ms(1000))?;
+        line(r, &format!("tint {theme}"), TYPE_PAYLOAD, PAYLOAD_PRE, PAYLOAD_SETTLE)?;
     }
     Ok(())
 }
@@ -187,9 +250,9 @@ pub fn run_cli(r: &mut Recorder) -> anyhow::Result<()> {
 /// # Errors
 /// Any [`Recorder`] IO error.
 pub fn run_cd_hook(r: &mut Recorder) -> anyhow::Result<()> {
-    line(r, "# auto-apply on cd", ms(24), ms(0), ms(0))?;
-    line(r, "eval \"$(tint hook bash)\"", ms(24), ms(300), ms(600))?;
-    line(r, "cd /tmp", ms(24), ms(250), ms(300))?;
+    line(r, "# auto-apply on cd", TYPE_NORMAL, ms(0), ms(0))?;
+    line(r, "eval \"$(tint hook bash)\"", TYPE_NORMAL, PLUMB_PRE, PLUMB_SETTLE)?;
+    line(r, "cd /tmp", TYPE_NORMAL, PLUMB_PRE, PLUMB_SETTLE)?;
 
     // First dir: write a .tint, cd in — bg should change to pale-sky-blue.
     // Generic foo/bar names instead of theme-suggestive names like
@@ -197,17 +260,17 @@ pub fn run_cd_hook(r: &mut Recorder) -> anyhow::Result<()> {
     // 'skyroom' is a thing tint understands") instead of the actual
     // mechanism (tint reads .tint from any directory you cd into).
     line(r, "mkdir foo && echo pale-sky-blue > foo/.tint",
-         ms(24), ms(250), ms(400))?;
-    line(r, "cd foo", ms(24), ms(300), ms(1000))?;
+         TYPE_NORMAL, PLUMB_PRE, PLUMB_SETTLE)?;
+    line(r, "cd foo", TYPE_NORMAL, PAYLOAD_PRE, PAYLOAD_SETTLE)?;
 
     // Second dir: same pattern with a contrasting theme (warm pale-yellow
     // vs cool pale-sky-blue). Two dirs instead of one because seeing the bg
     // change *twice* makes the mechanism unmistakable; one could be
     // coincidence.
-    line(r, "cd ..", ms(24), ms(250), ms(300))?;
+    line(r, "cd ..", TYPE_NORMAL, PLUMB_PRE, PLUMB_SETTLE)?;
     line(r, "mkdir bar && echo pale-yellow > bar/.tint",
-         ms(24), ms(250), ms(400))?;
-    line(r, "cd bar", ms(24), ms(300), ms(1000))?;
+         TYPE_NORMAL, PLUMB_PRE, PLUMB_SETTLE)?;
+    line(r, "cd bar", TYPE_NORMAL, PAYLOAD_PRE, PAYLOAD_SETTLE)?;
     Ok(())
 }
 
@@ -226,21 +289,21 @@ pub fn run_cd_hook(r: &mut Recorder) -> anyhow::Result<()> {
 /// # Errors
 /// Any [`Recorder`] IO error.
 pub fn run_custom_theme(r: &mut Recorder) -> anyhow::Result<()> {
-    line(r, "# bring your own theme", ms(24), ms(0), ms(0))?;
+    line(r, "# bring your own theme", TYPE_NORMAL, ms(0), ms(0))?;
     // Smooth typing through the whole "configure a theme" sequence: the
     // viewer doesn't need to absorb each intermediate command (mkdir,
     // heredoc start, color spec, EOF) — they're plumbing for the
     // payoff. The settle goes on `tint matrix` at the end.
-    line(r, "mkdir -p ~/.config/tint/themes", ms(24), ms(0), ms(0))?;
-    r.type_text("cat > ~/.config/tint/themes/matrix.theme <<EOF", ms(24))?;
+    line(r, "mkdir -p ~/.config/tint/themes", TYPE_NORMAL, ms(0), ms(0))?;
+    r.type_text("cat > ~/.config/tint/themes/matrix.theme <<EOF", TYPE_NORMAL)?;
     r.key(Key::Enter, ms(0))?;
-    r.type_text(CUSTOM_THEME_LINE, ms(11))?;
+    r.type_text(CUSTOM_THEME_LINE, TYPE_FAST)?;
     r.key(Key::Enter, ms(0))?;
-    r.type_text("EOF", ms(24))?;
+    r.type_text("EOF", TYPE_NORMAL)?;
     r.key(Key::Enter, ms(0))?;
 
-    // Apply the theme we just wrote. 1200ms settle for the demo finale.
-    line(r, "tint matrix", ms(32), ms(300), ms(1200))?;
+    // Apply the theme we just wrote — climax of the demo.
+    line(r, "tint matrix", TYPE_PAYLOAD, PAYLOAD_PRE, CLIMAX_SETTLE)?;
     Ok(())
 }
 

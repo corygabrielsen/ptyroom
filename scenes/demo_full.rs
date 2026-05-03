@@ -20,6 +20,7 @@ use clap::Parser;
 use tint_recorder::recorder::{Key, Recorder, RecorderConfig};
 use tint_recorder::scenes::{
     blank, line, lookup_picker_idx, ms, run_cd_hook, run_cli, run_custom_theme, run_picker,
+    BASH_SETTLE_WALL, CLEAR_REGISTER, TYPE_CLEAR, TYPE_INTRO, TYPE_PAYLOAD,
 };
 
 /// Theme the picker lands on. Cool/blue register reads better as the
@@ -64,11 +65,11 @@ fn run_subloop(
     // newline byte). Inlining the typing here (instead of calling the
     // run_preamble / run_reset / run_clear helpers, which carry their
     // own standalone-scene pacing) is intentional.
-    line(r, "# tint — terminal theme switcher", ms(28), ms(0), ms(0))?;
+    line(r, "# tint — terminal theme switcher", TYPE_INTRO, ms(0), ms(0))?;
     blank(r, ms(0))?;
     feature(r)?;
     blank(r, ms(0))?;
-    line(r, "tint reset", ms(35), ms(0), ms(0))?;
+    line(r, "tint reset", TYPE_PAYLOAD, ms(0), ms(0))?;
     // No blank between reset and clear — they sit on subsequent prompt
     // lines so the viewer reads the wrap-up as one tight pair.
     // Type `clear` but pause for a beat with the word visible on the
@@ -77,8 +78,8 @@ fn run_subloop(
     // moment — instead of `clear` flashing past as the screen wipes
     // simultaneously. Identical timing at every subloop boundary
     // (including the loop wrap), so the wrap stays indistinguishable.
-    r.type_text("clear", ms(50))?;
-    r.dwell(ms(250), ms(100))?;
+    r.type_text("clear", TYPE_CLEAR)?;
+    r.dwell(CLEAR_REGISTER, ms(100))?;
     r.key(Key::Enter, ms(0))?;
     Ok(())
 }
@@ -92,11 +93,11 @@ fn main() -> anyhow::Result<()> {
     // Bump if cd_hook clips.
     let mut r = Recorder::start(RecorderConfig { rows: 20, ..RecorderConfig::default() })?;
 
-    // Initial bash-echo settle. visible=0 so the 600ms wall-clock window
+    // Initial bash-echo settle. visible=0 so the wall-clock window
     // is invisible in the GIF. Required at the start of every recording
     // per the scenes.rs convention — without it, input bytes leak into
     // the top-left of the terminal.
-    r.dwell(ms(0), ms(600))?;
+    r.dwell(ms(0), BASH_SETTLE_WALL)?;
 
     // Order: cli → picker → cd-hook → custom-theme. cli first because
     // it's the fastest demonstration of the verb; picker is the visually
