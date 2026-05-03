@@ -42,18 +42,22 @@ pub const fn ms(n: u64) -> Duration { Duration::from_millis(n) }
 // "feels rushed when bg flips" → bump PAYLOAD_SETTLE.
 
 // Typing speeds (per character).
-/// Long mechanical content (the 18-color matrix theme spec).
-pub const TYPE_FAST: Duration = ms(11);
-/// Plumbing commands and "# auto-apply on cd"-style headers.
+//
+// One uniform speed for everything the viewer is meant to read. Variable
+// per-line speeds add a barely-perceptible "gravitational wave" feeling
+// — the viewer doesn't consciously notice, but the rhythm changing
+// mid-demo creates subtle discomfort. Narrative weight is carried by
+// the dwell beats (PAYLOAD_PRE, CLEAR_REGISTER, etc.), not by
+// individual lines typing slower or faster.
+//
+/// Long mechanical content the viewer isn't meant to read (the 18-color
+/// matrix theme spec). At TYPE_NORMAL the spec would take ~3s of
+/// uninteresting typing; TYPE_FAST cuts that to ~700ms.
+pub const TYPE_FAST: Duration = ms(6);
+/// All readable content: preambles, comments, plumbing, payload
+/// commands, `clear`, the picker-invoking `tint` — same rhythm
+/// everywhere.
 pub const TYPE_NORMAL: Duration = ms(24);
-/// Preambles and "# pick interactively"-style intro lines.
-pub const TYPE_INTRO: Duration = ms(28);
-/// Payload commands the viewer is meant to read (`tint <theme>`, `tint reset`).
-pub const TYPE_PAYLOAD: Duration = ms(35);
-/// `clear` — deliberately weighty before the screen wipes.
-pub const TYPE_CLEAR: Duration = ms(50);
-/// `tint` when invoking the picker — slow build before the reveal.
-pub const TYPE_PICKER_INVOKE: Duration = ms(80);
 
 // Beats (Enter dwells).
 /// Pre-Enter on bg-flip commands — viewer registers what's about to happen.
@@ -197,10 +201,10 @@ pub fn run_preamble(r: &mut Recorder) -> anyhow::Result<()> {
 /// # Errors
 /// Any [`Recorder`] IO error.
 pub fn run_picker(r: &mut Recorder, target_idx: usize) -> anyhow::Result<()> {
-    line(r, "# pick interactively", TYPE_INTRO, ms(0), ms(0))?;
+    line(r, "# pick interactively", TYPE_NORMAL, ms(0), ms(0))?;
 
     // Type "tint" and fire immediately — picker opening IS the beat.
-    r.type_text("tint", TYPE_PICKER_INVOKE)?;
+    r.type_text("tint", TYPE_NORMAL)?;
     r.key(Key::Enter, ms(0))?;
     r.dwell(PICKER_STARTUP, ms(100))?;
 
@@ -232,7 +236,7 @@ pub fn run_cli(r: &mut Recorder) -> anyhow::Result<()> {
     // without dragging. Sequence dark→light→dark gives visual contrast
     // each step instead of monotonically darkening or lightening.
     for theme in ["dracula", "solarized-light", "monokai"] {
-        line(r, &format!("tint {theme}"), TYPE_PAYLOAD, PAYLOAD_PRE, PAYLOAD_SETTLE)?;
+        line(r, &format!("tint {theme}"), TYPE_NORMAL, PAYLOAD_PRE, PAYLOAD_SETTLE)?;
     }
     Ok(())
 }
@@ -303,7 +307,7 @@ pub fn run_custom_theme(r: &mut Recorder) -> anyhow::Result<()> {
     r.key(Key::Enter, ms(0))?;
 
     // Apply the theme we just wrote — climax of the demo.
-    line(r, "tint matrix", TYPE_PAYLOAD, PAYLOAD_PRE, CLIMAX_SETTLE)?;
+    line(r, "tint matrix", TYPE_NORMAL, PAYLOAD_PRE, CLIMAX_SETTLE)?;
     Ok(())
 }
 

@@ -20,7 +20,7 @@ use clap::Parser;
 use tint_recorder::recorder::{Key, Recorder, RecorderConfig};
 use tint_recorder::scenes::{
     blank, line, lookup_picker_idx, ms, run_cd_hook, run_cli, run_custom_theme, run_picker,
-    BASH_SETTLE_WALL, CLEAR_REGISTER, TYPE_CLEAR, TYPE_INTRO, TYPE_PAYLOAD,
+    BASH_SETTLE_WALL, CLEAR_REGISTER, TYPE_NORMAL,
 };
 
 /// Theme the picker lands on. Cool/blue register reads better as the
@@ -65,11 +65,11 @@ fn run_subloop(
     // newline byte). Inlining the typing here (instead of calling the
     // run_preamble / run_reset / run_clear helpers, which carry their
     // own standalone-scene pacing) is intentional.
-    line(r, "# tint — terminal theme switcher", TYPE_INTRO, ms(0), ms(0))?;
+    line(r, "# tint — terminal theme switcher", TYPE_NORMAL, ms(0), ms(0))?;
     blank(r, ms(0))?;
     feature(r)?;
     blank(r, ms(0))?;
-    line(r, "tint reset", TYPE_PAYLOAD, ms(0), ms(0))?;
+    line(r, "tint reset", TYPE_NORMAL, ms(0), ms(0))?;
     // No blank between reset and clear — they sit on subsequent prompt
     // lines so the viewer reads the wrap-up as one tight pair.
     // Type `clear` but pause for a beat with the word visible on the
@@ -78,7 +78,7 @@ fn run_subloop(
     // moment — instead of `clear` flashing past as the screen wipes
     // simultaneously. Identical timing at every subloop boundary
     // (including the loop wrap), so the wrap stays indistinguishable.
-    r.type_text("clear", TYPE_CLEAR)?;
+    r.type_text("clear", TYPE_NORMAL)?;
     r.dwell(CLEAR_REGISTER, ms(100))?;
     r.key(Key::Enter, ms(0))?;
     Ok(())
