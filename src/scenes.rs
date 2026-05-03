@@ -143,7 +143,7 @@ pub fn run_picker(r: &mut Recorder, target_idx: usize) -> anyhow::Result<()> {
 
     // Overshoot by three to demo navigation, pause, scroll back.
     r.keys(Key::Down, ms(50), target_idx + 3)?;
-    r.dwell(ms(700), ms(100))?;
+    r.dwell(ms(500), ms(100))?;
     r.keys(Key::Up, ms(80), 3)?;
     r.dwell(ms(1000), ms(100))?; // hold on the target so the preview registers
     r.key(Key::Enter, ms(500))?;
@@ -169,7 +169,7 @@ pub fn run_cli(r: &mut Recorder) -> anyhow::Result<()> {
     // without dragging. Sequence dark→light→dark gives visual contrast
     // each step instead of monotonically darkening or lightening.
     for theme in ["dracula", "solarized-light", "monokai"] {
-        line(r, &format!("tint {theme}"), ms(35), ms(300), ms(900))?;
+        line(r, &format!("tint {theme}"), ms(35), ms(300), ms(1000))?;
     }
     Ok(())
 }
@@ -198,7 +198,7 @@ pub fn run_cd_hook(r: &mut Recorder) -> anyhow::Result<()> {
     // mechanism (tint reads .tint from any directory you cd into).
     line(r, "mkdir foo && echo pale-sky-blue > foo/.tint",
          ms(24), ms(250), ms(400))?;
-    line(r, "cd foo", ms(24), ms(300), ms(900))?;
+    line(r, "cd foo", ms(24), ms(300), ms(1000))?;
 
     // Second dir: same pattern with a contrasting theme (warm pale-yellow
     // vs cool pale-sky-blue). Two dirs instead of one because seeing the bg
@@ -207,7 +207,7 @@ pub fn run_cd_hook(r: &mut Recorder) -> anyhow::Result<()> {
     line(r, "cd ..", ms(24), ms(250), ms(300))?;
     line(r, "mkdir bar && echo pale-yellow > bar/.tint",
          ms(24), ms(250), ms(400))?;
-    line(r, "cd bar", ms(24), ms(300), ms(900))?;
+    line(r, "cd bar", ms(24), ms(300), ms(1000))?;
     Ok(())
 }
 
@@ -227,22 +227,17 @@ pub fn run_cd_hook(r: &mut Recorder) -> anyhow::Result<()> {
 /// Any [`Recorder`] IO error.
 pub fn run_custom_theme(r: &mut Recorder) -> anyhow::Result<()> {
     line(r, "# bring your own theme", ms(24), ms(0), ms(0))?;
-    line(r, "mkdir -p ~/.config/tint/themes",
-         ms(24), ms(250), ms(300))?;
-
-    // Heredoc into the themes dir. Body line types fast since it's a
-    // mechanical color spec, not a thing the viewer is meant to read.
+    // Smooth typing through the whole "configure a theme" sequence: the
+    // viewer doesn't need to absorb each intermediate command (mkdir,
+    // heredoc start, color spec, EOF) — they're plumbing for the
+    // payoff. The settle goes on `tint matrix` at the end.
+    line(r, "mkdir -p ~/.config/tint/themes", ms(24), ms(0), ms(0))?;
     r.type_text("cat > ~/.config/tint/themes/matrix.theme <<EOF", ms(24))?;
-    r.key(Key::Enter, ms(200))?;
-    r.dwell(ms(300), ms(100))?;
-
+    r.key(Key::Enter, ms(0))?;
     r.type_text(CUSTOM_THEME_LINE, ms(11))?;
-    r.key(Key::Enter, ms(200))?;
-    r.dwell(ms(200), ms(100))?;
-
+    r.key(Key::Enter, ms(0))?;
     r.type_text("EOF", ms(24))?;
-    r.key(Key::Enter, ms(300))?;
-    r.dwell(ms(500), ms(100))?;
+    r.key(Key::Enter, ms(0))?;
 
     // Apply the theme we just wrote. 1200ms settle for the demo finale.
     line(r, "tint matrix", ms(32), ms(300), ms(1200))?;
