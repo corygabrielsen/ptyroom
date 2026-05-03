@@ -14,10 +14,13 @@ use crate::recorder::{Key, Recorder};
 /// near-black bg with phosphor-green fg, and an all-green ANSI ramp so
 /// the PS1's t/i/n/t letters render as Matrix-coded text instead of
 /// boring grey on the dark bg.
+// Classic matrix: lime fg on pure black bg. The 16 ANSI shades stay all-green
+// so any colored output (PS1's t/i/n/t letters, ls colors, etc.) keeps the
+// matrix aesthetic instead of clashing.
 pub const CUSTOM_THEME_LINE: &str = concat!(
-    "matrix:#001100:#00ff41:",
-    "#001100:#00aa33:#00ff41:#00dd44:#003322:#00aa44:#00cc55:#66ff88:",
-    "#002211:#00bb33:#33ff66:#22ee55:#004433:#33bb55:#33dd66:#88ff99",
+    "matrix:#000000:#00ff00:",
+    "#000000:#008800:#00ff00:#aaff00:#005533:#00aa55:#00ff66:#88ff99:",
+    "#003311:#00bb22:#33ff44:#bbff44:#006644:#00cc66:#44ff77:#ddffdd",
 );
 
 #[must_use] 
@@ -113,12 +116,15 @@ pub fn run_preamble(r: &mut Recorder) -> anyhow::Result<()> {
 ///   return makes the "we picked this one" feel deliberate.
 /// - 1000ms dwell on target before Enter: let the chosen theme's
 ///   preview settle visually before commit.
-/// - 1200ms post-accept breath: after Enter commits and the picker
-///   collapses back to the prompt with the new bg, hold a beat
-///   before the next act starts typing — otherwise the chosen theme
-///   doesn't get its moment of "this is what you picked" before the
-///   composition's between-act blank line and the next header
-///   begin pushing fresh content.
+/// - 2000ms post-accept breath: after Enter commits and the picker
+///   collapses back to the prompt with the new bg, the chosen theme
+///   needs a real digest moment — the viewer just watched ~10 seconds
+///   of navigation, and the "this is what you picked" beat has to be
+///   long enough to feel like a payoff. In compositions where the
+///   following content arrives as pure typing rhythm (no
+///   between-feature blanks), this beat IS the only digest time the
+///   picker's outcome gets, so it's tuned generously. Tuned down
+///   from 2500ms because 2.5s started to feel sluggish on replay.
 ///
 /// # Errors
 /// Any [`Recorder`] IO error.
@@ -129,7 +135,12 @@ pub fn run_picker(r: &mut Recorder, target_idx: usize) -> anyhow::Result<()> {
     r.type_text("tint", ms(80))?;
     r.dwell(ms(700), ms(100))?;
     r.key(Key::Enter, ms(400))?;
-    r.dwell(ms(900), ms(100))?; // picker takes ~900ms to fully render
+    // Picker startup dwell. Was 900ms but ^[[B started leaking into the
+    // top-left of the alt-screen buffer and into the post-exit prompt
+    // line — bash was still echoing the down-arrow keystrokes because
+    // the picker process hadn't fully claimed stdin yet. Bumped to
+    // 1600ms with margin so the picker is reliably ready.
+    r.dwell(ms(1600), ms(100))?;
 
     // Overshoot by three to demo navigation, pause, scroll back.
     r.keys(Key::Down, ms(50), target_idx + 3)?;
@@ -137,7 +148,7 @@ pub fn run_picker(r: &mut Recorder, target_idx: usize) -> anyhow::Result<()> {
     r.keys(Key::Up, ms(80), 3)?;
     r.dwell(ms(1000), ms(100))?; // hold on the target so the preview registers
     r.key(Key::Enter, ms(500))?;
-    r.dwell(ms(1200), ms(100))?; // breathe on the chosen theme before the next act
+    r.dwell(ms(2000), ms(100))?; // digest beat on the chosen theme before the next act
     Ok(())
 }
 
@@ -181,22 +192,23 @@ pub fn run_cd_hook(r: &mut Recorder) -> anyhow::Result<()> {
     line(r, "eval \"$(tint hook bash)\"", ms(24), ms(300), ms(600))?;
     line(r, "cd /tmp", ms(24), ms(250), ms(300))?;
 
-    // First room: write a .tint, cd in — bg should change to pale-sky-blue.
-    line(r, "mkdir skyroom && echo pale-sky-blue > skyroom/.tint",
+    // First dir: write a .tint, cd in — bg should change to pale-sky-blue.
+    // Generic foo/bar names instead of theme-suggestive names like
+    // skyroom/yellowroom: the latter read like a magic feature ("a
+    // 'skyroom' is a thing tint understands") instead of the actual
+    // mechanism (tint reads .tint from any directory you cd into).
+    line(r, "mkdir foo && echo pale-sky-blue > foo/.tint",
          ms(24), ms(250), ms(400))?;
-    line(r, "cd skyroom", ms(24), ms(300), ms(900))?;
+    line(r, "cd foo", ms(24), ms(300), ms(900))?;
 
-    // Second room: same pattern with a contrasting theme (warm pale-yellow
-    // vs cool pale-sky-blue). Two rooms instead of one because seeing the bg
+    // Second dir: same pattern with a contrasting theme (warm pale-yellow
+    // vs cool pale-sky-blue). Two dirs instead of one because seeing the bg
     // change *twice* makes the mechanism unmistakable; one could be
-    // coincidence. Avoid theme names ending in `r` for *room directories:
-    // `amberroom`/`emeraldroom`-style names with trailing-r colors stutter
-    // against `room`'s leading r. `blue`/`yellow` end on vowels/glides and
-    // read cleanly.
+    // coincidence.
     line(r, "cd ..", ms(24), ms(250), ms(300))?;
-    line(r, "mkdir yellowroom && echo pale-yellow > yellowroom/.tint",
+    line(r, "mkdir bar && echo pale-yellow > bar/.tint",
          ms(24), ms(250), ms(400))?;
-    line(r, "cd yellowroom", ms(24), ms(300), ms(900))?;
+    line(r, "cd bar", ms(24), ms(300), ms(900))?;
     Ok(())
 }
 

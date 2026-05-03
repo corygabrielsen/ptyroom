@@ -1,23 +1,29 @@
-//! Full 4-feature marketing demo: picker → cli → cd-hook → custom-theme.
+//! Full 4-feature marketing demo, restructured into per-feature subloops.
 //!
-//! Composes the per-feature scene helpers from [`tint_recorder::scenes`].
-//! Every prerequisite (directories, .tint files, .theme files) is created
-//! on screen during the recording. Hermeticity comes from the demo
-//! container the recorder spawns.
+//! Each feature gets its own self-contained mini-demo:
+//!   preamble → feature → reset → clear → 500ms breath
+//!
+//! The fourth subloop's trailing 500ms breath *is* the GIF loop tail —
+//! no special-cased ending. Because every clear-to-next-preamble seam
+//! has identical timing and identical post-clear terminal state
+//! (blank + PS1 + cursor at row 1), the loop wrap is visually
+//! indistinguishable from any inter-subloop transition. Marketing
+//! consequence: a viewer can't lock onto where the loop "started" and
+//! is more likely to watch additional cycles to see new content.
+//!
+//! Side benefit: each subloop is short, so the recording's row count
+//! drops from the 36 the stacked-acts version needed down to ~20.
 
 use std::path::PathBuf;
 
 use clap::Parser;
 use tint_recorder::recorder::{Recorder, RecorderConfig};
 use tint_recorder::scenes::{
-    blank, lookup_picker_idx, ms,
-    run_cd_hook, run_clear, run_cli, run_custom_theme, run_picker,
-    run_preamble, run_reset,
+    blank, line, lookup_picker_idx, ms, run_cd_hook, run_cli, run_custom_theme, run_picker,
 };
 
-/// Theme the picker lands on. Picked deliberately for the cool/blue
-/// register — reads better as the demo's first reveal than a warm/orange
-/// theme, which can look default-terminal-ish at a glance.
+/// Theme the picker lands on. Cool/blue register reads better as the
+/// reveal than a warm/orange theme, which can look default-terminal-ish.
 const PICKER_TARGET: &str = "dark-azure";
 
 #[derive(Parser)]
@@ -28,70 +34,63 @@ struct Args {
     cast: PathBuf,
 }
 
+/// One subloop: framing + feature, then pure-typing wrap-up.
+///
+/// The viewer is going to see this preamble four times per loop — any
+/// filler beat between feature's own end-beat and the next preamble's
+/// first character will read as dead air and disengage them. So once
+/// the feature finishes its internal money-shot dwell, we type
+/// `tint reset` → `clear` straight into the next preamble's `# tint —`
+/// with zero added dwells anywhere.
+///
+/// Loop-seam invariant: every clear → next-preamble transition has the
+/// same (zero) post-clear pause. The fourth subloop's clear → loop wrap
+/// → frame 0 → first preamble char is timed identically to inner
+/// inter-subloop transitions, so the wrap is indistinguishable.
+fn run_subloop(
+    r: &mut Recorder,
+    feature: impl FnOnce(&mut Recorder) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    // Pure typing rhythm: preamble → feature → reset → clear, with zero
+    // dwells between any of them. Each transition gets a single empty
+    // Enter for a blank line of visual separation (no dwell, just a
+    // newline byte). Inlining the typing here (instead of calling the
+    // run_preamble / run_reset / run_clear helpers, which carry their
+    // own standalone-scene pacing) is intentional.
+    line(r, "# tint — terminal theme switcher", ms(28), ms(0), ms(0))?;
+    blank(r, ms(0))?;
+    feature(r)?;
+    blank(r, ms(0))?;
+    line(r, "tint reset", ms(35), ms(0), ms(0))?;
+    blank(r, ms(0))?;
+    line(r, "clear", ms(50), ms(0), ms(0))?;
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let target_idx = lookup_picker_idx(&args.tint_path, PICKER_TARGET)?;
 
-    // Composition pacing:
-    // - 800/600ms initial dwell: bash needs ~600ms to set up echo before
-    //   the first keystroke or input bytes leak into the top-left.
-    //   Required on every recording's first call (per scenes.rs convention).
-    // - run_preamble enumerates the four features as a numbered list, so
-    //   the viewer knows what they're investing attention in. Per-act
-    //   headers later are bare descriptions (no numbers) — the preamble
-    //   already carried the count.
-    // Act order: cli → picker → cd-hook → custom-theme. Cli first
-    // because it's the fastest demonstration of "this is what tint
-    // does" — `tint dracula` flips the bg in 1-2s, no UI to navigate.
-    // Picker is the visually impressive moment, but it lands harder
-    // *after* the viewer already understands the basic verb.
-    //
-    // - One blank Enter (500ms dwell) between every act for consistent
-    //   visual breathing room — anything more reads heavy, anything less
-    //   makes acts run together. *Exception:* the act AFTER the picker
-    //   gets two blanks because the picker exits via alt-screen
-    //   (\e[?1049l), which leaves no trace in the main buffer — the
-    //   visual state goes straight from "tint" prompt to next prompt,
-    //   swallowing the between-act gap that other transitions get for
-    //   free from the prior act's trailing output. A second blank
-    //   restores the between-act spacing parity.
-    // - Act 5: `tint reset` returns to default colors.
-    // - 3000ms beat: viewer reads accumulated output one last time.
-    // - Act 6: `clear` wipes the screen. The GIF then loops from a
-    //   blank prompt back to the demo's blank-prompt start state, so
-    //   the wrap-around reads as if the user typed `clear` to start
-    //   the demo over. Reusable end-cap — keep `run_clear` available
-    //   for future composed scenes.
-    // - 800ms tail dwell: brief pause on the cleared state before
-    //   the GIF wraps, so the loop transition has its own beat.
-    // 36 rows: counted what the demo prints (preamble + 5 acts = ~30
-    // command rows + blanks + heredoc wrap), default 30 was clipping
-    // the trailing reset. TODO: programmatic fit (measure max used row
-    // across snapshots, crop output to that).
-    let mut r = Recorder::start(RecorderConfig { rows: 36, ..RecorderConfig::default() })?;
-    // Initial: zero visible dwell, but keep 600ms wall-clock settle so
-    // bash sets up echo before any keystrokes (otherwise input bytes
-    // leak into the top-left of the terminal).
+    // 20 rows: each subloop renders at most preamble (1) + feature
+    // (~10–14 rows for cd_hook, the tallest) + reset (1) + cursor.
+    // Bump if cd_hook clips.
+    let mut r = Recorder::start(RecorderConfig { rows: 20, ..RecorderConfig::default() })?;
+
+    // Initial bash-echo settle. visible=0 so the 600ms wall-clock window
+    // is invisible in the GIF. Required at the start of every recording
+    // per the scenes.rs convention — without it, input bytes leak into
+    // the top-left of the terminal.
     r.dwell(ms(0), ms(600))?;
-    run_preamble(&mut r)?;
-    // Short blank between preamble and act 1: the preamble is framing,
-    // not a peer act, so it gets a tighter join than the standard 500ms
-    // inter-act spacing. Keeps the demo from "waiting" before content.
-    blank(&mut r, ms(250))?;
-    run_cli(&mut r)?;
-    blank(&mut r, ms(500))?;
-    run_picker(&mut r, target_idx)?;
-    blank(&mut r, ms(250))?;
-    blank(&mut r, ms(500))?;
-    run_cd_hook(&mut r)?;
-    blank(&mut r, ms(500))?;
-    run_custom_theme(&mut r)?;
-    blank(&mut r, ms(500))?;
-    run_reset(&mut r)?;
-    r.dwell(ms(3000), ms(100))?;
-    run_clear(&mut r)?;
-    // Zero tail dwell: loop straight from cleared state into the next cycle.
-    r.dwell(ms(0), ms(100))?;
+
+    // Order: cli → picker → cd-hook → custom-theme. cli first because
+    // it's the fastest demonstration of the verb; picker is the visually
+    // impressive moment but lands harder *after* the viewer already
+    // understands the basic form; cd-hook adds automation; custom-theme
+    // shows extensibility.
+    run_subloop(&mut r, |r| run_cli(r))?;
+    run_subloop(&mut r, |r| run_picker(r, target_idx))?;
+    run_subloop(&mut r, |r| run_cd_hook(r))?;
+    run_subloop(&mut r, |r| run_custom_theme(r))?;
 
     let cast = r.stop()?;
     cast.write_with_summary(&args.cast)?;
