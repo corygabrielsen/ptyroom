@@ -1,4 +1,4 @@
-.PHONY: setup build build-image render demo demo-readme demo-web smoke picker cli cd-hook custom-theme bench-tiny bench-churn bench-subloops bench all-scenes verify verify-all clean
+.PHONY: setup build build-image render demo demo-par demo-readme demo-web smoke picker cli cd-hook custom-theme bench-tiny bench-churn bench-subloops bench-subloops-par bench all-scenes verify verify-all clean
 
 SCENE     ?= demo_full
 CAST       = assets/$(SCENE).cast
@@ -22,7 +22,8 @@ setup:
 build:
 	cargo build --release --bin smoke --bin demo_full \
 	            --bin picker --bin cli --bin cd_hook --bin custom_theme \
-	            --bin bench_tiny --bin bench_churn --bin bench_subloops
+	            --bin bench_tiny --bin bench_churn --bin bench_subloops \
+	            --bin paint --bin encode --bin verify --bin stitch
 
 # Build the recording-only image. Just Dockerfile + the tint script —
 # everything post-recording (snapshot replay, paint, encode, verify)
@@ -33,6 +34,36 @@ build-image:
 
 demo: SCENE=demo_full
 demo: build build-image render
+
+# Parallel-record demo. Runs the four feature subloops (cli, picker,
+# cd-hook, custom-theme) concurrently in independent docker containers,
+# stitches the per-subloop casts, then runs the normal post-recording
+# pipeline. Bounded by the slowest single subloop (~12s for picker)
+# instead of the sum (~46s sequential).
+#
+# Override OUT_EXT and FONT_SIZE for high-res variants:
+#   make demo-par                       # default GIF, FONT_SIZE=14
+#   make demo-par OUT_EXT=.mp4 FONT_SIZE=28
+demo-par: build build-image
+	@echo "=== parallel record: 4 demo subloops ==="
+	@printf '0\n1\n2\n3\n' | \
+		xargs -P 4 -I{} ./target/release/demo_full \
+		    --subloop-only {} \
+		    --cast assets/demo_full_{}.cast
+	@echo "=== stitch ==="
+	./target/release/stitch \
+	    --out assets/demo_full.cast \
+	    assets/demo_full_0.cast \
+	    assets/demo_full_1.cast \
+	    assets/demo_full_2.cast \
+	    assets/demo_full_3.cast
+	@echo "=== render ==="
+	rm -rf assets/snapshots assets/frames
+	./node_modules/.bin/tsx ./renderer/snapshot.ts assets/demo_full.cast assets/snapshots
+	./target/release/paint --font-size $(FONT_SIZE) assets/snapshots assets/frames
+	./target/release/encode assets/frames assets/snapshots/timing.json assets/demo_full$(OUT_EXT)
+	./target/release/verify demo_full --snapshots-dir assets/snapshots
+	@echo "wrote assets/demo_full$(OUT_EXT)"
 
 # Marketing-quality renders. Both use FONT_SIZE bumps so cell metrics
 # scale up proportionally. Dimensions are 80 cols × 20 rows × cell.
@@ -92,6 +123,36 @@ bench-churn: build build-image render
 
 bench-subloops: SCENE=bench_subloops
 bench-subloops: build build-image render
+
+# Parallel-record variant: spawn N copies of bench_subloops in
+# parallel, each recording one subloop into its own cast, then
+# stitch the casts and run the normal post-recording pipeline. Each
+# instance gets its own docker container, so wall-time is bounded by
+# the slowest single-subloop record (~5s) instead of N times that.
+#
+# This is the proof-of-concept for the same parallelization applied
+# to demo_full. Today bench-subloops takes ~40s; bench-subloops-par
+# should land closer to ~10s.
+bench-subloops-par: build build-image
+	@echo "=== parallel record: 4 subloops ==="
+	@printf '0\n1\n2\n3\n' | \
+		xargs -P 4 -I{} ./target/release/bench_subloops \
+		    --subloop-only {} \
+		    --cast assets/bench_subloops_{}.cast
+	@echo "=== stitch ==="
+	./target/release/stitch \
+	    --out assets/bench_subloops.cast \
+	    assets/bench_subloops_0.cast \
+	    assets/bench_subloops_1.cast \
+	    assets/bench_subloops_2.cast \
+	    assets/bench_subloops_3.cast
+	@echo "=== render ==="
+	rm -rf assets/snapshots assets/frames
+	./node_modules/.bin/tsx ./renderer/snapshot.ts assets/bench_subloops.cast assets/snapshots
+	./target/release/paint --font-size $(FONT_SIZE) assets/snapshots assets/frames
+	./target/release/encode assets/frames assets/snapshots/timing.json assets/bench_subloops.gif
+	./target/release/verify bench_subloops --snapshots-dir assets/snapshots
+	@echo "wrote assets/bench_subloops.gif"
 
 bench: bench-tiny bench-churn bench-subloops
 

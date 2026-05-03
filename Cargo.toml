@@ -52,6 +52,10 @@ path = "scenes/bench_churn.rs"
 name = "bench_subloops"
 path = "scenes/bench_subloops.rs"
 
+[[bin]]
+name = "stitch"
+path = "src/bin/stitch.rs"
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }

@@ -32,6 +32,13 @@ struct Args {
     tint_path: PathBuf,
     #[arg(long, default_value = "assets/demo_full.cast")]
     cast: PathBuf,
+    /// Record only one subloop (0=cli, 1=picker, 2=cd-hook, 3=custom-theme).
+    /// Used by the parallel-record flow: spawn 4 copies of this binary
+    /// concurrently with --subloop-only 0..3 each writing its own cast,
+    /// then stitch the resulting casts. Each subloop is self-contained
+    /// (ends in `clear`) so per-subloop casts splice cleanly.
+    #[arg(long)]
+    subloop_only: Option<usize>,
 }
 
 /// One subloop: framing + feature, then pure-typing wrap-up.
@@ -87,10 +94,19 @@ fn main() -> anyhow::Result<()> {
     // impressive moment but lands harder *after* the viewer already
     // understands the basic form; cd-hook adds automation; custom-theme
     // shows extensibility.
-    run_subloop(&mut r, |r| run_cli(r))?;
-    run_subloop(&mut r, |r| run_picker(r, target_idx))?;
-    run_subloop(&mut r, |r| run_cd_hook(r))?;
-    run_subloop(&mut r, |r| run_custom_theme(r))?;
+    match args.subloop_only {
+        Some(0) => run_subloop(&mut r, |r| run_cli(r))?,
+        Some(1) => run_subloop(&mut r, |r| run_picker(r, target_idx))?,
+        Some(2) => run_subloop(&mut r, |r| run_cd_hook(r))?,
+        Some(3) => run_subloop(&mut r, |r| run_custom_theme(r))?,
+        Some(other) => anyhow::bail!("--subloop-only out of range: {other} (valid: 0..=3)"),
+        None => {
+            run_subloop(&mut r, |r| run_cli(r))?;
+            run_subloop(&mut r, |r| run_picker(r, target_idx))?;
+            run_subloop(&mut r, |r| run_cd_hook(r))?;
+            run_subloop(&mut r, |r| run_custom_theme(r))?;
+        }
+    }
 
     let cast = r.stop()?;
     cast.write_with_summary(&args.cast)?;

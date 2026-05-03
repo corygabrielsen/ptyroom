@@ -61,6 +61,13 @@ struct Args {
     /// subloop count.
     #[arg(long, default_value_t = 4)]
     n: usize,
+    /// Run only one subloop with the given index. Used by the parallel
+    /// stitch flow: spawn N copies of this binary concurrently, each
+    /// recording one subloop into its own cast, then stitch the
+    /// resulting casts. Each subloop is self-contained (ends with
+    /// `clear`) so per-subloop casts splice cleanly.
+    #[arg(long)]
+    subloop_only: Option<usize>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -74,8 +81,12 @@ fn main() -> anyhow::Result<()> {
     // Initial bash-echo settle, invisible to the rendered output.
     r.dwell(ms(0), ms(600))?;
 
-    for i in 0..args.n {
-        run_synthetic_subloop(&mut r, i)?;
+    if let Some(idx) = args.subloop_only {
+        run_synthetic_subloop(&mut r, idx)?;
+    } else {
+        for i in 0..args.n {
+            run_synthetic_subloop(&mut r, i)?;
+        }
     }
 
     let cast = r.stop()?;
