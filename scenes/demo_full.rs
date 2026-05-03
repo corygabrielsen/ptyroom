@@ -70,7 +70,12 @@ fn run_subloop(
     blank(r, ms(0))?;
     line(r, "tint reset", ms(35), ms(0), ms(0))?;
     blank(r, ms(0))?;
-    line(r, "clear", ms(50), ms(0), ms(0))?;
+    // 100ms post-clear beat — applies at every subloop boundary, including
+    // the loop wrap (the last subloop's beat IS the loop tail). Keeping
+    // the value identical at every seam preserves the loop-wrap-is-
+    // invisible invariant; the only thing the beat changes is the
+    // breath-on-cleared-screen duration.
+    line(r, "clear", ms(50), ms(0), ms(100))?;
     Ok(())
 }
 
