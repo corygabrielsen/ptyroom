@@ -13,6 +13,7 @@ mod keys;
 mod osc;
 mod pty;
 
+pub use drainer::WatchHandle;
 pub use keys::Key;
 pub use osc::StubColors;
 
@@ -152,6 +153,39 @@ impl Recorder {
     /// As [`Recorder::dwell`].
     pub fn send_raw(&mut self, bytes: &[u8], dwell: Duration) -> anyhow::Result<()> {
         self.send_and_capture(bytes, dwell, DEFAULT_SETTLE)
+    }
+
+    /// Arm a content-aware sync point: the drainer starts watching the
+    /// PTY output stream for `pattern` from this moment forward and
+    /// returns a [`WatchHandle`]. Block on `WatchHandle::wait` to sleep
+    /// until the pattern is observed (or a timeout elapses).
+    ///
+    /// **Arm before triggering.** Call this *before* the action that
+    /// causes the pattern to be emitted. Otherwise the bytes can arrive
+    /// during the action's settle window and be consumed before the
+    /// watch is in place — the watch then never fires.
+    ///
+    /// Cast time is **not** advanced by waiting; bytes that arrive
+    /// during the wait are folded into the next `dwell`/`key` event.
+    /// Combine with a small explicit `dwell` for cast-side visible
+    /// time:
+    ///
+    /// ```ignore
+    /// let alt_in = r.arm_watch(b"\x1b[?1049h");
+    /// r.type_text("tint", TYPE_NORMAL)?;
+    /// r.key(Key::Enter, ms(0))?;
+    /// alt_in.wait(PICKER_STARTUP_TIMEOUT).expect("picker startup");
+    /// r.dwell(PICKER_STARTUP_VISIBLE, ms(0))?;   // small cast-time buffer
+    /// ```
+    ///
+    /// When `TINT_RECORDER_PROFILE=1` is set in the environment,
+    /// `WatchHandle::wait` logs the pattern + elapsed time to stderr.
+    /// Use this to tune timeouts: run the demo once with the env var,
+    /// observe actual wait times, then bump the timeout constants down
+    /// to ~2-3× observed.
+    #[must_use]
+    pub fn arm_watch(&self, pattern: &[u8]) -> WatchHandle {
+        self.drainer.register_watch(pattern.to_vec())
     }
 
     fn send_and_capture(

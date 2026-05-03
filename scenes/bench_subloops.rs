@@ -8,7 +8,7 @@
 //! we'll record each subloop in its own Recorder concurrently and
 //! stitch the casts.
 //!
-//! Why uniform synthetic content instead of demo_full's bespoke
+//! Why uniform synthetic content instead of `demo_full`'s bespoke
 //! per-feature acts: this scene controls for content complexity. The
 //! only variable is subloop count, so wall-time should scale linearly
 //! with N today and (ideally) be constant in N after parallelization.
@@ -29,7 +29,7 @@ use tint_recorder::scenes::{blank, line, ms};
 
 /// One synthetic subloop. Designed to take ~5 seconds of cast time:
 /// preamble + 3 short typed commands with brief settles + reset +
-/// clear. Pure typing rhythm matches demo_full's per-subloop shape.
+/// clear. Pure typing rhythm matches `demo_full`'s per-subloop shape.
 /// Uniform across all N invocations so timing is purely a function
 /// of how many we run, not what's in them.
 fn run_synthetic_subloop(r: &mut Recorder, idx: usize) -> anyhow::Result<()> {

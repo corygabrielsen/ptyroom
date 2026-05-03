@@ -51,8 +51,8 @@ pub const fn ms(n: u64) -> Duration { Duration::from_millis(n) }
 // individual lines typing slower or faster.
 //
 /// Long mechanical content the viewer isn't meant to read (the 18-color
-/// matrix theme spec). At TYPE_NORMAL the spec would take ~3s of
-/// uninteresting typing; TYPE_FAST cuts that to ~700ms.
+/// matrix theme spec). At `TYPE_NORMAL` the spec would take ~3s of
+/// uninteresting typing; `TYPE_FAST` cuts that to ~700ms.
 pub const TYPE_FAST: Duration = ms(6);
 /// All readable content: preambles, comments, plumbing, payload
 /// commands, `clear`, the picker-invoking `tint` — same rhythm
@@ -75,9 +75,18 @@ pub const PLUMB_SETTLE: Duration = ms(400);
 pub const CLEAR_REGISTER: Duration = ms(250);
 
 // Picker.
-/// Real-time wait for the picker process to claim stdin. Decreasing
-/// this risks `^[[B` leaking before the picker is ready.
-pub const PICKER_STARTUP: Duration = ms(1600);
+/// Maximum real-time wait for the picker to claim alt-screen after
+/// `tint` is invoked. Used as the timeout for `arm_watch` on
+/// the alt-screen-entry escape (`\e[?1049h`). Observed dev-machine
+/// time is ~50ms; 500ms leaves room for Docker jitter without hiding
+/// a genuinely stuck picker.
+pub const PICKER_STARTUP_TIMEOUT: Duration = ms(500);
+/// Cast-time visible buffer between alt-screen entry and the first
+/// arrow keystroke. Real-time has already been spent by `arm_watch`
+/// blocking until the picker is ready; this is the playback-only beat
+/// that makes the picker feel like it "appears" instead of being
+/// instantly navigated. 500ms is a comfortable register-it pause.
+pub const PICKER_STARTUP_VISIBLE: Duration = ms(500);
 /// Post-accept dwell — longest because the picker did the most visual work.
 pub const PICKER_DIGEST: Duration = ms(2000);
 /// Dwell at overshoot before scrolling back to the target.
@@ -89,10 +98,17 @@ pub const PICKER_HOLD: Duration = ms(1000);
 /// when the picker scrolls back; the OVERSHOOT and HOLD beats carry
 /// the "this is the chosen one" narrative weight instead.
 pub const PICKER_NAV_PER_KEY: Duration = ms(50);
-/// Post-Enter dwell on the commit keystroke (real-time the picker
-/// uses to write the chosen-bg OSC and exit alt-screen). Combined
-/// with PICKER_DIGEST, total post-commit time is 2.5s.
-pub const PICKER_COMMIT_AFTER: Duration = ms(500);
+/// Maximum real-time wait for the picker to exit alt-screen after
+/// the commit Enter. Observed dev-machine time is single-digit ms;
+/// 250ms is a conservative cap for scheduler/container jitter.
+pub const PICKER_COMMIT_TIMEOUT: Duration = ms(250);
+
+/// Alt-screen-entry CSI sequence the picker emits when it claims the
+/// terminal. Used as the `arm_watch` target for picker startup.
+pub const ALT_SCREEN_ENTER: &[u8] = b"\x1b[?1049h";
+/// Alt-screen-exit CSI sequence the picker emits when it returns
+/// control to bash. Used as the `arm_watch` target for commit.
+pub const ALT_SCREEN_EXIT: &[u8] = b"\x1b[?1049l";
 
 // Infrastructure.
 /// Wall-time bash-echo settle at the start of every recording.
@@ -204,17 +220,40 @@ pub fn run_preamble(r: &mut Recorder) -> anyhow::Result<()> {
 pub fn run_picker(r: &mut Recorder, target_idx: usize) -> anyhow::Result<()> {
     line(r, "# pick interactively", TYPE_NORMAL, ms(0), ms(0))?;
 
-    // Type "tint" and fire immediately — picker opening IS the beat.
     r.type_text("tint", TYPE_NORMAL)?;
+    // Arm the watch BEFORE sending Enter. Otherwise the alt-screen-enter
+    // bytes can arrive during the Enter call's settle window and be
+    // consumed by the recorder before the watch is in place — the
+    // watch then sits there forever and times out.
+    let alt_in = r.arm_watch(ALT_SCREEN_ENTER);
     r.key(Key::Enter, ms(0))?;
-    r.dwell(PICKER_STARTUP, ms(100))?;
+    alt_in.wait(PICKER_STARTUP_TIMEOUT).ok_or_else(|| {
+        anyhow::anyhow!(
+            "picker startup timed out after {}ms — alt-screen never claimed",
+            PICKER_STARTUP_TIMEOUT.as_millis(),
+        )
+    })?;
+    // Small cast-time buffer so the picker's appearance has a frame
+    // budget on playback regardless of recording-machine speed.
+    r.dwell(PICKER_STARTUP_VISIBLE, ms(0))?;
 
     // Overshoot by three to demo navigation, pause, scroll back.
     r.keys(Key::Down, PICKER_NAV_PER_KEY, target_idx + 3)?;
     r.dwell(PICKER_OVERSHOOT, ms(100))?;
     r.keys(Key::Up, PICKER_NAV_PER_KEY, 3)?;
     r.dwell(PICKER_HOLD, ms(100))?;
-    r.key(Key::Enter, PICKER_COMMIT_AFTER)?;
+
+    // Commit. Same arm-before-trigger pattern: arm the alt-screen-exit
+    // watch, then send Enter, then wait. The picker writes its
+    // chosen-bg OSC sequences and exits alt-screen as part of accept.
+    let alt_out = r.arm_watch(ALT_SCREEN_EXIT);
+    r.key(Key::Enter, ms(0))?;
+    alt_out.wait(PICKER_COMMIT_TIMEOUT).ok_or_else(|| {
+        anyhow::anyhow!(
+            "picker commit timed out after {}ms — alt-screen never exited",
+            PICKER_COMMIT_TIMEOUT.as_millis(),
+        )
+    })?;
     r.dwell(PICKER_DIGEST, ms(100))?;
     Ok(())
 }

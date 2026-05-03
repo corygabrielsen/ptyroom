@@ -105,16 +105,16 @@ fn main() -> anyhow::Result<()> {
     // understands the basic form; cd-hook adds automation; custom-theme
     // shows extensibility.
     match args.subloop_only {
-        Some(0) => run_subloop(&mut r, |r| run_cli(r))?,
+        Some(0) => run_subloop(&mut r, run_cli)?,
         Some(1) => run_subloop(&mut r, |r| run_picker(r, target_idx))?,
-        Some(2) => run_subloop(&mut r, |r| run_cd_hook(r))?,
-        Some(3) => run_subloop(&mut r, |r| run_custom_theme(r))?,
+        Some(2) => run_subloop(&mut r, run_cd_hook)?,
+        Some(3) => run_subloop(&mut r, run_custom_theme)?,
         Some(other) => anyhow::bail!("--subloop-only out of range: {other} (valid: 0..=3)"),
         None => {
-            run_subloop(&mut r, |r| run_cli(r))?;
+            run_subloop(&mut r, run_cli)?;
             run_subloop(&mut r, |r| run_picker(r, target_idx))?;
-            run_subloop(&mut r, |r| run_cd_hook(r))?;
-            run_subloop(&mut r, |r| run_custom_theme(r))?;
+            run_subloop(&mut r, run_cd_hook)?;
+            run_subloop(&mut r, run_custom_theme)?;
         }
     }
 

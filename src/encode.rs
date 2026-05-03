@@ -34,7 +34,7 @@ pub struct EncodeRequest {
     /// Optional output width in pixels. When set, ffmpeg's lanczos scale
     /// filter resizes frames to this width preserving aspect ratio
     /// (height auto-computed). Used to render a single high-resolution
-    /// frame set into multiple output sizes (e.g. paint at FONT_SIZE=28
+    /// frame set into multiple output sizes (e.g. paint at `FONT_SIZE=28`
     /// once, encode native MP4 + scaled-down GIF for the README).
     pub width: Option<u32>,
 }

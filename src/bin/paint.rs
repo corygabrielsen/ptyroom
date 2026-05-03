@@ -2,7 +2,7 @@
 //!
 //! Frames are painted in parallel. Each frame is independent of every
 //! other (load snapshot, paint to RGB image, save PNG), so rayon's
-//! par_iter scales linearly with available cores. The painter struct
+//! `par_iter` scales linearly with available cores. The painter struct
 //! is `Sync` (font + scale + immutable metrics), shareable across
 //! worker threads without locking.
 use std::path::PathBuf;
