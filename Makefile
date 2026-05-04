@@ -28,7 +28,8 @@ build:
 	cargo build --release --bin smoke --bin demo_full \
 	            --bin picker --bin picker_timeline --bin cli --bin cd_hook --bin custom_theme \
 	            --bin bench_tiny --bin bench_churn --bin bench_subloops \
-	            --bin paint --bin encode --bin verify --bin stitch --bin recorder_perf
+	            --bin paint --bin encode --bin verify --bin stitch \
+	            --bin recorder_perf --bin compare_snapshots
 
 # Build the recording-only image. Just Dockerfile + the tint script —
 # everything post-recording (snapshot replay, paint, encode, verify)

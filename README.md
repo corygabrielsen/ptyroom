@@ -48,6 +48,7 @@ make demo-parallel       # fast dev GIF render
 make demo-all-parallel   # marketing MP4 + GIF from one capture
 make recorder-perf       # isolate startup/typing/prompt/tint/picker legs
 make verify              # re-run contract against existing snapshots
+cargo run --bin compare_snapshots -- BASELINE_SNAPS CANDIDATE_SNAPS
 make clean               # remove generated artifacts
 ```
 
@@ -80,6 +81,7 @@ regression.
 | `src/scenes.rs`        | Scene helpers and presentation timing knobs          | Rust |
 | `src/timeline.rs`      | Semantic trace + presentation policy prototype       | Rust |
 | `src/bin/recorder_perf.rs` | Capture-leg microbenchmark harness              | Rust |
+| `src/bin/compare_snapshots.rs` | Frame-by-frame snapshot A/B comparison      | Rust |
 | `scenes/demo_full.rs`  | 4-act marketing demo                                 | Rust |
 | `scenes/smoke.rs`      | Minimal smoke scene                                  | Rust |
 | `renderer/snapshot.ts` | `@xterm/headless` replay → per-frame JSON            | TS   |

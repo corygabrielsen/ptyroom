@@ -64,6 +64,10 @@ path = "src/bin/stitch.rs"
 name = "recorder_perf"
 path = "src/bin/recorder_perf.rs"
 
+[[bin]]
+name = "compare_snapshots"
+path = "src/bin/compare_snapshots.rs"
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
