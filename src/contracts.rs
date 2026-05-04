@@ -5,66 +5,84 @@
 
 use crate::color::HexColor;
 use crate::verify::{
-    Check, Contract, bg_reaches, final_bg_is, picker_scroll_indicator_visible,
+    Check, Contract, bg_reaches, final_bg_is, no_row_contains, picker_scroll_indicator_visible,
 };
 
 /// Every scene name the registry knows about. Source of truth for any
 /// "iterate over all scenes" workflow (Makefile `verify-all`, regression
 /// loops, `tint-verify --list-scenes`, etc.).
 pub const SCENES: &[&str] = &[
-    "demo_full", "smoke",
-    "picker", "cli", "cd_hook", "custom_theme",
-    "bench_tiny", "bench_churn", "bench_subloops",
+    "demo_full",
+    "smoke",
+    "picker",
+    "cli",
+    "cd_hook",
+    "custom_theme",
+    "bench_tiny",
+    "bench_churn",
+    "bench_subloops",
 ];
 
-const fn rgb(r: u8, g: u8, b: u8) -> HexColor { HexColor::from_rgb(r, g, b) }
+const fn rgb(r: u8, g: u8, b: u8) -> HexColor {
+    HexColor::from_rgb(r, g, b)
+}
 
-const DARK_AZURE:       HexColor = rgb(0x3a, 0x59, 0x78);
-const DRACULA:          HexColor = rgb(0x28, 0x2a, 0x36);
-const SOLARIZED_LIGHT:  HexColor = rgb(0xfd, 0xf6, 0xe3);
-const MONOKAI:          HexColor = rgb(0x27, 0x28, 0x22);
-const PALE_SKY_BLUE:    HexColor = rgb(0xba, 0xd5, 0xde);
-const PALE_YELLOW:      HexColor = rgb(0xde, 0xde, 0xba);
-const MATRIX:           HexColor = rgb(0x00, 0x00, 0x00);
+const DARK_AZURE: HexColor = rgb(0x3a, 0x59, 0x78);
+const DARK_INDIGO: HexColor = rgb(0x49, 0x3a, 0x78);
+const DRACULA: HexColor = rgb(0x28, 0x2a, 0x36);
+const SOLARIZED_LIGHT: HexColor = rgb(0xfd, 0xf6, 0xe3);
+const MONOKAI: HexColor = rgb(0x27, 0x28, 0x22);
+const PALE_SKY_BLUE: HexColor = rgb(0xba, 0xd5, 0xde);
+const PALE_YELLOW: HexColor = rgb(0xde, 0xde, 0xba);
+const MATRIX: HexColor = rgb(0x00, 0x00, 0x00);
 /// Snapshot bg after `tint reset` — matches the `recorder/snapshot.ts`
 /// startup default (`#1a1b26`). Used by `demo_full`'s act-5 reset check.
-const DEFAULT_BG:       HexColor = rgb(0x1a, 0x1b, 0x26);
+const DEFAULT_BG: HexColor = rgb(0x1a, 0x1b, 0x26);
 
 #[must_use]
 pub fn registry(scene: &str) -> Option<Contract> {
     match scene {
-        "demo_full"    => Some(demo_full()),
-        "smoke"        => Some(smoke()),
-        "picker"       => Some(picker()),
-        "cli"          => Some(cli()),
-        "cd_hook"      => Some(cd_hook()),
+        "demo_full" => Some(demo_full()),
+        "smoke" => Some(smoke()),
+        "picker" => Some(picker()),
+        "cli" => Some(cli()),
+        "cd_hook" => Some(cd_hook()),
         "custom_theme" => Some(custom_theme()),
-        "bench_tiny"     => Some(open_contract("bench_tiny")),
-        "bench_churn"    => Some(open_contract("bench_churn")),
+        "bench_tiny" => Some(open_contract("bench_tiny")),
+        "bench_churn" => Some(open_contract("bench_churn")),
         "bench_subloops" => Some(open_contract("bench_subloops")),
-        _                => None,
+        _ => None,
     }
 }
 
 fn demo_full() -> Contract {
     let checks: Vec<Check> = vec![
         picker_scroll_indicator_visible(),
-        bg_reaches("dark-azure",           DARK_AZURE),
-        bg_reaches("dracula",              DRACULA),
-        bg_reaches("solarized-light",      SOLARIZED_LIGHT),
-        bg_reaches("monokai",              MONOKAI),
+        bg_reaches("dark-azure", DARK_AZURE),
+        bg_reaches("dark-indigo-picker-overshoot", DARK_INDIGO),
+        bg_reaches("dracula", DRACULA),
+        bg_reaches("solarized-light", SOLARIZED_LIGHT),
+        bg_reaches("monokai", MONOKAI),
         bg_reaches("pale-sky-blue-cd-hook", PALE_SKY_BLUE),
-        bg_reaches("pale-yellow-cd-hook",  PALE_YELLOW),
-        bg_reaches("matrix-custom",        MATRIX),
+        bg_reaches("pale-yellow-cd-hook", PALE_YELLOW),
+        bg_reaches("matrix-custom", MATRIX),
+        no_row_contains("joined-picker-prompt", "dark-azuretint $"),
+        no_row_contains("mkdir-exists", "cannot create directory"),
         // Act 5: `tint reset` returns to the snapshot's default bg.
         // Matches the loop's start state — graceful wrap-around.
-        final_bg_is("reset-default",       DEFAULT_BG),
+        final_bg_is("reset-default", DEFAULT_BG),
     ];
-    Contract { scene: "demo_full", checks }
+    Contract {
+        scene: "demo_full",
+        checks,
+    }
 }
 
 fn smoke() -> Contract {
-    Contract { scene: "smoke", checks: vec![picker_scroll_indicator_visible()] }
+    Contract {
+        scene: "smoke",
+        checks: vec![picker_scroll_indicator_visible()],
+    }
 }
 
 fn picker() -> Contract {
@@ -72,6 +90,7 @@ fn picker() -> Contract {
         scene: "picker",
         checks: vec![
             picker_scroll_indicator_visible(),
+            bg_reaches("dark-indigo-picker-overshoot", DARK_INDIGO),
             bg_reaches("dark-azure", DARK_AZURE),
             final_bg_is("dark-azure", DARK_AZURE),
         ],
@@ -82,10 +101,10 @@ fn cli() -> Contract {
     Contract {
         scene: "cli",
         checks: vec![
-            bg_reaches("dracula",         DRACULA),
+            bg_reaches("dracula", DRACULA),
             bg_reaches("solarized-light", SOLARIZED_LIGHT),
-            bg_reaches("monokai",         MONOKAI),
-            final_bg_is("monokai",        MONOKAI),
+            bg_reaches("monokai", MONOKAI),
+            final_bg_is("monokai", MONOKAI),
         ],
     }
 }
@@ -94,8 +113,9 @@ fn cd_hook() -> Contract {
     Contract {
         scene: "cd_hook",
         checks: vec![
-            bg_reaches("pale-sky-blue",    PALE_SKY_BLUE),
-            bg_reaches("pale-yellow",  PALE_YELLOW),
+            bg_reaches("pale-sky-blue", PALE_SKY_BLUE),
+            bg_reaches("pale-yellow", PALE_YELLOW),
+            no_row_contains("mkdir-exists", "cannot create directory"),
             final_bg_is("pale-yellow", PALE_YELLOW),
         ],
     }
@@ -104,10 +124,7 @@ fn cd_hook() -> Contract {
 fn custom_theme() -> Contract {
     Contract {
         scene: "custom_theme",
-        checks: vec![
-            bg_reaches("matrix",  MATRIX),
-            final_bg_is("matrix", MATRIX),
-        ],
+        checks: vec![bg_reaches("matrix", MATRIX), final_bg_is("matrix", MATRIX)],
     }
 }
 
@@ -117,7 +134,10 @@ fn custom_theme() -> Contract {
 /// to completion; verify reports zero failures.
 #[must_use]
 pub fn open_contract(scene: &'static str) -> Contract {
-    Contract { scene, checks: vec![] }
+    Contract {
+        scene,
+        checks: vec![],
+    }
 }
 
 #[cfg(test)]

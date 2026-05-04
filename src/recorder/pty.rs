@@ -21,7 +21,9 @@ pub struct PtyMaster {
 
 impl PtyMaster {
     #[must_use]
-    pub fn fd(&self) -> RawFd { self.fd.as_raw_fd() }
+    pub fn fd(&self) -> RawFd {
+        self.fd.as_raw_fd()
+    }
 
     /// Send SIGKILL to the child and reap it. Idempotent — safe if already dead.
     ///
@@ -44,23 +46,34 @@ impl PtyMaster {
 /// # Errors
 /// Empty `argv`, or `forkpty` syscall failure.
 pub fn spawn(argv: &[&str], cols: u16, rows: u16) -> anyhow::Result<PtyMaster> {
-    if argv.is_empty() { anyhow::bail!("spawn: empty argv"); }
-    let winsize = Winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
+    if argv.is_empty() {
+        anyhow::bail!("spawn: empty argv");
+    }
+    let winsize = Winsize {
+        ws_row: rows,
+        ws_col: cols,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
 
     // SAFETY: forkpty must be called on a single-threaded process or, if not,
     // only async-signal-safe calls are permitted in the child. We restrict
     // the child path to execvp + _exit, both async-signal-safe.
-    let res = unsafe { forkpty(Some(&winsize), None) }
-        .context("forkpty")?;
+    let res = unsafe { forkpty(Some(&winsize), None) }.context("forkpty")?;
     match res {
         ForkptyResult::Parent { master, child } => Ok(PtyMaster { fd: master, child }),
         ForkptyResult::Child => {
-            let owned: Vec<std::ffi::CString> = argv.iter()
-                .map(|s| std::ffi::CString::new(*s).unwrap_or_else(|_| {
-                    // SAFETY: arg with NUL byte — fail loudly via _exit.
-                    unsafe { libc::_exit(127) }
-                })).collect();
-            let arg_refs: Vec<&std::ffi::CStr> = owned.iter().map(std::ffi::CString::as_c_str).collect();
+            let owned: Vec<std::ffi::CString> = argv
+                .iter()
+                .map(|s| {
+                    std::ffi::CString::new(*s).unwrap_or_else(|_| {
+                        // SAFETY: arg with NUL byte — fail loudly via _exit.
+                        unsafe { libc::_exit(127) }
+                    })
+                })
+                .collect();
+            let arg_refs: Vec<&std::ffi::CStr> =
+                owned.iter().map(std::ffi::CString::as_c_str).collect();
             let _ = execvp(arg_refs[0], &arg_refs);
             // execvp only returns on failure
             unsafe { libc::_exit(127) };

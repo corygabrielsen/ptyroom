@@ -18,94 +18,165 @@ pub use keys::Key;
 pub use osc::StubColors;
 
 use std::os::fd::BorrowedFd;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use nix::unistd::write;
 use tempfile::NamedTempFile;
 
-use crate::cast::{Cast, CastEvent, CastHeader, EventKind};
+use crate::cast::Cast;
+use crate::proof::DwellMs;
+use crate::recording::RecordingBuilder;
 use drainer::Drainer;
 use pty::{PtyMaster, spawn};
 
-/// Wall-clock window we wait after each input write to let the container
-/// produce output before we drain. Long enough for the picker's render
-/// pipeline; short enough that scenes don't run for ages on the host.
-const DEFAULT_SETTLE: Duration = Duration::from_millis(100);
+/// Short fallback wall-clock window for inputs that do not have a stronger
+/// content-aware sync point. Text entry and shell commands use watches;
+/// this mainly covers raw keys like picker arrows and heredoc newlines.
+const DEFAULT_SETTLE: Duration = Duration::from_micros(5);
+const ECHO_TIMEOUT: Duration = Duration::from_millis(250);
+static CONTAINER_HOME_SEQ: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone)]
 pub struct RecorderConfig {
+    /// Terminal columns.
     pub cols: u16,
+    /// Terminal rows.
     pub rows: u16,
+    /// Docker image used when no warm container is configured.
     pub image: String,
+    /// Optional running container name/id for warm `docker exec` recording.
+    pub container: Option<String>,
+    /// Optional no-arg picker current-theme hint.
+    ///
+    /// The recorder rcfile wraps `tint` so `tint` with no arguments invokes
+    /// `tint_pick "$TINT_RECORDER_PICKER_CURRENT"`. Visible demo text remains
+    /// `tint`, but the picker can start at the target to avoid replaying a
+    /// long machine-speed navigation queue.
+    pub picker_current: Option<String>,
+    /// Stubbed terminal color query responses.
     pub stubs: StubColors,
+    /// Wall-clock guard against hung child processes.
     pub max_runtime: Duration,
 }
 
 impl Default for RecorderConfig {
     fn default() -> Self {
         Self {
-            cols: 80, rows: 30,
+            cols: 80,
+            rows: 30,
             image: "tint-recorder:demo".into(),
+            container: std::env::var("TINT_RECORDER_CONTAINER")
+                .ok()
+                .filter(|value| !value.is_empty()),
+            picker_current: std::env::var("TINT_RECORDER_PICKER_CURRENT")
+                .ok()
+                .filter(|value| !value.is_empty()),
             stubs: StubColors::default(),
             max_runtime: Duration::from_mins(4),
         }
     }
 }
 
-/// One captured event: the bytes the container wrote in response to our
-/// preceding action, plus the playback dwell that follows.
-#[derive(Debug, Clone)]
-struct RecordedEvent {
-    output: Vec<u8>,
-    dwell: Duration,
-}
-
 pub struct Recorder {
     cfg: RecorderConfig,
     pty: PtyMaster,
     drainer: Drainer,
-    /// Hold the rcfile alive — `Drop` unlinks the host tempfile.
-    _rcfile: NamedTempFile,
-    events: Vec<RecordedEvent>,
+    /// Hold the cold `docker run` rcfile alive — `Drop` unlinks it.
+    _rcfile: Option<NamedTempFile>,
+    recording: RecordingBuilder,
     started_at: Instant,
 }
 
 impl Recorder {
-    /// Spawn `docker run` whose container runs interactive bash.
+    /// Spawn or exec interactive bash inside the recording container.
+    ///
+    /// With `cfg.container = None`, this runs `docker run --rm ...`.
+    /// With `cfg.container = Some(name)`, this uses `docker exec` against an
+    /// already-running warm container and creates a fresh `$HOME` for the
+    /// recording.
+    ///
     /// The docker-side TTY size is set via `-e LINES/COLUMNS` and inherited
     /// from the host PTY's winsize (TIOCSWINSZ via `forkpty`).
     ///
     /// # Errors
     /// rcfile write fails, or `forkpty` / `execvp("docker")` fails.
     pub fn start(cfg: RecorderConfig) -> anyhow::Result<Self> {
-        let rcfile = build_rcfile().context("write rcfile")?;
+        let rcfile = if cfg.container.is_some() {
+            None
+        } else {
+            Some(build_rcfile().context("write rcfile")?)
+        };
         let lines_env = format!("LINES={}", cfg.rows);
-        let cols_env  = format!("COLUMNS={}", cfg.cols);
-        let mount     = format!("{}:/tmp/recorderrc:ro", rcfile.path().display());
-        let argv: [&str; 16] = [
-            "docker", "run", "--rm", "-i", "-t",
-            "-e", &lines_env,
-            "-e", &cols_env,
-            "-v", &mount,
-            &cfg.image,
-            "bash", "--rcfile", "/tmp/recorderrc", "-i",
-        ];
+        let cols_env = format!("COLUMNS={}", cfg.cols);
+        let picker_current_env = cfg
+            .picker_current
+            .as_ref()
+            .map(|current| format!("TINT_RECORDER_PICKER_CURRENT={current}"));
+        let home_env;
+        let mount;
+        let argv: Vec<&str> = if let Some(container) = &cfg.container {
+            let seq = CONTAINER_HOME_SEQ.fetch_add(1, Ordering::Relaxed);
+            let home = format!(
+                "/home/demo/.tint-recorder-home-{}-{seq}",
+                std::process::id(),
+            );
+            home_env = format!("HOME={home}");
+            let mut argv = vec![
+                "docker", "exec", "-i", "-t", "-e", &lines_env, "-e", &cols_env, "-e", &home_env,
+            ];
+            if let Some(env) = &picker_current_env {
+                argv.extend(["-e", env]);
+            }
+            argv.extend([container, "tint-recorder-shell"]);
+            argv
+        } else {
+            let Some(rcfile) = &rcfile else {
+                anyhow::bail!("cold recorder missing rcfile");
+            };
+            mount = format!("{}:/tmp/recorderrc:ro", rcfile.path().display());
+            let mut argv = vec![
+                "docker", "run", "--rm", "-i", "-t", "-e", &lines_env, "-e", &cols_env,
+            ];
+            if let Some(env) = &picker_current_env {
+                argv.extend(["-e", env]);
+            }
+            argv.extend([
+                "-v",
+                &mount,
+                &cfg.image,
+                "bash",
+                "--rcfile",
+                "/tmp/recorderrc",
+                "-i",
+            ]);
+            argv
+        };
         let pty = spawn(&argv, cfg.cols, cfg.rows).context("spawn docker run")?;
         let drainer = Drainer::start(pty.fd(), cfg.stubs);
         Ok(Self {
-            cfg, pty, drainer, _rcfile: rcfile,
-            events: Vec::new(),
+            cfg,
+            pty,
+            drainer,
+            _rcfile: rcfile,
+            recording: RecordingBuilder::new(),
             started_at: Instant::now(),
         })
     }
 
-    #[must_use] 
-    pub fn event_count(&self) -> usize { self.events.len() }
-    #[must_use] 
-    pub fn cols(&self) -> u16 { self.cfg.cols }
-    #[must_use] 
-    pub fn rows(&self) -> u16 { self.cfg.rows }
+    #[must_use]
+    pub fn event_count(&self) -> usize {
+        self.recording.event_count()
+    }
+    #[must_use]
+    pub fn cols(&self) -> u16 {
+        self.cfg.cols
+    }
+    #[must_use]
+    pub fn rows(&self) -> u16 {
+        self.cfg.rows
+    }
 
     /// Dwell at the current state for `dwell` of playback time, with `settle`
     /// of real wall-clock time to let the container produce output.
@@ -124,12 +195,103 @@ impl Recorder {
         self.send_and_capture(key.bytes(), dwell, DEFAULT_SETTLE)
     }
 
+    /// Send a single key with an explicit capture settle.
+    ///
+    /// Use this for interactive programs where each key should become a
+    /// distinct visible frame. Content-aware waits are still preferred when
+    /// the program emits a reliable marker.
+    ///
+    /// # Errors
+    /// As [`Recorder::dwell`].
+    pub fn key_settle(
+        &mut self,
+        key: Key,
+        dwell: Duration,
+        settle: Duration,
+    ) -> anyhow::Result<()> {
+        self.send_and_capture(key.bytes(), dwell, settle)
+    }
+
     /// Send a key `repeat` times, with `dwell` between each.
     ///
     /// # Errors
     /// As [`Recorder::dwell`].
     pub fn keys(&mut self, key: Key, dwell: Duration, repeat: usize) -> anyhow::Result<()> {
-        for _ in 0..repeat { self.key(key, dwell)?; }
+        for _ in 0..repeat {
+            self.key(key, dwell)?;
+        }
+        Ok(())
+    }
+
+    /// Send repeated raw key bytes as one live burst while advancing cast time
+    /// as if each key happened at `dwell` cadence.
+    ///
+    /// This is the virtual-time form of [`Recorder::keys`]: useful when the
+    /// child program can process queued input deterministically and the demo
+    /// does not need host sleeps between individual keys.
+    ///
+    /// # Errors
+    /// Recording exceeded `max_runtime`, or PTY write failed.
+    pub fn keys_burst(&mut self, key: Key, dwell: Duration, repeat: usize) -> anyhow::Result<()> {
+        if repeat == 0 {
+            return Ok(());
+        }
+
+        self.check_runtime()?;
+        let bytes = key.bytes();
+        let mut input = Vec::with_capacity(bytes.len() * repeat);
+        for _ in 0..repeat {
+            input.extend_from_slice(bytes);
+        }
+        write_all(self.pty.fd(), &input)?;
+
+        let total_dwell = dwell.saturating_mul(u32::try_from(repeat).unwrap_or(u32::MAX));
+        let captured = self.drainer.consume();
+        self.recording
+            .record_step(input, captured, DwellMs::from_duration(total_dwell))?;
+        Ok(())
+    }
+
+    /// Add terminal output directly to the cast without touching the PTY.
+    ///
+    /// This is the low-level presentation-time escape hatch. Use it only for
+    /// bytes that are known not to affect shell state, such as comments,
+    /// blank prompt lines, or screen-clear boundaries in marketing scenes.
+    ///
+    /// # Errors
+    /// Recording exceeded `max_runtime`.
+    pub fn push_virtual_output(
+        &mut self,
+        output: impl Into<Vec<u8>>,
+        dwell: Duration,
+    ) -> anyhow::Result<()> {
+        self.check_runtime()?;
+        self.recording
+            .record_output(output.into(), DwellMs::from_duration(dwell))?;
+        Ok(())
+    }
+
+    /// Advance cast presentation time without waiting on the child process.
+    ///
+    /// # Errors
+    /// Recording exceeded `max_runtime`.
+    pub fn advance_virtual_time(&mut self, dwell: Duration) -> anyhow::Result<()> {
+        self.push_virtual_output(Vec::new(), dwell)
+    }
+
+    /// Type text in the cast without sending it to the shell.
+    ///
+    /// # Errors
+    /// Recording exceeded `max_runtime`.
+    pub fn type_virtual_text(&mut self, text: &str, per_char: Duration) -> anyhow::Result<()> {
+        self.check_runtime()?;
+        for ch in text.chars() {
+            let mut buf = [0_u8; 4];
+            self.recording.record_output(
+                ch.encode_utf8(&mut buf).as_bytes().to_vec(),
+                DwellMs::from_duration(per_char),
+            )?;
+        }
         Ok(())
     }
 
@@ -139,10 +301,66 @@ impl Recorder {
     /// # Errors
     /// As [`Recorder::dwell`].
     pub fn type_text(&mut self, text: &str, per_char: Duration) -> anyhow::Result<()> {
+        if text.is_empty() {
+            return Ok(());
+        }
+
+        self.check_runtime()?;
+        let pending = self.drainer.consume();
+        if !pending.is_empty() {
+            self.recording
+                .record_output(pending, DwellMs::from_duration(Duration::ZERO))?;
+        }
+
+        let expected = text.as_bytes();
+        let watch = self.arm_watch(expected);
+        write_all(self.pty.fd(), expected)?;
+        watch.wait(ECHO_TIMEOUT).ok_or_else(|| {
+            anyhow::anyhow!(
+                "typed span echo timed out after {}ms waiting for {}",
+                ECHO_TIMEOUT.as_millis(),
+                escape_bytes(expected),
+            )
+        })?;
+
+        let captured = self.drainer.consume();
+        let Some(echo_start) = find_subslice(&captured, expected) else {
+            anyhow::bail!(
+                "typed span echo fired but captured output did not contain {}",
+                escape_bytes(expected),
+            );
+        };
+
+        if echo_start > 0 {
+            self.recording.record_output(
+                captured[..echo_start].to_vec(),
+                DwellMs::from_duration(Duration::ZERO),
+            )?;
+        }
+
+        let mut is_first_char = true;
         for ch in text.chars() {
             let mut buf = [0u8; 4];
             let bytes = ch.encode_utf8(&mut buf).as_bytes();
-            self.send_and_capture(bytes, per_char, DEFAULT_SETTLE)?;
+            if is_first_char {
+                self.recording.record_step(
+                    expected.to_vec(),
+                    bytes.to_vec(),
+                    DwellMs::from_duration(per_char),
+                )?;
+                is_first_char = false;
+            } else {
+                self.recording
+                    .record_output(bytes.to_vec(), DwellMs::from_duration(per_char))?;
+            }
+        }
+
+        let echo_end = echo_start + expected.len();
+        if echo_end < captured.len() {
+            self.recording.record_output(
+                captured[echo_end..].to_vec(),
+                DwellMs::from_duration(Duration::ZERO),
+            )?;
         }
         Ok(())
     }
@@ -153,6 +371,24 @@ impl Recorder {
     /// As [`Recorder::dwell`].
     pub fn send_raw(&mut self, bytes: &[u8], dwell: Duration) -> anyhow::Result<()> {
         self.send_and_capture(bytes, dwell, DEFAULT_SETTLE)
+    }
+
+    /// Send raw bytes and record output after `pattern` appears in the PTY
+    /// stream. The wait is wall-clock synchronization only; playback time
+    /// still advances by `dwell`.
+    ///
+    /// # Errors
+    /// Recording exceeded `max_runtime`, PTY write failed, or `pattern`
+    /// was not observed before `timeout`.
+    pub fn send_raw_wait_for(
+        &mut self,
+        bytes: &[u8],
+        dwell: Duration,
+        pattern: &[u8],
+        timeout: Duration,
+        label: &str,
+    ) -> anyhow::Result<Duration> {
+        self.send_and_capture_wait_for(bytes, dwell, pattern, timeout, label)
     }
 
     /// Arm a content-aware sync point: the drainer starts watching the
@@ -188,21 +424,82 @@ impl Recorder {
         self.drainer.register_watch(pattern.to_vec())
     }
 
+    /// Write bytes without creating a recorded playback event.
+    ///
+    /// This is for trace/timeline capture paths where presentation time
+    /// is compiled later instead of being attached to each write.
+    ///
+    /// # Errors
+    /// Recording exceeded `max_runtime`, or PTY write failed.
+    pub fn write_bytes(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
+        self.check_runtime()?;
+        if !bytes.is_empty() {
+            write_all(self.pty.fd(), bytes)?;
+        }
+        Ok(())
+    }
+
+    /// Capture bytes after a real-time settle without creating a playback
+    /// event. The settle is capture latency only.
+    ///
+    /// # Errors
+    /// Recording exceeded `max_runtime`.
+    pub fn capture_after(&mut self, settle: Duration) -> anyhow::Result<Vec<u8>> {
+        self.check_runtime()?;
+        std::thread::sleep(settle);
+        Ok(self.drainer.consume())
+    }
+
     fn send_and_capture(
-        &mut self, bytes: &[u8], dwell: Duration, settle: Duration,
+        &mut self,
+        bytes: &[u8],
+        dwell: Duration,
+        settle: Duration,
     ) -> anyhow::Result<()> {
+        self.check_runtime()?;
+        if !bytes.is_empty() {
+            write_all(self.pty.fd(), bytes)?;
+        }
+        std::thread::sleep(settle);
+        let captured = self.drainer.consume();
+        self.recording
+            .record_step(bytes.to_vec(), captured, DwellMs::from_duration(dwell))?;
+        Ok(())
+    }
+
+    fn send_and_capture_wait_for(
+        &mut self,
+        bytes: &[u8],
+        dwell: Duration,
+        pattern: &[u8],
+        timeout: Duration,
+        label: &str,
+    ) -> anyhow::Result<Duration> {
+        self.check_runtime()?;
+        let watch = self.arm_watch(pattern);
+        if !bytes.is_empty() {
+            write_all(self.pty.fd(), bytes)?;
+        }
+        let elapsed = watch.wait(timeout).ok_or_else(|| {
+            anyhow::anyhow!(
+                "{label} timed out after {}ms waiting for {}",
+                timeout.as_millis(),
+                escape_bytes(pattern),
+            )
+        })?;
+        let captured = self.drainer.consume();
+        self.recording
+            .record_step(bytes.to_vec(), captured, DwellMs::from_duration(dwell))?;
+        Ok(elapsed)
+    }
+
+    fn check_runtime(&self) -> anyhow::Result<()> {
         if self.started_at.elapsed() > self.cfg.max_runtime {
             anyhow::bail!(
                 "recording exceeded max_runtime={}ms (child hung or scene too long?)",
                 self.cfg.max_runtime.as_millis(),
             );
         }
-        if !bytes.is_empty() {
-            write_all(self.pty.fd(), bytes)?;
-        }
-        std::thread::sleep(settle);
-        let captured = self.drainer.consume();
-        self.events.push(RecordedEvent { output: captured, dwell });
         Ok(())
     }
 
@@ -213,66 +510,14 @@ impl Recorder {
     /// SIGKILL or waitpid failed (other than `ESRCH`, which is treated
     /// as already-exited).
     pub fn stop(self) -> anyhow::Result<Cast> {
-        let cast = self.build_cast();
+        let cast = self
+            .recording
+            .finish_synthetic(self.cfg.cols, self.cfg.rows)?
+            .into_cast();
         self.pty.terminate_child()?;
         // Drop fields in order: drainer joins, _rcfile unlinks.
         Ok(cast)
     }
-
-    fn build_cast(&self) -> Cast {
-        let header = CastHeader {
-            version: 2,
-            width:  u32::from(self.cfg.cols),
-            height: u32::from(self.cfg.rows),
-            env: [("TERM".into(), "xterm-256color".into()),
-                  ("SHELL".into(), "/bin/bash".into())].into_iter().collect(),
-        };
-        let mut events = Vec::new();
-        let mut t_ms: u64 = 0;
-        let mut last_output_t_ms: u64 = 0;
-        for ev in &self.events {
-            if !ev.output.is_empty() {
-                let data = String::from_utf8_lossy(&ev.output).into_owned();
-                events.push(CastEvent {
-                    time_s: ms_to_seconds(t_ms),
-                    kind: EventKind::Output,
-                    data,
-                });
-                last_output_t_ms = t_ms;
-            }
-            t_ms = t_ms.saturating_add(duration_to_ms(ev.dwell));
-        }
-        // Trailing-dwell preservation. Empty-output events are dropped from
-        // the cast, so any dwell after the final real event was previously
-        // lost. The downstream xterm.js replayer (snapshot.ts) gives the
-        // last cast event a hardcoded 1s dwell — which silently capped the
-        // recorder's outro dwell at 1s no matter what scene authors wrote.
-        // Fix: emit a synthetic empty-data terminal event at the final
-        // cumulative timestamp. xterm.js's term.write("") is a no-op
-        // visually, but the timestamp difference between the last real
-        // event and this synthetic one becomes the last frame's dwell.
-        if t_ms > last_output_t_ms && !events.is_empty() {
-            events.push(CastEvent {
-                time_s: ms_to_seconds(t_ms),
-                kind: EventKind::Output,
-                data: String::new(),
-            });
-        }
-        Cast { header, events }
-    }
-}
-
-/// `Duration::as_millis` returns `u128`; we saturate to `u64` for cast
-/// timestamps which are bounded well below `u64::MAX` ms (~584 million years).
-fn duration_to_ms(d: Duration) -> u64 {
-    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
-}
-
-/// Convert a `u64` ms count to a `f64` seconds value. Lossy above 2^53 ms,
-/// which is ~285 thousand years — not a concern for any cast we record.
-#[allow(clippy::cast_precision_loss)]
-fn ms_to_seconds(ms: u64) -> f64 {
-    ms as f64 / 1000.0
 }
 
 fn write_all(fd: i32, mut bytes: &[u8]) -> anyhow::Result<()> {
@@ -289,9 +534,37 @@ fn write_all(fd: i32, mut bytes: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Write the rcfile bash will source at startup. Two responsibilities:
-/// pin PWD to `$HOME` so the cd hook can't escape the demo container, and
-/// install a colored PS1 that visibly reflects ANSI palette changes.
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+fn escape_bytes(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+
+    let mut s = String::with_capacity(bytes.len() + 2);
+    s.push('"');
+    for &b in bytes {
+        match b {
+            0x1b => s.push_str("\\e"),
+            b'\\' => s.push_str("\\\\"),
+            b'"' => s.push_str("\\\""),
+            0x20..=0x7e => s.push(b as char),
+            _ => write!(s, "\\x{b:02x}").expect("infallible String fmt"),
+        }
+    }
+    s.push('"');
+    s
+}
+
+/// Write the rcfile bash will source at startup. Three responsibilities:
+/// pin PWD to `$HOME` so the cd hook can't escape the demo container,
+/// install a colored PS1 that visibly reflects ANSI palette changes, and
+/// clear the screen without spawning an external `clear` process.
 ///
 /// # Errors
 /// IO error creating or writing the temp file.
@@ -302,11 +575,34 @@ fn build_rcfile() -> std::io::Result<NamedTempFile> {
     // visibly change across themes.
     let ps1 = r"\[\e[31m\]t\[\e[33m\]i\[\e[32m\]n\[\e[36m\]t\[\e[0m\] $ ";
     let mut f = tempfile::Builder::new()
-        .prefix("tint-recorder-rc-").suffix(".rc")
+        .prefix("tint-recorder-rc-")
+        .suffix(".rc")
         .tempfile()?;
     writeln!(f, "cd \"$HOME\"")?;
     writeln!(f, "PS1='{ps1}'")?;
-    writeln!(f, "clear")?;
+    writeln!(f, "tint() {{")?;
+    writeln!(
+        f,
+        "    if [ \"$#\" -eq 0 ] && [ -n \"${{TINT_RECORDER_PICKER_CURRENT:-}}\" ]; then"
+    )?;
+    writeln!(f, "        . /usr/local/bin/tint || return $?")?;
+    writeln!(f, "        local _tint_result _tint_status")?;
+    writeln!(
+        f,
+        "        _tint_result=$(tint_pick \"$TINT_RECORDER_PICKER_CURRENT\")"
+    )?;
+    writeln!(f, "        _tint_status=$?")?;
+    writeln!(
+        f,
+        "        if [ \"$_tint_status\" -eq 0 ] && [ -n \"$_tint_result\" ]; then"
+    )?;
+    writeln!(f, "            printf '%s\\n' \"$_tint_result\"")?;
+    writeln!(f, "        fi")?;
+    writeln!(f, "        return \"$_tint_status\"")?;
+    writeln!(f, "    fi")?;
+    writeln!(f, "    command tint \"$@\"")?;
+    writeln!(f, "}}")?;
+    writeln!(f, "printf '\\033[H\\033[2J\\033[3J'")?;
     f.flush()?;
     Ok(f)
 }
@@ -329,6 +625,6 @@ mod tests {
         let s = std::fs::read_to_string(f.path()).unwrap();
         assert!(s.contains("cd \"$HOME\""));
         assert!(s.contains("PS1="));
-        assert!(s.contains("clear"));
+        assert!(s.contains("printf"));
     }
 }

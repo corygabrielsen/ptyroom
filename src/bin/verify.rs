@@ -23,16 +23,23 @@ fn main() -> ExitCode {
     let args = Args::parse();
     match run(&args) {
         Ok(code) => code,
-        Err(e) => { eprintln!("verify: {e:#}"); ExitCode::from(2) }
+        Err(e) => {
+            eprintln!("verify: {e:#}");
+            ExitCode::from(2)
+        }
     }
 }
 
 fn run(args: &Args) -> anyhow::Result<ExitCode> {
     if args.list_scenes {
-        for name in SCENES { println!("{name}"); }
+        for name in SCENES {
+            println!("{name}");
+        }
         return Ok(ExitCode::SUCCESS);
     }
-    let scene = args.scene.as_deref()
+    let scene = args
+        .scene
+        .as_deref()
         .ok_or_else(|| anyhow::anyhow!("scene argument required (or pass --list-scenes)"))?;
     let contract = registry(scene)
         .ok_or_else(|| anyhow::anyhow!("no contract defined for scene {scene:?}"))?;

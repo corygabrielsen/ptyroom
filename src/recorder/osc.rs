@@ -41,10 +41,15 @@ impl StubColors {
             b"10" => ("10", self.fg),
             _ => return None,
         };
-        Some(format!(
-            "\x1b]{code_str};rgb:{:02x}/{:02x}/{:02x}\x1b\\",
-            color.r(), color.g(), color.b(),
-        ).into_bytes())
+        Some(
+            format!(
+                "\x1b]{code_str};rgb:{:02x}/{:02x}/{:02x}\x1b\\",
+                color.r(),
+                color.g(),
+                color.b(),
+            )
+            .into_bytes(),
+        )
     }
 }
 
@@ -75,7 +80,8 @@ fn setter_re() -> &'static Regex {
 /// updates.
 #[must_use]
 pub fn setters_in_chunk(chunk: &[u8]) -> Vec<(u8, HexColor)> {
-    setter_re().captures_iter(chunk)
+    setter_re()
+        .captures_iter(chunk)
         .filter_map(|cap| {
             let code_b = cap.get(1)?.as_bytes();
             let code: u8 = match code_b {
@@ -92,7 +98,8 @@ pub fn setters_in_chunk(chunk: &[u8]) -> Vec<(u8, HexColor)> {
 
 /// Scan `chunk` for OSC queries and emit the canned replies.
 pub fn replies_for_chunk(chunk: &[u8], stubs: StubColors) -> Vec<Vec<u8>> {
-    query_re().captures_iter(chunk)
+    query_re()
+        .captures_iter(chunk)
         .filter_map(|cap| {
             let code = cap.get(1)?.as_bytes();
             stubs.reply_for(code)

@@ -1,10 +1,11 @@
-.PHONY: setup build build-image render demo demo-parallel demo-all demo-all-parallel demo-readme demo-web smoke picker cli cd-hook custom-theme bench-tiny bench-churn bench-subloops bench-subloops-parallel bench all-scenes verify verify-all clean
+.PHONY: setup build build-image recorder-warm recorder-warm-reset render demo demo-fast demo-parallel demo-all demo-all-fast demo-all-parallel demo-readme demo-web smoke picker picker-timeline-prototype cli cd-hook custom-theme recorder-perf bench-tiny bench-churn bench-subloops bench-subloops-parallel bench all-scenes verify verify-all clean
 
 SCENE     ?= demo_full
 CAST       = assets/$(SCENE).cast
 OUT_EXT   ?= .gif
 OUT        = assets/$(SCENE)$(OUT_EXT)
 IMAGE     := tint-recorder:demo
+WARM_CONTAINER ?= tint-recorder-warm
 TINT_PATH ?= /home/cory/code/tint/tint
 # Painter font size in pixels. Cell width and height scale linearly.
 # Default 14 → 7×16 cells → 80×20 grid renders at 584×344 (good for dev
@@ -12,18 +13,22 @@ TINT_PATH ?= /home/cory/code/tint/tint
 # in the demo-readme / demo-web targets below.
 FONT_SIZE ?= 14
 
-# Host requirements: cargo (build scene binaries) + docker (run them).
+# Host requirements: cargo (build scene/render binaries), docker (recording),
+# node/npm (xterm snapshot replay), and ffmpeg (encoding).
 setup:
 	@command -v cargo  >/dev/null && echo "cargo:  $$(cargo --version)"  || (echo "missing cargo"  && exit 1)
 	@command -v docker >/dev/null && echo "docker: $$(docker --version)" || (echo "missing docker" && exit 1)
+	@command -v node   >/dev/null && echo "node:   $$(node --version)"   || (echo "missing node"   && exit 1)
+	@command -v npm    >/dev/null && echo "npm:    $$(npm --version)"    || (echo "missing npm"    && exit 1)
+	@command -v ffmpeg >/dev/null && echo "ffmpeg: $$(ffmpeg -version | head -1)" || (echo "missing ffmpeg" && exit 1)
 
-# Compile every host-side scene binary. They drive the container via PTY;
-# rendering happens inside the image.
+# Compile every host-side scene/render binary. Scene binaries drive the
+# container via PTY; snapshot, paint, encode, and verify run on the host.
 build:
 	cargo build --release --bin smoke --bin demo_full \
-	            --bin picker --bin cli --bin cd_hook --bin custom_theme \
+	            --bin picker --bin picker_timeline --bin cli --bin cd_hook --bin custom_theme \
 	            --bin bench_tiny --bin bench_churn --bin bench_subloops \
-	            --bin paint --bin encode --bin verify --bin stitch
+	            --bin paint --bin encode --bin verify --bin stitch --bin recorder_perf
 
 # Build the recording-only image. Just Dockerfile + the tint script —
 # everything post-recording (snapshot replay, paint, encode, verify)
@@ -32,31 +37,32 @@ build-image:
 	tar -c Dockerfile -C $(dir $(TINT_PATH)) $(notdir $(TINT_PATH)) | \
 		docker build -t $(IMAGE) -
 
-demo: SCENE=demo_full
-demo: build build-image render
+recorder-warm: build-image
+	@if [ "$$(docker inspect -f '{{.State.Running}}' $(WARM_CONTAINER) 2>/dev/null)" = "true" ]; then \
+		echo "warm recorder: $(WARM_CONTAINER)"; \
+	else \
+		docker rm -f $(WARM_CONTAINER) >/dev/null 2>&1 || true; \
+		docker run -d --name $(WARM_CONTAINER) $(IMAGE) sleep infinity >/dev/null; \
+		echo "started warm recorder: $(WARM_CONTAINER)"; \
+	fi
 
-# Parallel-record demo. Runs the four feature subloops (cli, picker,
-# cd-hook, custom-theme) concurrently in independent docker containers,
-# stitches the per-subloop casts, then runs the normal post-recording
-# pipeline. Bounded by the slowest single subloop (~12s for picker)
-# instead of the sum (~46s sequential).
+recorder-warm-reset: build-image
+	docker rm -f $(WARM_CONTAINER) >/dev/null 2>&1 || true
+	docker run -d --name $(WARM_CONTAINER) $(IMAGE) sleep infinity >/dev/null
+	@echo "started warm recorder: $(WARM_CONTAINER)"
+
+demo: demo-parallel
+demo-fast: demo-parallel
+
+# Fast demo render. The recorder now uses content-aware sync points, so a
+# single warm container is faster than four parallel docker starts plus stitch.
 #
 # Override OUT_EXT and FONT_SIZE for high-res variants:
 #   make demo-parallel                       # default GIF, FONT_SIZE=14
 #   make demo-parallel OUT_EXT=.mp4 FONT_SIZE=28
-demo-parallel: build build-image
-	@echo "=== parallel record: 4 demo subloops ==="
-	@printf '0\n1\n2\n3\n' | \
-		xargs -P 4 -I{} ./target/release/demo_full \
-		    --subloop-only {} \
-		    --cast assets/demo_full_{}.cast
-	@echo "=== stitch ==="
-	./target/release/stitch \
-	    --out assets/demo_full.cast \
-	    assets/demo_full_0.cast \
-	    assets/demo_full_1.cast \
-	    assets/demo_full_2.cast \
-	    assets/demo_full_3.cast
+demo-parallel: build recorder-warm
+	@echo "=== fast record: warm content-aware recorder ==="
+	TINT_RECORDER_CONTAINER=$(WARM_CONTAINER) ./target/release/demo_full --cast assets/demo_full.cast
 	@echo "=== render ==="
 	rm -rf assets/snapshots assets/frames
 	./node_modules/.bin/tsx ./renderer/snapshot.ts assets/demo_full.cast assets/snapshots
@@ -71,34 +77,14 @@ demo-parallel: build build-image
 # in parallel. Saves duplicate paint work and lets the two encoders
 # share CPU cores via parallel ffmpeg invocations.
 #
-# Pairs with demo-parallel's parallel record. Full marketing render flow:
-#   make demo-all-parallel  →  parallel record + stitch + paint + parallel encode
-demo-all: SCENE=demo_full
-demo-all: FONT_SIZE=28
-demo-all: build build-image
-	./target/release/$(SCENE) --cast assets/$(SCENE).cast
-	rm -rf assets/snapshots assets/frames
-	./node_modules/.bin/tsx ./renderer/snapshot.ts assets/$(SCENE).cast assets/snapshots
-	./target/release/paint --font-size $(FONT_SIZE) assets/snapshots assets/frames
-	./target/release/encode assets/frames assets/snapshots/timing.json assets/$(SCENE).mp4 & \
-	./target/release/encode assets/frames assets/snapshots/timing.json assets/$(SCENE).gif --width 824 & \
-	wait
-	./target/release/verify $(SCENE) --snapshots-dir assets/snapshots
-	@echo "wrote assets/$(SCENE).mp4 + assets/$(SCENE).gif"
+# Full marketing render flow:
+#   make demo-all-parallel  →  fast record + paint + parallel encode
+demo-all: demo-all-parallel
+demo-all-fast: demo-all-parallel
 
-demo-all-parallel: build build-image
-	@echo "=== parallel record: 4 demo subloops ==="
-	@printf '0\n1\n2\n3\n' | \
-		xargs -P 4 -I{} ./target/release/demo_full \
-		    --subloop-only {} \
-		    --cast assets/demo_full_{}.cast
-	@echo "=== stitch ==="
-	./target/release/stitch \
-	    --out assets/demo_full.cast \
-	    assets/demo_full_0.cast \
-	    assets/demo_full_1.cast \
-	    assets/demo_full_2.cast \
-	    assets/demo_full_3.cast
+demo-all-parallel: build recorder-warm
+	@echo "=== fast record: warm content-aware recorder ==="
+	TINT_RECORDER_CONTAINER=$(WARM_CONTAINER) ./target/release/demo_full --cast assets/demo_full.cast
 	@echo "=== paint at FONT_SIZE=28 ==="
 	rm -rf assets/snapshots assets/frames
 	./node_modules/.bin/tsx ./renderer/snapshot.ts assets/demo_full.cast assets/snapshots
@@ -136,6 +122,22 @@ smoke: build build-image render
 picker: SCENE=picker
 picker: build build-image render
 
+picker-timeline-prototype: build build-image
+	@echo "=== record picker semantic trace ==="
+	./target/release/picker_timeline \
+	    --cast assets/picker_timeline.cast \
+	    --trace assets/picker_timeline.trace.json
+	@echo "=== snapshot + paint ==="
+	rm -rf assets/picker_timeline_snapshots assets/picker_timeline_frames
+	./node_modules/.bin/tsx ./renderer/snapshot.ts assets/picker_timeline.cast assets/picker_timeline_snapshots
+	./target/release/paint --font-size 28 assets/picker_timeline_snapshots assets/picker_timeline_frames
+	@echo "=== encode: CPU paint + libx264, CPU paint + NVENC, GIF ==="
+	./target/release/encode assets/picker_timeline_frames assets/picker_timeline_snapshots/timing.json assets/picker_timeline_libx264.mp4 --mp4-encoder libx264
+	./target/release/encode assets/picker_timeline_frames assets/picker_timeline_snapshots/timing.json assets/picker_timeline_nvenc.mp4 --mp4-encoder h264_nvenc
+	./target/release/encode assets/picker_timeline_frames assets/picker_timeline_snapshots/timing.json assets/picker_timeline.gif --width 824
+	./target/release/verify picker --snapshots-dir assets/picker_timeline_snapshots
+	@echo "wrote assets/picker_timeline_libx264.mp4 + assets/picker_timeline_nvenc.mp4 + assets/picker_timeline.gif"
+
 cli: SCENE=cli
 cli: build build-image render
 
@@ -144,6 +146,9 @@ cd-hook: build build-image render
 
 custom-theme: SCENE=custom_theme
 custom-theme: build build-image render
+
+recorder-perf: build recorder-warm
+	TINT_RECORDER_CONTAINER=$(WARM_CONTAINER) ./target/release/recorder_perf --iterations 5
 
 # Benchmark scenes for measuring pipeline performance. All use the
 # default FONT_SIZE so timings reflect the dev-loop render path.
@@ -251,5 +256,5 @@ verify-all: build build-image
 	fi
 
 clean:
-	rm -rf assets/snapshots assets/frames assets/concat.txt
-	rm -f assets/*.cast assets/*.gif assets/*.mp4
+	rm -rf assets/snapshots assets/frames assets/*_snapshots assets/*_frames assets/concat.txt
+	rm -f assets/*.cast assets/*.gif assets/*.mp4 assets/*.trace.json

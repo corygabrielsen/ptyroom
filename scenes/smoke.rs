@@ -14,7 +14,9 @@ struct Args {
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let mut r = Recorder::start(RecorderConfig {
-        cols: 100, rows: 30, ..Default::default()
+        cols: 100,
+        rows: 30,
+        ..Default::default()
     })?;
 
     r.dwell(ms(800), ms(600))?;

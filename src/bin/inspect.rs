@@ -19,11 +19,20 @@ struct Args {
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let snap = Snapshot::load(&args.snapshot)?;
-    let range = RowRange::parse(&args.rows, snap.rows())
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let mode = if args.color { InspectMode::Color } else { InspectMode::Plain };
-    eprintln!("{}: bg={} fg={} {}x{}",
-        args.snapshot.display(), snap.bg, snap.fg, snap.rows(), snap.cols());
+    let range = RowRange::parse(&args.rows, snap.rows()).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let mode = if args.color {
+        InspectMode::Color
+    } else {
+        InspectMode::Plain
+    };
+    eprintln!(
+        "{}: bg={} fg={} {}x{}",
+        args.snapshot.display(),
+        snap.bg,
+        snap.fg,
+        snap.rows(),
+        snap.cols()
+    );
     print!("{}", render(&snap, range, mode));
     Ok(())
 }

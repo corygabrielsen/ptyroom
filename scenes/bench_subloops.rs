@@ -41,14 +41,14 @@ fn run_synthetic_subloop(r: &mut Recorder, idx: usize) -> anyhow::Result<()> {
     // 800ms settle so the bg flip is visible in the cast — same
     // shape as demo_full's act lines, without bespoke per-feature
     // logic (picker, cd-hook, heredoc).
-    line(r, "tint dracula",         ms(35), ms(0), ms(800))?;
+    line(r, "tint dracula", ms(35), ms(0), ms(800))?;
     line(r, "tint solarized-light", ms(35), ms(0), ms(800))?;
-    line(r, "tint monokai",         ms(35), ms(0), ms(800))?;
+    line(r, "tint monokai", ms(35), ms(0), ms(800))?;
 
     blank(r, ms(0))?;
     line(r, "tint reset", ms(35), ms(0), ms(0))?;
     blank(r, ms(0))?;
-    line(r, "clear",      ms(50), ms(0), ms(0))?;
+    line(r, "clear", ms(50), ms(0), ms(0))?;
     Ok(())
 }
 

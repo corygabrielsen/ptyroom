@@ -23,17 +23,29 @@ impl RowRange {
     pub fn parse(spec: &str, total: usize) -> Result<Self, String> {
         let clamp = |n: usize| n.min(total);
         let Some((a, b)) = spec.split_once(':') else {
-            let n: usize = spec.parse().map_err(|_| format!("not a number: {spec:?}"))?;
+            let n: usize = spec
+                .parse()
+                .map_err(|_| format!("not a number: {spec:?}"))?;
             let n = clamp(n);
-            return Ok(Self { start: n, end: clamp(n + 1) });
+            return Ok(Self {
+                start: n,
+                end: clamp(n + 1),
+            });
         };
-        let start = if a.is_empty() { 0 } else {
+        let start = if a.is_empty() {
+            0
+        } else {
             clamp(a.parse().map_err(|_| format!("not a number: {a:?}"))?)
         };
-        let end = if b.is_empty() { total } else {
+        let end = if b.is_empty() {
+            total
+        } else {
             clamp(b.parse().map_err(|_| format!("not a number: {b:?}"))?)
         };
-        Ok(Self { start, end: end.max(start) })
+        Ok(Self {
+            start,
+            end: end.max(start),
+        })
     }
 }
 
@@ -62,14 +74,21 @@ pub fn render(snap: &Snapshot, range: RowRange, mode: InspectMode) -> String {
 }
 
 fn render_row_plain(snap: &Snapshot, y: usize) -> String {
-    snap.grid.row(y).map(|row| {
-        row.iter().map(|c| c.as_ref().map_or(' ', Cell::first_char)).collect()
-    }).unwrap_or_default()
+    snap.grid
+        .row(y)
+        .map(|row| {
+            row.iter()
+                .map(|c| c.as_ref().map_or(' ', Cell::first_char))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn render_row_color(snap: &Snapshot, y: usize) -> String {
     use std::fmt::Write as _;
-    let Some(row) = snap.grid.row(y) else { return String::new() };
+    let Some(row) = snap.grid.row(y) else {
+        return String::new();
+    };
     let mut out = String::new();
     for cell in row {
         match cell {
@@ -95,31 +114,36 @@ mod tests {
     #[test]
     fn row_range_parses_full() {
         let r = RowRange::parse(":", 10).unwrap();
-        assert_eq!(r.start, 0); assert_eq!(r.end, 10);
+        assert_eq!(r.start, 0);
+        assert_eq!(r.end, 10);
     }
 
     #[test]
     fn row_range_parses_bounded() {
         let r = RowRange::parse("3:7", 10).unwrap();
-        assert_eq!(r.start, 3); assert_eq!(r.end, 7);
+        assert_eq!(r.start, 3);
+        assert_eq!(r.end, 7);
     }
 
     #[test]
     fn row_range_parses_open_start() {
         let r = RowRange::parse(":5", 10).unwrap();
-        assert_eq!(r.start, 0); assert_eq!(r.end, 5);
+        assert_eq!(r.start, 0);
+        assert_eq!(r.end, 5);
     }
 
     #[test]
     fn row_range_parses_open_end() {
         let r = RowRange::parse("5:", 10).unwrap();
-        assert_eq!(r.start, 5); assert_eq!(r.end, 10);
+        assert_eq!(r.start, 5);
+        assert_eq!(r.end, 10);
     }
 
     #[test]
     fn row_range_parses_single() {
         let r = RowRange::parse("4", 10).unwrap();
-        assert_eq!(r.start, 4); assert_eq!(r.end, 5);
+        assert_eq!(r.start, 4);
+        assert_eq!(r.end, 5);
     }
 
     #[test]

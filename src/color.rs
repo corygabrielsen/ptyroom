@@ -20,25 +20,33 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 pub struct HexColor(u32);
 
 impl HexColor {
-    #[must_use] 
+    #[must_use]
     pub const fn from_rgb(r: u8, g: u8, b: u8) -> Self {
         HexColor(((r as u32) << 16) | ((g as u32) << 8) | (b as u32))
     }
 
-    #[must_use] 
-    pub const fn r(self) -> u8 { ((self.0 >> 16) & 0xff) as u8 }
-    #[must_use] 
-    pub const fn g(self) -> u8 { ((self.0 >> 8) & 0xff) as u8 }
-    #[must_use] 
-    pub const fn b(self) -> u8 { (self.0 & 0xff) as u8 }
+    #[must_use]
+    pub const fn r(self) -> u8 {
+        ((self.0 >> 16) & 0xff) as u8
+    }
+    #[must_use]
+    pub const fn g(self) -> u8 {
+        ((self.0 >> 8) & 0xff) as u8
+    }
+    #[must_use]
+    pub const fn b(self) -> u8 {
+        (self.0 & 0xff) as u8
+    }
 
-    #[must_use] 
-    pub const fn rgb(self) -> (u8, u8, u8) { (self.r(), self.g(), self.b()) }
+    #[must_use]
+    pub const fn rgb(self) -> (u8, u8, u8) {
+        (self.r(), self.g(), self.b())
+    }
 
     /// Parse `#rrggbb`, `rrggbb`, or the xterm OSC color reply form
     /// `rgb:RR[RR]/GG[GG]/BB[BB]`. Case-insensitive. Returns `None` on any
     /// malformed input. Total — never panics.
-    #[must_use] 
+    #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         let s = s.trim();
         if let Some(rest) = s.strip_prefix("rgb:") {
@@ -62,7 +70,9 @@ impl HexColor {
         let r = parse_xterm_component(it.next()?)?;
         let g = parse_xterm_component(it.next()?)?;
         let b = parse_xterm_component(it.next()?)?;
-        if it.next().is_some() { return None; }
+        if it.next().is_some() {
+            return None;
+        }
         Some(Self::from_rgb(r, g, b))
     }
 }
@@ -122,9 +132,8 @@ impl Serialize for HexColor {
 impl<'de> Deserialize<'de> for HexColor {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let s = String::deserialize(d)?;
-        HexColor::parse(&s).ok_or_else(|| serde::de::Error::custom(
-            format!("invalid hex color: {s:?}"),
-        ))
+        HexColor::parse(&s)
+            .ok_or_else(|| serde::de::Error::custom(format!("invalid hex color: {s:?}")))
     }
 }
 
@@ -148,18 +157,18 @@ impl CellColor {
     /// terminal default and OSC 4 palette overrides. Falls back to the
     /// xterm default 16-color palette for indices 0-15 if no override is
     /// available, then to `default_for_layer` as the ultimate fallback.
-    #[must_use] 
-    pub fn resolve(
-        &self,
-        default_for_layer: HexColor,
-        palette: &PaletteOverrides,
-    ) -> HexColor {
+    #[must_use]
+    pub fn resolve(&self, default_for_layer: HexColor, palette: &PaletteOverrides) -> HexColor {
         match self {
             CellColor::Default => default_for_layer,
             CellColor::Rgb(c) => *c,
             CellColor::Palette { idx, fallback } => {
-                if let Some(fb) = fallback { return *fb; }
-                if let Some(over) = palette.get(*idx) { return over; }
+                if let Some(fb) = fallback {
+                    return *fb;
+                }
+                if let Some(over) = palette.get(*idx) {
+                    return over;
+                }
                 if (*idx as usize) < DEFAULT_ANSI_16.len() {
                     return DEFAULT_ANSI_16[*idx as usize];
                 }
@@ -192,15 +201,16 @@ impl<'de> Deserialize<'de> for CellColor {
         #[serde(untagged)]
         enum Repr {
             Hex(String),
-            Palette { palette: u8, fallback: Option<HexColor> },
+            Palette {
+                palette: u8,
+                fallback: Option<HexColor>,
+            },
         }
         match Option::<Repr>::deserialize(d)? {
             None => Ok(CellColor::Default),
-            Some(Repr::Hex(s)) => HexColor::parse(&s)
-                .map(CellColor::Rgb)
-                .ok_or_else(|| serde::de::Error::custom(
-                    format!("invalid cell color string: {s:?}"),
-                )),
+            Some(Repr::Hex(s)) => HexColor::parse(&s).map(CellColor::Rgb).ok_or_else(|| {
+                serde::de::Error::custom(format!("invalid cell color string: {s:?}"))
+            }),
             Some(Repr::Palette { palette, fallback }) => Ok(CellColor::Palette {
                 idx: palette,
                 fallback,
@@ -218,10 +228,12 @@ impl<'de> Deserialize<'de> for CellColor {
 pub struct PaletteOverrides(Vec<(u8, HexColor)>);
 
 impl PaletteOverrides {
-    #[must_use] 
-    pub fn new() -> Self { Self(Vec::new()) }
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Vec::new())
+    }
 
-    #[must_use] 
+    #[must_use]
     pub fn get(&self, idx: u8) -> Option<HexColor> {
         self.0.iter().find_map(|(k, v)| (*k == idx).then_some(*v))
     }
@@ -238,8 +250,10 @@ impl PaletteOverrides {
         self.0.iter().copied()
     }
 
-    #[must_use] 
-    pub fn is_empty(&self) -> bool { self.0.is_empty() }
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
 }
 
 impl Serialize for PaletteOverrides {
@@ -260,9 +274,9 @@ impl<'de> Deserialize<'de> for PaletteOverrides {
             std::collections::BTreeMap::deserialize(d)?;
         let mut out = PaletteOverrides::new();
         for (k, v) in map {
-            let idx: u8 = k.parse().map_err(|_| serde::de::Error::custom(
-                format!("invalid palette index key: {k:?}"),
-            ))?;
+            let idx: u8 = k.parse().map_err(|_| {
+                serde::de::Error::custom(format!("invalid palette index key: {k:?}"))
+            })?;
             out.set(idx, v);
         }
         Ok(out)
@@ -275,14 +289,22 @@ impl<'de> Deserialize<'de> for PaletteOverrides {
 /// when a [`CellColor::Palette`] reference has no inline fallback and no OSC 4
 /// override. Mirrors the values used by `paint.py`'s `DEFAULT_ANSI`.
 pub const DEFAULT_ANSI_16: [HexColor; 16] = [
-    HexColor::from_rgb(0x00, 0x00, 0x00), HexColor::from_rgb(0xcd, 0x00, 0x00),
-    HexColor::from_rgb(0x00, 0xcd, 0x00), HexColor::from_rgb(0xcd, 0xcd, 0x00),
-    HexColor::from_rgb(0x00, 0x00, 0xee), HexColor::from_rgb(0xcd, 0x00, 0xcd),
-    HexColor::from_rgb(0x00, 0xcd, 0xcd), HexColor::from_rgb(0xe5, 0xe5, 0xe5),
-    HexColor::from_rgb(0x7f, 0x7f, 0x7f), HexColor::from_rgb(0xff, 0x00, 0x00),
-    HexColor::from_rgb(0x00, 0xff, 0x00), HexColor::from_rgb(0xff, 0xff, 0x00),
-    HexColor::from_rgb(0x5c, 0x5c, 0xff), HexColor::from_rgb(0xff, 0x00, 0xff),
-    HexColor::from_rgb(0x00, 0xff, 0xff), HexColor::from_rgb(0xff, 0xff, 0xff),
+    HexColor::from_rgb(0x00, 0x00, 0x00),
+    HexColor::from_rgb(0xcd, 0x00, 0x00),
+    HexColor::from_rgb(0x00, 0xcd, 0x00),
+    HexColor::from_rgb(0xcd, 0xcd, 0x00),
+    HexColor::from_rgb(0x00, 0x00, 0xee),
+    HexColor::from_rgb(0xcd, 0x00, 0xcd),
+    HexColor::from_rgb(0x00, 0xcd, 0xcd),
+    HexColor::from_rgb(0xe5, 0xe5, 0xe5),
+    HexColor::from_rgb(0x7f, 0x7f, 0x7f),
+    HexColor::from_rgb(0xff, 0x00, 0x00),
+    HexColor::from_rgb(0x00, 0xff, 0x00),
+    HexColor::from_rgb(0xff, 0xff, 0x00),
+    HexColor::from_rgb(0x5c, 0x5c, 0xff),
+    HexColor::from_rgb(0xff, 0x00, 0xff),
+    HexColor::from_rgb(0x00, 0xff, 0xff),
+    HexColor::from_rgb(0xff, 0xff, 0xff),
 ];
 
 #[cfg(test)]
@@ -291,12 +313,18 @@ mod tests {
 
     #[test]
     fn parses_hex_with_hash() {
-        assert_eq!(HexColor::parse("#aabbcc"), Some(HexColor::from_rgb(0xaa, 0xbb, 0xcc)));
+        assert_eq!(
+            HexColor::parse("#aabbcc"),
+            Some(HexColor::from_rgb(0xaa, 0xbb, 0xcc))
+        );
     }
 
     #[test]
     fn parses_hex_without_hash() {
-        assert_eq!(HexColor::parse("AABBCC"), Some(HexColor::from_rgb(0xaa, 0xbb, 0xcc)));
+        assert_eq!(
+            HexColor::parse("AABBCC"),
+            Some(HexColor::from_rgb(0xaa, 0xbb, 0xcc))
+        );
     }
 
     #[test]
@@ -311,17 +339,26 @@ mod tests {
 
     #[test]
     fn parses_xterm_rgb_2digit() {
-        assert_eq!(HexColor::parse("rgb:aa/bb/cc"), Some(HexColor::from_rgb(0xaa, 0xbb, 0xcc)));
+        assert_eq!(
+            HexColor::parse("rgb:aa/bb/cc"),
+            Some(HexColor::from_rgb(0xaa, 0xbb, 0xcc))
+        );
     }
 
     #[test]
     fn parses_xterm_rgb_4digit_keeps_high_byte() {
-        assert_eq!(HexColor::parse("rgb:abcd/ef01/2345"), Some(HexColor::from_rgb(0xab, 0xef, 0x23)));
+        assert_eq!(
+            HexColor::parse("rgb:abcd/ef01/2345"),
+            Some(HexColor::from_rgb(0xab, 0xef, 0x23))
+        );
     }
 
     #[test]
     fn parses_xterm_rgb_1digit_repeats() {
-        assert_eq!(HexColor::parse("rgb:f/0/a"), Some(HexColor::from_rgb(0xff, 0x00, 0xaa)));
+        assert_eq!(
+            HexColor::parse("rgb:f/0/a"),
+            Some(HexColor::from_rgb(0xff, 0x00, 0xaa))
+        );
     }
 
     #[test]
@@ -345,31 +382,46 @@ mod tests {
     #[test]
     fn cell_color_palette_uses_inline_fallback_first() {
         let inline = HexColor::from_rgb(0xaa, 0xaa, 0xaa);
-        let c = CellColor::Palette { idx: 1, fallback: Some(inline) };
+        let c = CellColor::Palette {
+            idx: 1,
+            fallback: Some(inline),
+        };
         let mut overrides = PaletteOverrides::new();
         overrides.set(1, HexColor::from_rgb(0xbb, 0xbb, 0xbb));
-        assert_eq!(c.resolve(HexColor::from_rgb(0,0,0), &overrides), inline);
+        assert_eq!(c.resolve(HexColor::from_rgb(0, 0, 0), &overrides), inline);
     }
 
     #[test]
     fn cell_color_palette_uses_overrides_when_no_inline_fallback() {
         let over = HexColor::from_rgb(0xbb, 0xbb, 0xbb);
-        let c = CellColor::Palette { idx: 1, fallback: None };
+        let c = CellColor::Palette {
+            idx: 1,
+            fallback: None,
+        };
         let mut overrides = PaletteOverrides::new();
         overrides.set(1, over);
-        assert_eq!(c.resolve(HexColor::from_rgb(0,0,0), &overrides), over);
+        assert_eq!(c.resolve(HexColor::from_rgb(0, 0, 0), &overrides), over);
     }
 
     #[test]
     fn cell_color_palette_falls_back_to_default_ansi() {
-        let c = CellColor::Palette { idx: 1, fallback: None };
+        let c = CellColor::Palette {
+            idx: 1,
+            fallback: None,
+        };
         let overrides = PaletteOverrides::new();
-        assert_eq!(c.resolve(HexColor::from_rgb(0,0,0), &overrides), DEFAULT_ANSI_16[1]);
+        assert_eq!(
+            c.resolve(HexColor::from_rgb(0, 0, 0), &overrides),
+            DEFAULT_ANSI_16[1]
+        );
     }
 
     #[test]
     fn cell_color_palette_high_idx_falls_back_to_layer_default() {
-        let c = CellColor::Palette { idx: 200, fallback: None };
+        let c = CellColor::Palette {
+            idx: 200,
+            fallback: None,
+        };
         let overrides = PaletteOverrides::new();
         let dflt = HexColor::from_rgb(0x12, 0x34, 0x56);
         assert_eq!(c.resolve(dflt, &overrides), dflt);

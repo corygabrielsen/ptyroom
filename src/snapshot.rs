@@ -24,28 +24,43 @@ pub struct Cell {
     pub bg: CellColor,
     /// Boolean attribute flags, encoded as 0/1 to mirror the JSON wire format.
     /// Use the `is_*` accessors for typed access.
-    #[serde(default)] pub bold: u8,
-    #[serde(default)] pub dim: u8,
-    #[serde(default)] pub italic: u8,
-    #[serde(default)] pub underline: u8,
-    #[serde(default)] pub inverse: u8,
+    #[serde(default)]
+    pub bold: u8,
+    #[serde(default)]
+    pub dim: u8,
+    #[serde(default)]
+    pub italic: u8,
+    #[serde(default)]
+    pub underline: u8,
+    #[serde(default)]
+    pub inverse: u8,
 }
 
 impl Cell {
-    #[must_use] 
-    pub fn is_bold(&self)      -> bool { self.bold != 0 }
-    #[must_use] 
-    pub fn is_dim(&self)       -> bool { self.dim != 0 }
-    #[must_use] 
-    pub fn is_italic(&self)    -> bool { self.italic != 0 }
-    #[must_use] 
-    pub fn is_underline(&self) -> bool { self.underline != 0 }
-    #[must_use] 
-    pub fn is_inverse(&self)   -> bool { self.inverse != 0 }
+    #[must_use]
+    pub fn is_bold(&self) -> bool {
+        self.bold != 0
+    }
+    #[must_use]
+    pub fn is_dim(&self) -> bool {
+        self.dim != 0
+    }
+    #[must_use]
+    pub fn is_italic(&self) -> bool {
+        self.italic != 0
+    }
+    #[must_use]
+    pub fn is_underline(&self) -> bool {
+        self.underline != 0
+    }
+    #[must_use]
+    pub fn is_inverse(&self) -> bool {
+        self.inverse != 0
+    }
 
     /// First grapheme as a `char`, or space if the cell is empty/multi-byte.
     /// Used for ASCII row dumps where we want one column per cell.
-    #[must_use] 
+    #[must_use]
     pub fn first_char(&self) -> char {
         self.ch.chars().next().unwrap_or(' ')
     }
@@ -54,7 +69,7 @@ impl Cell {
     /// layer defaults and palette overrides, applying the `inverse`
     /// attribute as a final swap. Single source of truth — both the PNG
     /// renderer and the ASCII inspector go through here.
-    #[must_use] 
+    #[must_use]
     pub fn resolve_layers(&self, snap: &Snapshot) -> (HexColor, HexColor) {
         let mut fg = self.fg.resolve(snap.fg, &snap.palette);
         let mut bg = self.bg.resolve(snap.bg, &snap.palette);
@@ -87,17 +102,22 @@ impl Snapshot {
         Ok(snap)
     }
 
-    #[must_use] 
-    pub fn rows(&self) -> usize { self.grid.rows() }
-    #[must_use] 
-    pub fn cols(&self) -> usize { self.grid.cols() }
+    #[must_use]
+    pub fn rows(&self) -> usize {
+        self.grid.rows()
+    }
+    #[must_use]
+    pub fn cols(&self) -> usize {
+        self.grid.cols()
+    }
 
     /// Render row `y` as a `String` of `first_char()` per cell, right-trimmed.
     /// Returns `None` if `y` is out of range.
-    #[must_use] 
+    #[must_use]
     pub fn row_text(&self, y: usize) -> Option<String> {
         let row = self.grid.row(y)?;
-        let mut s: String = row.iter()
+        let mut s: String = row
+            .iter()
             .map(|c| c.as_ref().map_or(' ', Cell::first_char))
             .collect();
         let trimmed_len = s.trim_end().len();
@@ -142,15 +162,19 @@ impl Grid {
         Grid(rows)
     }
 
-    #[must_use] 
-    pub fn rows(&self) -> usize { self.0.len() }
-    pub fn cols(&self) -> usize { self.0.first().map_or(0, Vec::len) }
+    #[must_use]
+    pub fn rows(&self) -> usize {
+        self.0.len()
+    }
+    pub fn cols(&self) -> usize {
+        self.0.first().map_or(0, Vec::len)
+    }
 
     pub fn row(&self, y: usize) -> Option<&[Option<Cell>]> {
         self.0.get(y).map(Vec::as_slice)
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn cell(&self, x: usize, y: usize) -> Option<&Cell> {
         self.row(y)?.get(x)?.as_ref()
     }
@@ -168,7 +192,8 @@ impl Grid {
             if row.len() != cols {
                 anyhow::bail!(
                     "snapshot grid not rectangular: row {y} has {} cells, expected {}",
-                    row.len(), cols,
+                    row.len(),
+                    cols,
                 );
             }
         }
@@ -185,21 +210,41 @@ mod tests {
             ch: ch.to_string(),
             fg: CellColor::Default,
             bg: CellColor::Default,
-            bold: 0, dim: 0, italic: 0, underline: 0, inverse: 0,
+            bold: 0,
+            dim: 0,
+            italic: 0,
+            underline: 0,
+            inverse: 0,
         }
     }
 
     #[test]
     fn cell_first_char_handles_empty_string() {
-        let c = Cell { ch: String::new(), fg: CellColor::Default, bg: CellColor::Default,
-            bold:0, dim:0, italic:0, underline:0, inverse:0 };
+        let c = Cell {
+            ch: String::new(),
+            fg: CellColor::Default,
+            bg: CellColor::Default,
+            bold: 0,
+            dim: 0,
+            italic: 0,
+            underline: 0,
+            inverse: 0,
+        };
         assert_eq!(c.first_char(), ' ');
     }
 
     #[test]
     fn cell_first_char_takes_first_codepoint() {
-        let c = Cell { ch: "👋".into(), fg: CellColor::Default, bg: CellColor::Default,
-            bold:0, dim:0, italic:0, underline:0, inverse:0 };
+        let c = Cell {
+            ch: "👋".into(),
+            fg: CellColor::Default,
+            bg: CellColor::Default,
+            bold: 0,
+            dim: 0,
+            italic: 0,
+            underline: 0,
+            inverse: 0,
+        };
         assert_eq!(c.first_char(), '👋');
     }
 
@@ -220,9 +265,12 @@ mod tests {
 
     #[test]
     fn snapshot_row_text_right_trims() {
-        let g = Grid::from_unchecked(vec![
-            vec![Some(solid_cell('h')), Some(solid_cell('i')), Some(solid_cell(' ')), Some(solid_cell(' '))],
-        ]);
+        let g = Grid::from_unchecked(vec![vec![
+            Some(solid_cell('h')),
+            Some(solid_cell('i')),
+            Some(solid_cell(' ')),
+            Some(solid_cell(' ')),
+        ]]);
         let s = Snapshot {
             bg: HexColor::from_rgb(0, 0, 0),
             fg: HexColor::from_rgb(255, 255, 255),
@@ -234,9 +282,11 @@ mod tests {
 
     #[test]
     fn snapshot_row_text_handles_none_cells_as_space() {
-        let g = Grid::from_unchecked(vec![
-            vec![Some(solid_cell('a')), None, Some(solid_cell('b'))],
-        ]);
+        let g = Grid::from_unchecked(vec![vec![
+            Some(solid_cell('a')),
+            None,
+            Some(solid_cell('b')),
+        ]]);
         let s = Snapshot {
             bg: HexColor::from_rgb(0, 0, 0),
             fg: HexColor::from_rgb(255, 255, 255),

@@ -17,15 +17,19 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use tint_recorder::recorder::{Key, Recorder, RecorderConfig};
+use tint_recorder::recorder::{Recorder, RecorderConfig};
 use tint_recorder::scenes::{
-    blank, line, lookup_picker_idx, ms, run_cd_hook, run_cli, run_custom_theme, run_picker,
-    BASH_SETTLE_WALL, CLEAR_REGISTER, TYPE_NORMAL,
+    CLEAR_REGISTER, TYPE_NORMAL, blank, line, lookup_picker_idx, ms, note, run_cd_hook, run_cli,
+    run_custom_theme, run_picker, virtual_clear, wait_for_prompt,
 };
 
 /// Theme the picker lands on. Cool/blue register reads better as the
 /// reveal than a warm/orange theme, which can look default-terminal-ish.
 const PICKER_TARGET: &str = "dark-azure";
+/// Start near the target, not on it. This preserves the fast path while
+/// still making the picker visibly navigate to the chosen theme.
+const PICKER_START: &str = "dark-sky-blue";
+const PICKER_DEFAULT_DOWN_TO_TARGET: usize = 1;
 
 #[derive(Parser)]
 struct Args {
@@ -40,6 +44,10 @@ struct Args {
     /// (ends in `clear`) so per-subloop casts splice cleanly.
     #[arg(long)]
     subloop_only: Option<usize>,
+    /// Resolve the picker target by running `tint -l` instead of using the
+    /// baked marketing-demo index. Useful after palette-list edits.
+    #[arg(long)]
+    lookup_picker_target: bool,
 }
 
 /// One subloop: framing + feature, then pure-typing wrap-up.
@@ -65,7 +73,7 @@ fn run_subloop(
     // newline byte). Inlining the typing here (instead of calling the
     // run_preamble / run_reset / run_clear helpers, which carry their
     // own standalone-scene pacing) is intentional.
-    line(r, "# tint — terminal theme switcher", TYPE_NORMAL, ms(0), ms(0))?;
+    note(r, "# tint — terminal theme switcher", TYPE_NORMAL)?;
     blank(r, ms(0))?;
     feature(r)?;
     blank(r, ms(0))?;
@@ -78,26 +86,33 @@ fn run_subloop(
     // moment — instead of `clear` flashing past as the screen wipes
     // simultaneously. Identical timing at every subloop boundary
     // (including the loop wrap), so the wrap stays indistinguishable.
-    r.type_text("clear", TYPE_NORMAL)?;
-    r.dwell(CLEAR_REGISTER, ms(100))?;
-    r.key(Key::Enter, ms(0))?;
+    virtual_clear(r, CLEAR_REGISTER)?;
     Ok(())
 }
 
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    let target_idx = lookup_picker_idx(&args.tint_path, PICKER_TARGET)?;
+    let (picker_current, down_to_target) = if args.lookup_picker_target {
+        (None, lookup_picker_idx(&args.tint_path, PICKER_TARGET)?)
+    } else {
+        (
+            Some(PICKER_START.to_string()),
+            PICKER_DEFAULT_DOWN_TO_TARGET,
+        )
+    };
 
     // 20 rows: each subloop renders at most preamble (1) + feature
     // (~10–14 rows for cd_hook, the tallest) + reset (1) + cursor.
     // Bump if cd_hook clips.
-    let mut r = Recorder::start(RecorderConfig { rows: 20, ..RecorderConfig::default() })?;
+    let mut r = Recorder::start(RecorderConfig {
+        rows: 20,
+        picker_current,
+        ..RecorderConfig::default()
+    })?;
 
-    // Initial bash-echo settle. visible=0 so the wall-clock window
-    // is invisible in the GIF. Required at the start of every recording
-    // per the scenes.rs convention — without it, input bytes leak into
-    // the top-left of the terminal.
-    r.dwell(ms(0), BASH_SETTLE_WALL)?;
+    // Initial prompt sync. Cast time stays at zero, but wall-clock capture
+    // waits only until bash actually draws the prompt.
+    wait_for_prompt(&mut r, ms(0), "startup prompt")?;
 
     // Order: cli → picker → cd-hook → custom-theme. cli first because
     // it's the fastest demonstration of the verb; picker is the visually
@@ -106,13 +121,13 @@ fn main() -> anyhow::Result<()> {
     // shows extensibility.
     match args.subloop_only {
         Some(0) => run_subloop(&mut r, run_cli)?,
-        Some(1) => run_subloop(&mut r, |r| run_picker(r, target_idx))?,
+        Some(1) => run_subloop(&mut r, |r| run_picker(r, down_to_target))?,
         Some(2) => run_subloop(&mut r, run_cd_hook)?,
         Some(3) => run_subloop(&mut r, run_custom_theme)?,
         Some(other) => anyhow::bail!("--subloop-only out of range: {other} (valid: 0..=3)"),
         None => {
             run_subloop(&mut r, run_cli)?;
-            run_subloop(&mut r, |r| run_picker(r, target_idx))?;
+            run_subloop(&mut r, |r| run_picker(r, down_to_target))?;
             run_subloop(&mut r, run_cd_hook)?;
             run_subloop(&mut r, run_custom_theme)?;
         }

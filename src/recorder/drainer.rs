@@ -14,8 +14,8 @@
 //! swaps it out via `consume`.
 
 use std::os::fd::{BorrowedFd, RawFd};
-use std::sync::{Arc, Condvar, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -82,8 +82,8 @@ impl WatchHandle {
             .map(|fired_at| fired_at.duration_since(self.started_at));
         if std::env::var_os("TINT_RECORDER_PROFILE").is_some() {
             let elapsed_str = match outcome {
-                Some(d) => format!("{}ms", d.as_millis()),
-                None => format!(">{}ms TIMED OUT", timeout.as_millis()),
+                Some(d) => format!("{}us", d.as_micros()),
+                None => format!(">{}us TIMED OUT", timeout.as_micros()),
             };
             eprintln!(
                 "[profile] watch {} fired in {}",
@@ -97,7 +97,9 @@ impl WatchHandle {
     /// Borrow the pattern this handle is watching. Used by callers that
     /// want to construct their own error messages.
     #[must_use]
-    pub fn pattern(&self) -> &[u8] { &self.pattern }
+    pub fn pattern(&self) -> &[u8] {
+        &self.pattern
+    }
 }
 
 /// Render a byte slice with escape sequences readable: `\e` for ESC,
@@ -135,7 +137,11 @@ impl Drainer {
             .name("tint-recorder-drainer".into())
             .spawn(move || drain_loop(master_fd, stubs, buf, stop_flag))
             .expect("drainer thread spawn");
-        Self { inner, stop, thread: Some(thread) }
+        Self {
+            inner,
+            stop,
+            thread: Some(thread),
+        }
     }
 
     pub fn consume(&self) -> Vec<u8> {
@@ -173,7 +179,11 @@ impl Drainer {
             });
         }
 
-        WatchHandle { signal, started_at, pattern }
+        WatchHandle {
+            signal,
+            started_at,
+            pattern,
+        }
     }
 }
 
@@ -206,10 +216,7 @@ fn contains_pattern(haystack: &[u8], needle: &[u8]) -> bool {
 // when it queries the terminal for the "original" color before opening the
 // picker.
 #[allow(clippy::needless_pass_by_value)]
-fn drain_loop(
-    fd: RawFd, mut stubs: StubColors,
-    state: Arc<Mutex<State>>, stop: Arc<AtomicBool>,
-) {
+fn drain_loop(fd: RawFd, mut stubs: StubColors, state: Arc<Mutex<State>>, stop: Arc<AtomicBool>) {
     let mut chunk = vec![0u8; 64 * 1024];
     while !stop.load(Ordering::SeqCst) {
         let mut set = FdSet::new();

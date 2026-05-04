@@ -29,7 +29,7 @@ pub enum EventKind {
 }
 
 impl EventKind {
-    #[must_use] 
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             EventKind::Output => "o",
@@ -60,14 +60,15 @@ impl<'de> Deserialize<'de> for CastEvent {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         // 3-element heterogeneous array. Use a tuple deserialize with the
         // kind field as a single-char string.
-        let (time_s, kind_str, data): (f64, String, String) =
-            Deserialize::deserialize(d)?;
+        let (time_s, kind_str, data): (f64, String, String) = Deserialize::deserialize(d)?;
         let kind = match kind_str.as_str() {
             "o" => EventKind::Output,
             "i" => EventKind::Input,
-            other => return Err(serde::de::Error::custom(
-                format!("unknown cast event kind: {other:?}"),
-            )),
+            other => {
+                return Err(serde::de::Error::custom(format!(
+                    "unknown cast event kind: {other:?}"
+                )));
+            }
         };
         Ok(CastEvent { time_s, kind, data })
     }
@@ -126,8 +127,12 @@ impl Cast {
     pub fn write_with_summary(&self, path: impl AsRef<Path>) -> anyhow::Result<()> {
         let path = path.as_ref();
         self.write(path)?;
-        println!("wrote {} ({} bytes, {} events)",
-            path.display(), std::fs::metadata(path)?.len(), self.events.len());
+        println!(
+            "wrote {} ({} bytes, {} events)",
+            path.display(),
+            std::fs::metadata(path)?.len(),
+            self.events.len()
+        );
         Ok(())
     }
 }
@@ -136,8 +141,7 @@ impl std::fmt::Display for Cast {
     /// Emit the cast as JSONL text. Panics only if `serde_json` fails to
     /// serialize a struct that is, by construction, always serializable.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let header = serde_json::to_string(&self.header)
-            .map_err(|_| std::fmt::Error)?;
+        let header = serde_json::to_string(&self.header).map_err(|_| std::fmt::Error)?;
         f.write_str(&header)?;
         for ev in &self.events {
             let line = serde_json::to_string(ev).map_err(|_| std::fmt::Error)?;
@@ -158,7 +162,9 @@ mod tests {
             version: 2,
             width: 80,
             height: 30,
-            env: [("TERM".into(), "xterm-256color".into())].into_iter().collect(),
+            env: [("TERM".into(), "xterm-256color".into())]
+                .into_iter()
+                .collect(),
         };
         let s = serde_json::to_string(&h).unwrap();
         let back: CastHeader = serde_json::from_str(&s).unwrap();
@@ -196,12 +202,22 @@ mod tests {
     fn cast_round_trip() {
         let c = Cast {
             header: CastHeader {
-                version: 2, width: 80, height: 30,
+                version: 2,
+                width: 80,
+                height: 30,
                 env: std::collections::BTreeMap::default(),
             },
             events: vec![
-                CastEvent { time_s: 0.0,  kind: EventKind::Output, data: "hello".into() },
-                CastEvent { time_s: 0.5,  kind: EventKind::Output, data: " world".into() },
+                CastEvent {
+                    time_s: 0.0,
+                    kind: EventKind::Output,
+                    data: "hello".into(),
+                },
+                CastEvent {
+                    time_s: 0.5,
+                    kind: EventKind::Output,
+                    data: " world".into(),
+                },
             ],
         };
         let s = c.to_string();

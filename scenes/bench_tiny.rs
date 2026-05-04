@@ -34,7 +34,13 @@ fn main() -> anyhow::Result<()> {
     // Initial bash-echo settle, invisible to the rendered output.
     r.dwell(ms(0), ms(600))?;
 
-    line(&mut r, "# bench_tiny: minimal pipeline test", ms(28), ms(300), ms(600))?;
+    line(
+        &mut r,
+        "# bench_tiny: minimal pipeline test",
+        ms(28),
+        ms(300),
+        ms(600),
+    )?;
     line(&mut r, "echo hello", ms(35), ms(300), ms(800))?;
 
     let cast = r.stop()?;

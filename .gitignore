@@ -9,8 +9,11 @@ assets/*.gif
 assets/*.mp4
 assets/*.cast
 assets/*.png
+assets/*.trace.json
 assets/snapshots/
 assets/frames/
+assets/*_snapshots/
+assets/*_frames/
 assets/concat.txt
 
 # Editor / OS

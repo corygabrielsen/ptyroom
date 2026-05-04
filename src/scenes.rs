@@ -24,7 +24,9 @@ pub const CUSTOM_THEME_LINE: &str = concat!(
 );
 
 #[must_use]
-pub const fn ms(n: u64) -> Duration { Duration::from_millis(n) }
+pub const fn ms(n: u64) -> Duration {
+    Duration::from_millis(n)
+}
 
 // ─── Pacing knobs ─────────────────────────────────────────────────────
 //
@@ -98,34 +100,60 @@ pub const PICKER_HOLD: Duration = ms(1000);
 /// when the picker scrolls back; the OVERSHOOT and HOLD beats carry
 /// the "this is the chosen one" narrative weight instead.
 pub const PICKER_NAV_PER_KEY: Duration = ms(50);
-/// Maximum real-time wait for the picker to exit alt-screen after
-/// the commit Enter. Observed dev-machine time is single-digit ms;
-/// 250ms is a conservative cap for scheduler/container jitter.
-pub const PICKER_COMMIT_TIMEOUT: Duration = ms(250);
-
+/// Wall-clock capture window per picker navigation key. Navigation must be
+/// captured one key at a time; batching all key output into one cast event
+/// makes playback jump straight from start to final selection.
+pub const PICKER_NAV_CAPTURE_SETTLE: Duration = ms(20);
+/// Maximum real-time wait for the picker to commit and return to the shell
+/// prompt after Enter. The prompt is the important ordering gate: the picker
+/// may print the selected theme name after leaving alt-screen, and the next
+/// synthetic scene beat must not start until those bytes are captured.
+pub const PICKER_COMMIT_TIMEOUT: Duration = ms(1000);
+/// Wall-clock capture drain after picker state transitions that do not
+/// currently expose a stronger content gate. Kept small because cast
+/// presentation time is handled by the surrounding picker beats.
+pub const PICKER_CAPTURE_SETTLE: Duration = Duration::ZERO;
 /// Alt-screen-entry CSI sequence the picker emits when it claims the
 /// terminal. Used as the `arm_watch` target for picker startup.
 pub const ALT_SCREEN_ENTER: &[u8] = b"\x1b[?1049h";
 /// Alt-screen-exit CSI sequence the picker emits when it returns
 /// control to bash. Used as the `arm_watch` target for commit.
 pub const ALT_SCREEN_EXIT: &[u8] = b"\x1b[?1049l";
+/// Text in the initial picker list's scroll affordance. Waiting for this
+/// after alt-screen entry preserves the first visual frame before queued
+/// navigation can race ahead.
+pub const PICKER_READY_MARKER: &[u8] = b"more";
+/// Prompt suffix emitted by the recorder rcfile's PS1. Scene helpers use
+/// this as a content-aware shell-command completion gate.
+pub const PROMPT_READY: &[u8] = b"\x1b[0m $ ";
+/// Full prompt bytes emitted by the recorder rcfile.
+pub const PROMPT: &[u8] = b"\x1b[31mt\x1b[33mi\x1b[32mn\x1b[36mt\x1b[0m $ ";
+/// Screen clear emitted by the recorder rcfile and synthetic clear helper.
+pub const CLEAR_SCREEN: &[u8] = b"\x1b[H\x1b[2J\x1b[3J";
 
 // Infrastructure.
 /// Wall-time bash-echo settle at the start of every recording.
 /// Visible time is zero (invisible to the GIF).
 pub const BASH_SETTLE_WALL: Duration = ms(600);
+/// Real-time cap for ordinary shell commands to return to the prompt.
+pub const SHELL_PROMPT_TIMEOUT: Duration = ms(2000);
 
 /// Type `text`, press Enter, dwell.
 ///
 /// # Errors
 /// Any [`Recorder`] IO error.
 pub fn line(
-    r: &mut Recorder, text: &str, per_char: Duration,
-    dwell_after: Duration, settle_after: Duration,
+    r: &mut Recorder,
+    text: &str,
+    per_char: Duration,
+    dwell_after: Duration,
+    settle_after: Duration,
 ) -> anyhow::Result<()> {
     r.type_text(text, per_char)?;
-    r.key(Key::Enter, dwell_after)?;
-    if !settle_after.is_zero() { r.dwell(settle_after, ms(100))?; }
+    prompt_enter(r, dwell_after, "line prompt")?;
+    if !settle_after.is_zero() {
+        r.dwell(settle_after, ms(0))?;
+    }
     Ok(())
 }
 
@@ -134,7 +162,70 @@ pub fn line(
 /// # Errors
 /// Any [`Recorder`] IO error.
 pub fn blank(r: &mut Recorder, dwell: Duration) -> anyhow::Result<()> {
-    r.key(Key::Enter, dwell)
+    virtual_prompt_enter(r, dwell)
+}
+
+/// Presentation-only comment/no-op line.
+///
+/// The shell does not need to execute comment lines for the demo to be real;
+/// the following live command can run on the same underlying prompt while the
+/// cast shows this explanatory line in virtual time.
+///
+/// # Errors
+/// Any [`Recorder`] virtual output error.
+pub fn note(r: &mut Recorder, text: &str, per_char: Duration) -> anyhow::Result<()> {
+    r.type_virtual_text(text, per_char)?;
+    virtual_prompt_enter(r, Duration::ZERO)
+}
+
+/// Presentation-only Enter on the prompt.
+///
+/// # Errors
+/// Any [`Recorder`] virtual output error.
+pub fn virtual_prompt_enter(r: &mut Recorder, dwell: Duration) -> anyhow::Result<()> {
+    let mut output = Vec::with_capacity(2 + PROMPT.len());
+    output.extend_from_slice(b"\r\n");
+    output.extend_from_slice(PROMPT);
+    r.push_virtual_output(output, dwell)
+}
+
+/// Presentation-only `clear` command.
+///
+/// # Errors
+/// Any [`Recorder`] virtual output error.
+pub fn virtual_clear(r: &mut Recorder, pre_enter: Duration) -> anyhow::Result<()> {
+    r.type_virtual_text("clear", TYPE_NORMAL)?;
+    r.advance_virtual_time(pre_enter)?;
+
+    let mut output = Vec::with_capacity(2 + CLEAR_SCREEN.len() + PROMPT.len());
+    output.extend_from_slice(b"\r\n");
+    output.extend_from_slice(CLEAR_SCREEN);
+    output.extend_from_slice(PROMPT);
+    r.push_virtual_output(output, Duration::ZERO)
+}
+
+/// Press Enter and wait until bash has redrawn the prompt.
+///
+/// # Errors
+/// Any [`Recorder`] IO error, or prompt timeout.
+pub fn prompt_enter(r: &mut Recorder, dwell: Duration, label: &str) -> anyhow::Result<()> {
+    r.send_raw_wait_for(
+        Key::Enter.bytes(),
+        dwell,
+        PROMPT_READY,
+        SHELL_PROMPT_TIMEOUT,
+        label,
+    )?;
+    Ok(())
+}
+
+/// Wait until bash has drawn the prompt without sending input.
+///
+/// # Errors
+/// Any [`Recorder`] IO error, or prompt timeout.
+pub fn wait_for_prompt(r: &mut Recorder, dwell: Duration, label: &str) -> anyhow::Result<()> {
+    r.send_raw_wait_for(&[], dwell, PROMPT_READY, SHELL_PROMPT_TIMEOUT, label)?;
+    Ok(())
 }
 
 /// Look up a built-in theme's 1-based picker idx by running `tint -l` on
@@ -151,11 +242,16 @@ pub fn lookup_picker_idx(tint_path: &Path, theme: &str) -> anyhow::Result<usize>
         .env("PATH", "/usr/bin:/bin")
         .output()?;
     if !output.status.success() {
-        anyhow::bail!("tint -l failed: {}", String::from_utf8_lossy(&output.stderr));
+        anyhow::bail!(
+            "tint -l failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
     let names = String::from_utf8(output.stdout)?;
     for (i, name) in names.lines().enumerate() {
-        if name == theme { return Ok(i + 1); }
+        if name == theme {
+            return Ok(i + 1);
+        }
     }
     anyhow::bail!("theme not found in `tint -l`: {theme:?}")
 }
@@ -185,8 +281,13 @@ pub fn lookup_picker_idx(tint_path: &Path, theme: &str) -> anyhow::Result<usize>
 /// # Errors
 /// Any [`Recorder`] IO error.
 pub fn run_preamble(r: &mut Recorder) -> anyhow::Result<()> {
-    line(r, "# tint — terminal theme switcher",
-         ms(28), ms(300), ms(100))?;
+    line(
+        r,
+        "# tint — terminal theme switcher",
+        ms(28),
+        ms(300),
+        ms(100),
+    )?;
     Ok(())
 }
 
@@ -198,8 +299,9 @@ pub fn run_preamble(r: &mut Recorder) -> anyhow::Result<()> {
 /// - "tint" command typed, then 700ms pause *before* Enter: viewer must
 ///   register what command is about to run; firing Enter immediately
 ///   reads as magic.
-/// - Down-by-(target+3): overshoot by three so the viewer sees
-///   navigation behavior, not just an on-rails snap to the answer.
+/// - Down-by-(down_to_target+3): overshoot by three so the viewer sees
+///   navigation behavior, not just an on-rails snap to the answer. Fast
+///   marketing compositions can start the picker at the target and pass 0.
 /// - 700ms pause at overshoot: register that we *can* keep going.
 /// - Up-by-3 (slower per-key 80ms vs 50ms going down): slowing the
 ///   return makes the "we picked this one" feel deliberate.
@@ -217,44 +319,59 @@ pub fn run_preamble(r: &mut Recorder) -> anyhow::Result<()> {
 ///
 /// # Errors
 /// Any [`Recorder`] IO error.
-pub fn run_picker(r: &mut Recorder, target_idx: usize) -> anyhow::Result<()> {
-    line(r, "# pick interactively", TYPE_NORMAL, ms(0), ms(0))?;
+pub fn run_picker(r: &mut Recorder, down_to_target: usize) -> anyhow::Result<()> {
+    note(r, "# pick interactively", TYPE_NORMAL)?;
 
     r.type_text("tint", TYPE_NORMAL)?;
     // Arm the watch BEFORE sending Enter. Otherwise the alt-screen-enter
     // bytes can arrive during the Enter call's settle window and be
     // consumed by the recorder before the watch is in place — the
     // watch then sits there forever and times out.
-    let alt_in = r.arm_watch(ALT_SCREEN_ENTER);
-    r.key(Key::Enter, ms(0))?;
-    alt_in.wait(PICKER_STARTUP_TIMEOUT).ok_or_else(|| {
-        anyhow::anyhow!(
-            "picker startup timed out after {}ms — alt-screen never claimed",
-            PICKER_STARTUP_TIMEOUT.as_millis(),
-        )
-    })?;
+    r.send_raw_wait_for(
+        Key::Enter.bytes(),
+        ms(0),
+        ALT_SCREEN_ENTER,
+        PICKER_STARTUP_TIMEOUT,
+        "picker startup",
+    )?;
     // Small cast-time buffer so the picker's appearance has a frame
-    // budget on playback regardless of recording-machine speed.
-    r.dwell(PICKER_STARTUP_VISIBLE, ms(0))?;
+    // budget on playback regardless of recording-machine speed. Gate on
+    // the first list frame, not just alt-screen entry, so the scroll
+    // affordance is captured before burst navigation starts.
+    r.send_raw_wait_for(
+        &[],
+        PICKER_STARTUP_VISIBLE,
+        PICKER_READY_MARKER,
+        PICKER_STARTUP_TIMEOUT,
+        "picker first frame",
+    )?;
 
-    // Overshoot by three to demo navigation, pause, scroll back.
-    r.keys(Key::Down, PICKER_NAV_PER_KEY, target_idx + 3)?;
-    r.dwell(PICKER_OVERSHOOT, ms(100))?;
-    r.keys(Key::Up, PICKER_NAV_PER_KEY, 3)?;
-    r.dwell(PICKER_HOLD, ms(100))?;
+    // Overshoot by three to demo navigation, pause, scroll back. These are
+    // intentionally individual events so the GIF shows the movement.
+    for _ in 0..down_to_target + 3 {
+        r.key_settle(
+            Key::PickerDown,
+            PICKER_NAV_PER_KEY,
+            PICKER_NAV_CAPTURE_SETTLE,
+        )?;
+    }
+    r.dwell(PICKER_OVERSHOOT, PICKER_CAPTURE_SETTLE)?;
+    for _ in 0..3 {
+        r.key_settle(Key::PickerUp, PICKER_NAV_PER_KEY, PICKER_NAV_CAPTURE_SETTLE)?;
+    }
+    r.dwell(PICKER_HOLD, PICKER_CAPTURE_SETTLE)?;
 
-    // Commit. Same arm-before-trigger pattern: arm the alt-screen-exit
-    // watch, then send Enter, then wait. The picker writes its
-    // chosen-bg OSC sequences and exits alt-screen as part of accept.
-    let alt_out = r.arm_watch(ALT_SCREEN_EXIT);
-    r.key(Key::Enter, ms(0))?;
-    alt_out.wait(PICKER_COMMIT_TIMEOUT).ok_or_else(|| {
-        anyhow::anyhow!(
-            "picker commit timed out after {}ms — alt-screen never exited",
-            PICKER_COMMIT_TIMEOUT.as_millis(),
-        )
-    })?;
-    r.dwell(PICKER_DIGEST, ms(100))?;
+    // Commit. Same arm-before-trigger pattern: arm before Enter, then wait.
+    // Gate on the shell prompt instead of alt-screen exit so the selected
+    // theme name and prompt cannot leak into the following synthetic reset.
+    r.send_raw_wait_for(
+        Key::Enter.bytes(),
+        ms(0),
+        PROMPT_READY,
+        PICKER_COMMIT_TIMEOUT,
+        "picker commit",
+    )?;
+    r.dwell(PICKER_DIGEST, PICKER_CAPTURE_SETTLE)?;
     Ok(())
 }
 
@@ -269,14 +386,20 @@ pub fn run_picker(r: &mut Recorder, target_idx: usize) -> anyhow::Result<()> {
 /// # Errors
 /// Any [`Recorder`] IO error.
 pub fn run_cli(r: &mut Recorder) -> anyhow::Result<()> {
-    line(r, "# apply by name", TYPE_NORMAL, ms(0), ms(0))?;
+    note(r, "# apply by name", TYPE_NORMAL)?;
     // Three themes: dracula (dark purple) → solarized-light (cream) →
     // monokai (classic dark with vivid accents). Three is the rule-of-
     // three rhythm — completes the "you can pick anything by name" beat
     // without dragging. Sequence dark→light→dark gives visual contrast
     // each step instead of monotonically darkening or lightening.
     for theme in ["dracula", "solarized-light", "monokai"] {
-        line(r, &format!("tint {theme}"), TYPE_NORMAL, PAYLOAD_PRE, PAYLOAD_SETTLE)?;
+        line(
+            r,
+            &format!("tint {theme}"),
+            TYPE_NORMAL,
+            PAYLOAD_PRE,
+            PAYLOAD_SETTLE,
+        )?;
     }
     Ok(())
 }
@@ -294,8 +417,14 @@ pub fn run_cli(r: &mut Recorder) -> anyhow::Result<()> {
 /// # Errors
 /// Any [`Recorder`] IO error.
 pub fn run_cd_hook(r: &mut Recorder) -> anyhow::Result<()> {
-    line(r, "# auto-apply on cd", TYPE_NORMAL, ms(0), ms(0))?;
-    line(r, "eval \"$(tint hook bash)\"", TYPE_NORMAL, PLUMB_PRE, PLUMB_SETTLE)?;
+    note(r, "# auto-apply on cd", TYPE_NORMAL)?;
+    line(
+        r,
+        "eval \"$(tint hook bash)\"",
+        TYPE_NORMAL,
+        PLUMB_PRE,
+        PLUMB_SETTLE,
+    )?;
     line(r, "cd /tmp", TYPE_NORMAL, PLUMB_PRE, PLUMB_SETTLE)?;
 
     // First dir: write a .tint, cd in — bg should change to pale-sky-blue.
@@ -303,8 +432,13 @@ pub fn run_cd_hook(r: &mut Recorder) -> anyhow::Result<()> {
     // skyroom/yellowroom: the latter read like a magic feature ("a
     // 'skyroom' is a thing tint understands") instead of the actual
     // mechanism (tint reads .tint from any directory you cd into).
-    line(r, "mkdir foo && echo pale-sky-blue > foo/.tint",
-         TYPE_NORMAL, PLUMB_PRE, PLUMB_SETTLE)?;
+    line(
+        r,
+        "mkdir foo && echo pale-sky-blue > foo/.tint",
+        TYPE_NORMAL,
+        PLUMB_PRE,
+        PLUMB_SETTLE,
+    )?;
     line(r, "cd foo", TYPE_NORMAL, PAYLOAD_PRE, PAYLOAD_SETTLE)?;
 
     // Second dir: same pattern with a contrasting theme (warm pale-yellow
@@ -312,8 +446,13 @@ pub fn run_cd_hook(r: &mut Recorder) -> anyhow::Result<()> {
     // change *twice* makes the mechanism unmistakable; one could be
     // coincidence.
     line(r, "cd ..", TYPE_NORMAL, PLUMB_PRE, PLUMB_SETTLE)?;
-    line(r, "mkdir bar && echo pale-yellow > bar/.tint",
-         TYPE_NORMAL, PLUMB_PRE, PLUMB_SETTLE)?;
+    line(
+        r,
+        "mkdir bar && echo pale-yellow > bar/.tint",
+        TYPE_NORMAL,
+        PLUMB_PRE,
+        PLUMB_SETTLE,
+    )?;
     line(r, "cd bar", TYPE_NORMAL, PAYLOAD_PRE, PAYLOAD_SETTLE)?;
     Ok(())
 }
@@ -333,18 +472,27 @@ pub fn run_cd_hook(r: &mut Recorder) -> anyhow::Result<()> {
 /// # Errors
 /// Any [`Recorder`] IO error.
 pub fn run_custom_theme(r: &mut Recorder) -> anyhow::Result<()> {
-    line(r, "# bring your own theme", TYPE_NORMAL, ms(0), ms(0))?;
+    note(r, "# bring your own theme", TYPE_NORMAL)?;
     // Smooth typing through the whole "configure a theme" sequence: the
     // viewer doesn't need to absorb each intermediate command (mkdir,
     // heredoc start, color spec, EOF) — they're plumbing for the
     // payoff. The settle goes on `tint matrix` at the end.
-    line(r, "mkdir -p ~/.config/tint/themes", TYPE_NORMAL, ms(0), ms(0))?;
-    r.type_text("cat > ~/.config/tint/themes/matrix.theme <<EOF", TYPE_NORMAL)?;
+    line(
+        r,
+        "mkdir -p ~/.config/tint/themes",
+        TYPE_NORMAL,
+        ms(0),
+        ms(0),
+    )?;
+    r.type_text(
+        "cat > ~/.config/tint/themes/matrix.theme <<EOF",
+        TYPE_NORMAL,
+    )?;
     r.key(Key::Enter, ms(0))?;
     r.type_text(CUSTOM_THEME_LINE, TYPE_FAST)?;
     r.key(Key::Enter, ms(0))?;
     r.type_text("EOF", TYPE_NORMAL)?;
-    r.key(Key::Enter, ms(0))?;
+    prompt_enter(r, ms(0), "custom theme heredoc prompt")?;
 
     // Apply the theme we just wrote — climax of the demo.
     line(r, "tint matrix", TYPE_NORMAL, PAYLOAD_PRE, CLIMAX_SETTLE)?;

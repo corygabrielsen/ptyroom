@@ -33,7 +33,12 @@ pub struct PaintConfig {
 
 impl Default for PaintConfig {
     fn default() -> Self {
-        Self { font_size_px: 14.0, padding_px: 12, cell_w_px: None, cell_h_px: None }
+        Self {
+            font_size_px: 14.0,
+            padding_px: 12,
+            cell_w_px: None,
+            cell_h_px: None,
+        }
     }
 }
 
@@ -63,31 +68,39 @@ impl<'a> Painter<'a> {
             .map_err(|e| anyhow::anyhow!("font load failed: {e}"))?;
         let scale = PxScale::from(cfg.font_size_px);
         let scaled = font.as_scaled(scale);
-        let cell_w = cfg.cell_w_px.unwrap_or_else(|| {
-            f32_round_to_u32(scaled.h_advance(font.glyph_id('M')))
-        });
-        let cell_h = cfg.cell_h_px.unwrap_or_else(|| f32_floor_to_u32(cfg.font_size_px + 2.0));
+        let cell_w = cfg
+            .cell_w_px
+            .unwrap_or_else(|| f32_round_to_u32(scaled.h_advance(font.glyph_id('M'))));
+        let cell_h = cfg
+            .cell_h_px
+            .unwrap_or_else(|| f32_floor_to_u32(cfg.font_size_px + 2.0));
         let baseline = f32_round_to_u32(scaled.ascent());
         Ok(Self {
             font,
             scale,
-            metrics: CellMetrics { width: cell_w, height: cell_h, baseline },
+            metrics: CellMetrics {
+                width: cell_w,
+                height: cell_h,
+                baseline,
+            },
             padding: cfg.padding_px,
         })
     }
 
     #[must_use]
-    pub fn metrics(&self) -> CellMetrics { self.metrics }
+    pub fn metrics(&self) -> CellMetrics {
+        self.metrics
+    }
 
     #[must_use]
     pub fn image_dims(&self, snap: &Snapshot) -> (u32, u32) {
         (
-            usize_to_u32(snap.cols()) * self.metrics.width  + 2 * self.padding,
+            usize_to_u32(snap.cols()) * self.metrics.width + 2 * self.padding,
             usize_to_u32(snap.rows()) * self.metrics.height + 2 * self.padding,
         )
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn paint(&self, snap: &Snapshot) -> RgbImage {
         let (w, h) = self.image_dims(snap);
         let bg_rgb = Rgb([snap.bg.r(), snap.bg.g(), snap.bg.b()]);
@@ -107,14 +120,12 @@ impl<'a> Painter<'a> {
         Ok(())
     }
 
-    fn paint_row(
-        &self, img: &mut RgbImage, snap: &Snapshot,
-        row: &[Option<Cell>], y_idx: usize,
-    ) {
+    fn paint_row(&self, img: &mut RgbImage, snap: &Snapshot, row: &[Option<Cell>], y_idx: usize) {
         let cy = self.padding + usize_to_u32(y_idx) * self.metrics.height;
 
         // Pass 1: resolve every cell's effective fg/bg once.
-        let resolved: Vec<Option<ResolvedCell<'_>>> = row.iter()
+        let resolved: Vec<Option<ResolvedCell<'_>>> = row
+            .iter()
             .map(|opt| opt.as_ref().map(|c| resolve(c, snap)))
             .collect();
 
@@ -125,27 +136,41 @@ impl<'a> Painter<'a> {
         for (x, slot) in resolved.iter().enumerate() {
             let Some(rc) = slot else { continue };
             let ch = rc.cell.first_char();
-            if ch == ' ' || ch == '\0' { continue; }
+            if ch == ' ' || ch == '\0' {
+                continue;
+            }
             let cx = self.padding + usize_to_u32(x) * self.metrics.width;
             self.draw_glyph(img, ch, cx, cy, rc);
         }
     }
 
     fn paint_bg_runs(
-        &self, img: &mut RgbImage,
+        &self,
+        img: &mut RgbImage,
         row: &[Option<ResolvedCell<'_>>],
-        snap_bg: HexColor, cy: u32,
+        snap_bg: HexColor,
+        cy: u32,
     ) {
         let cols = usize_to_u32(row.len());
         let mut x = 0u32;
         while x < cols {
-            let Some(rc) = &row[x as usize] else { x += 1; continue; };
-            if rc.bg == snap_bg { x += 1; continue; }
+            let Some(rc) = &row[x as usize] else {
+                x += 1;
+                continue;
+            };
+            if rc.bg == snap_bg {
+                x += 1;
+                continue;
+            }
             let run_bg = rc.bg;
             let mut x_end = x + 1;
             while x_end < cols {
-                let Some(next) = &row[x_end as usize] else { break };
-                if next.bg != run_bg { break; }
+                let Some(next) = &row[x_end as usize] else {
+                    break;
+                };
+                if next.bg != run_bg {
+                    break;
+                }
                 x_end += 1;
             }
             fill_rect(
@@ -163,17 +188,27 @@ impl<'a> Painter<'a> {
     #[allow(clippy::cast_precision_loss)]
     fn draw_glyph(&self, img: &mut RgbImage, ch: char, cx: u32, cy: u32, rc: &ResolvedCell<'_>) {
         // Dim: blend 60% toward bg for the foreground.
-        let fg = if rc.cell.is_dim() { mix(rc.fg, rc.bg, 0.6) } else { rc.fg };
+        let fg = if rc.cell.is_dim() {
+            mix(rc.fg, rc.bg, 0.6)
+        } else {
+            rc.fg
+        };
         let glyph = self.font.glyph_id(ch).with_scale_and_position(
             self.scale,
             ab_glyph::point(cx as f32, (cy + self.metrics.baseline) as f32),
         );
-        let Some(outlined) = self.font.outline_glyph(glyph) else { return };
+        let Some(outlined) = self.font.outline_glyph(glyph) else {
+            return;
+        };
         let bounds = outlined.px_bounds();
         let (img_w, img_h) = (img.width(), img.height());
         outlined.draw(|gx, gy, coverage| {
-            let Some(px) = pixel_coord(bounds.min.x, gx, img_w) else { return };
-            let Some(py) = pixel_coord(bounds.min.y, gy, img_h) else { return };
+            let Some(px) = pixel_coord(bounds.min.x, gx, img_w) else {
+                return;
+            };
+            let Some(py) = pixel_coord(bounds.min.y, gy, img_h) else {
+                return;
+            };
             // Composite: linearly blend fg over the existing pixel by coverage.
             let existing = img.get_pixel(px, py);
             let blended = blend(*existing, Rgb([fg.r(), fg.g(), fg.b()]), coverage);
@@ -187,7 +222,9 @@ impl<'a> Painter<'a> {
 #[allow(clippy::cast_possible_truncation)]
 fn pixel_coord(base: f32, delta: u32, max: u32) -> Option<u32> {
     let combined = base.round() as i64 + i64::from(delta);
-    if combined < 0 { return None; }
+    if combined < 0 {
+        return None;
+    }
     let v = u32::try_from(combined).ok()?;
     if v >= max { None } else { Some(v) }
 }
@@ -239,7 +276,11 @@ fn fill_rect(img: &mut RgbImage, x0: u32, y0: u32, x1: u32, y1: u32, c: HexColor
 fn blend(under: Rgb<u8>, over: Rgb<u8>, alpha: f32) -> Rgb<u8> {
     let a = alpha.clamp(0.0, 1.0);
     let lerp = |u: u8, o: u8| (f32::from(u) * (1.0 - a) + f32::from(o) * a).round() as u8;
-    Rgb([lerp(under.0[0], over.0[0]), lerp(under.0[1], over.0[1]), lerp(under.0[2], over.0[2])])
+    Rgb([
+        lerp(under.0[0], over.0[0]),
+        lerp(under.0[1], over.0[1]),
+        lerp(under.0[2], over.0[2]),
+    ])
 }
 
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -257,8 +298,14 @@ mod tests {
 
     fn cell(ch: char, fg: CellColor, bg: CellColor) -> Cell {
         Cell {
-            ch: ch.to_string(), fg, bg,
-            bold: 0, dim: 0, italic: 0, underline: 0, inverse: 0,
+            ch: ch.to_string(),
+            fg,
+            bg,
+            bold: 0,
+            dim: 0,
+            italic: 0,
+            underline: 0,
+            inverse: 0,
         }
     }
 
@@ -275,13 +322,20 @@ mod tests {
             fg: HexColor::from_rgb(255, 255, 255),
             palette: PaletteOverrides::new(),
             grid: Grid::from_unchecked(vec![
-                vec![Some(cell('a', CellColor::Default, CellColor::Default)); 80];
+                vec![
+                    Some(cell(
+                        'a',
+                        CellColor::Default,
+                        CellColor::Default
+                    ));
+                    80
+                ];
                 30
             ]),
         };
         let m = p.metrics();
         let (w, h) = p.image_dims(&snap);
-        assert_eq!(w, 80 * m.width  + 24);
+        assert_eq!(w, 80 * m.width + 24);
         assert_eq!(h, 30 * m.height + 24);
     }
 
@@ -309,7 +363,14 @@ mod tests {
             bg: HexColor::from_rgb(0, 0, 0),
             fg: HexColor::from_rgb(255, 255, 255),
             palette: PaletteOverrides::new(),
-            grid: Grid::from_unchecked(vec![vec![Some(cell('h', CellColor::Default, CellColor::Default)); 5]]),
+            grid: Grid::from_unchecked(vec![vec![
+                Some(cell(
+                    'h',
+                    CellColor::Default,
+                    CellColor::Default
+                ));
+                5
+            ]]),
         };
         let img = p.paint(&snap);
         let (w, h) = p.image_dims(&snap);
@@ -325,10 +386,10 @@ mod tests {
             bg: HexColor::from_rgb(0x1a, 0x1b, 0x26),
             fg: HexColor::from_rgb(0xc0, 0xca, 0xf5),
             palette: PaletteOverrides::new(),
-            grid: Grid::from_unchecked(vec![
-                vec![Some(cell('h', CellColor::Default, CellColor::Default)),
-                     Some(cell('i', CellColor::Default, CellColor::Default))],
-            ]),
+            grid: Grid::from_unchecked(vec![vec![
+                Some(cell('h', CellColor::Default, CellColor::Default)),
+                Some(cell('i', CellColor::Default, CellColor::Default)),
+            ]]),
         };
         let a = p.paint(&snap);
         let b = p.paint(&snap);

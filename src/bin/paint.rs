@@ -29,21 +29,32 @@ fn main() -> anyhow::Result<()> {
 
     let painter = Painter::new(
         FONT_BYTES,
-        PaintConfig { font_size_px: args.font_size, padding_px: args.padding,
-                      cell_w_px: None, cell_h_px: None },
+        PaintConfig {
+            font_size_px: args.font_size,
+            padding_px: args.padding,
+            cell_w_px: None,
+            cell_h_px: None,
+        },
     )?;
 
     let entries = list_numbered_snapshots(&args.snap_dir)?;
     let m = painter.metrics();
-    println!("painting {} frames at cell {}x{}", entries.len(), m.width, m.height);
+    println!(
+        "painting {} frames at cell {}x{}",
+        entries.len(),
+        m.width,
+        m.height
+    );
 
-    entries.par_iter().try_for_each(|path| -> anyhow::Result<()> {
-        let snap = Snapshot::load(path)?;
-        let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
-        let out = args.out_dir.join(format!("{stem}.png"));
-        painter.save_png(&snap, &out)?;
-        Ok(())
-    })?;
+    entries
+        .par_iter()
+        .try_for_each(|path| -> anyhow::Result<()> {
+            let snap = Snapshot::load(path)?;
+            let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
+            let out = args.out_dir.join(format!("{stem}.png"));
+            painter.save_png(&snap, &out)?;
+            Ok(())
+        })?;
 
     println!("wrote PNGs to {}", args.out_dir.display());
     Ok(())

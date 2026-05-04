@@ -29,6 +29,10 @@ name = "picker"
 path = "scenes/picker.rs"
 
 [[bin]]
+name = "picker_timeline"
+path = "scenes/picker_timeline.rs"
+
+[[bin]]
 name = "cli"
 path = "scenes/cli.rs"
 
@@ -55,6 +59,10 @@ path = "scenes/bench_subloops.rs"
 [[bin]]
 name = "stitch"
 path = "src/bin/stitch.rs"
+
+[[bin]]
+name = "recorder_perf"
+path = "src/bin/recorder_perf.rs"
 
 [dependencies]
 anyhow = "1"

@@ -1,4 +1,4 @@
-//! GIF encoder: PNG sequence + per-frame timing → animated GIF via ffmpeg.
+//! Media encoder: PNG sequence + per-frame timing → GIF/MP4 via ffmpeg.
 //!
 //! ffmpeg is invoked once with the concat demuxer reading a generated
 //! `concat.txt` listing each frame and its `duration` directive. The
@@ -19,18 +19,26 @@ pub struct TimingEntry {
 }
 
 impl TimingEntry {
-    #[must_use] 
+    #[must_use]
     pub fn dwell_seconds(&self) -> f64 {
         f64::from(self.dwell_ms) / 1000.0
     }
+}
+
+/// MP4 video encoder backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mp4Encoder {
+    Libx264,
+    H264Nvenc,
 }
 
 #[derive(Debug, Clone)]
 pub struct EncodeRequest {
     pub frames_dir: PathBuf,
     pub timing: Vec<TimingEntry>,
-    pub out_gif: PathBuf,
+    pub out_path: PathBuf,
     pub fps: u32,
+    pub mp4_encoder: Mp4Encoder,
     /// Optional output width in pixels. When set, ffmpeg's lanczos scale
     /// filter resizes frames to this width preserving aspect ratio
     /// (height auto-computed). Used to render a single high-resolution
@@ -39,7 +47,7 @@ pub struct EncodeRequest {
     pub width: Option<u32>,
 }
 
-/// Render the GIF. Returns `Ok(())` on ffmpeg success; the caller prints
+/// Render the requested output format. Returns `Ok(())` on ffmpeg success; the caller prints
 /// the command before invoking so failures can be reproduced.
 ///
 /// # Errors
@@ -57,25 +65,36 @@ pub fn encode(req: &EncodeRequest) -> anyhow::Result<()> {
     // depending on whether we're running inside the container (where
     // cwd is /work and frames_dir is "/work/frames") or on the host
     // (where cwd is the project root and frames_dir is "assets/frames").
-    let frames_dir = req.frames_dir.canonicalize()
-        .map_err(|e| anyhow::anyhow!("frames_dir does not exist or is unreadable: {}: {e}",
-                                      req.frames_dir.display()))?;
+    let frames_dir = req.frames_dir.canonicalize().map_err(|e| {
+        anyhow::anyhow!(
+            "frames_dir does not exist or is unreadable: {}: {e}",
+            req.frames_dir.display()
+        )
+    })?;
 
-    let concat_path = frames_dir.parent()
+    let concat_path = frames_dir
+        .parent()
         .ok_or_else(|| anyhow::anyhow!("frames_dir has no parent: {}", frames_dir.display()))?
         .join("concat.txt");
 
     let concat_text = build_concat(&frames_dir, &req.timing)?;
     std::fs::write(&concat_path, concat_text)?;
 
-    let ext = req.out_gif.extension()
+    let ext = req
+        .out_path
+        .extension()
         .and_then(|s| s.to_str())
         .map(str::to_ascii_lowercase);
     match ext.as_deref() {
         Some("gif") => encode_gif(req, &concat_path),
         Some("mp4") => encode_mp4(req, &concat_path),
-        Some(other) => anyhow::bail!("encode: unsupported output extension '.{other}' (expected .gif or .mp4)"),
-        None => anyhow::bail!("encode: output path has no extension: {}", req.out_gif.display()),
+        Some(other) => {
+            anyhow::bail!("encode: unsupported output extension '.{other}' (expected .gif or .mp4)")
+        }
+        None => anyhow::bail!(
+            "encode: output path has no extension: {}",
+            req.out_path.display()
+        ),
     }
 }
 
@@ -95,9 +114,9 @@ fn encode_gif(req: &EncodeRequest, concat_path: &Path) -> anyhow::Result<()> {
     )?;
     let mut cmd = Command::new("ffmpeg");
     cmd.args(["-y", "-f", "concat", "-safe", "0", "-i"])
-       .arg(concat_path)
-       .args(["-vf", &filter, "-loop", "0"])
-       .arg(&req.out_gif);
+        .arg(concat_path)
+        .args(["-vf", &filter, "-loop", "0"])
+        .arg(&req.out_path);
     run_ffmpeg(&mut cmd)
 }
 
@@ -124,12 +143,39 @@ fn encode_mp4(req: &EncodeRequest, concat_path: &Path) -> anyhow::Result<()> {
     write!(filter, ",format=yuv420p")?;
     let mut cmd = Command::new("ffmpeg");
     cmd.args(["-y", "-f", "concat", "-safe", "0", "-i"])
-       .arg(concat_path)
-       .args(["-vf", &filter])
-       .args(["-c:v", "libx264", "-crf", "20", "-preset", "medium", "-tune", "stillimage"])
-       .args(["-profile:v", "high", "-level", "4.0"])
-       .args(["-movflags", "+faststart"])
-       .arg(&req.out_gif);
+        .arg(concat_path)
+        .args(["-vf", &filter]);
+
+    match req.mp4_encoder {
+        Mp4Encoder::Libx264 => {
+            cmd.args([
+                "-c:v",
+                "libx264",
+                "-crf",
+                "20",
+                "-preset",
+                "medium",
+                "-tune",
+                "stillimage",
+            ]);
+        }
+        Mp4Encoder::H264Nvenc => {
+            cmd.args([
+                "-c:v",
+                "h264_nvenc",
+                "-preset",
+                "p4",
+                "-tune",
+                "hq",
+                "-cq",
+                "20",
+            ]);
+        }
+    }
+
+    cmd.args(["-profile:v", "high", "-level", "4.0"])
+        .args(["-movflags", "+faststart"])
+        .arg(&req.out_path);
     run_ffmpeg(&mut cmd)
 }
 
@@ -169,7 +215,10 @@ mod tests {
 
     #[test]
     fn timing_entry_dwell_seconds() {
-        let e = TimingEntry { frame: "0001".into(), dwell_ms: 250 };
+        let e = TimingEntry {
+            frame: "0001".into(),
+            dwell_ms: 250,
+        };
         assert!((e.dwell_seconds() - 0.25).abs() < 1e-9);
     }
 
@@ -183,8 +232,14 @@ mod tests {
             f.write_all(b"fake-png").unwrap();
         }
         let timing = vec![
-            TimingEntry { frame: "0001".into(), dwell_ms: 100 },
-            TimingEntry { frame: "0002".into(), dwell_ms: 200 },
+            TimingEntry {
+                frame: "0001".into(),
+                dwell_ms: 100,
+            },
+            TimingEntry {
+                frame: "0002".into(),
+                dwell_ms: 200,
+            },
         ];
         let s = build_concat(&frames, &timing).unwrap();
         // Two real frames + one repeated trailer = 3 `file` lines, 2 `duration` lines.
@@ -199,7 +254,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let frames = tmp.path().join("frames");
         fs::create_dir_all(&frames).unwrap();
-        let timing = vec![TimingEntry { frame: "0001".into(), dwell_ms: 100 }];
+        let timing = vec![TimingEntry {
+            frame: "0001".into(),
+            dwell_ms: 100,
+        }];
         assert!(build_concat(&frames, &timing).is_err());
     }
 }

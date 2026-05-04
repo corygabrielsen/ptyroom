@@ -37,7 +37,9 @@ fn main() -> anyhow::Result<()> {
         anyhow::bail!("stitch: no input casts");
     }
 
-    let casts: Vec<Cast> = args.inputs.iter()
+    let casts: Vec<Cast> = args
+        .inputs
+        .iter()
         .map(Cast::read)
         .collect::<Result<_, _>>()?;
 
@@ -49,7 +51,11 @@ fn main() -> anyhow::Result<()> {
         if c.header.width != w || c.header.height != h {
             anyhow::bail!(
                 "stitch: input {} has dimensions {}x{}, expected {}x{} (matching cast 0)",
-                args.inputs[i].display(), c.header.width, c.header.height, w, h,
+                args.inputs[i].display(),
+                c.header.width,
+                c.header.height,
+                w,
+                h,
             );
         }
     }
@@ -73,7 +79,10 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    let stitched = Cast { header: casts[0].header.clone(), events };
+    let stitched = Cast {
+        header: casts[0].header.clone(),
+        events,
+    };
     stitched.write_with_summary(&args.out)?;
     Ok(())
 }
