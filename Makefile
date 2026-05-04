@@ -1,4 +1,4 @@
-.PHONY: setup build build-image recorder-warm recorder-warm-reset render demo demo-fast demo-parallel demo-all demo-all-fast demo-all-parallel demo-readme demo-web smoke picker picker-timeline-prototype cli cd-hook custom-theme recorder-perf bench-tiny bench-churn bench-subloops bench-subloops-parallel bench all-scenes verify verify-all clean
+.PHONY: setup build build-image recorder-warm recorder-warm-reset render demo demo-fast demo-parallel demo-all demo-all-fast demo-all-parallel demo-readme demo-web feature-demos smoke picker picker-timeline-prototype cli cd-hook custom-theme recorder-perf bench-tiny bench-churn bench-subloops bench-subloops-parallel bench all-scenes verify verify-all clean
 
 SCENE     ?= demo_full
 CAST       = assets/$(SCENE).cast
@@ -7,6 +7,7 @@ OUT        = assets/$(SCENE)$(OUT_EXT)
 IMAGE     := tint-recorder:demo
 WARM_CONTAINER ?= tint-recorder-warm
 TINT_PATH ?= /home/cory/code/tint/tint
+FEATURE_SCENES := cli picker cd_hook custom_theme
 # Painter font size in pixels. Cell width and height scale linearly.
 # Default 14 → 7×16 cells → 80×20 grid renders at 584×344 (good for dev
 # loops; smaller files; not crisp on HiDPI). Marketing targets bump this
@@ -117,6 +118,22 @@ demo-web: FONT_SIZE=28
 demo-web: OUT_EXT=.mp4
 demo-web: build build-image
 	$(MAKE) render SCENE=$(SCENE) FONT_SIZE=$(FONT_SIZE) OUT_EXT=$(OUT_EXT)
+
+feature-demos: build recorder-warm
+	@for scene in $(FEATURE_SCENES); do \
+		echo "=== record $$scene ==="; \
+		TINT_RECORDER_CONTAINER=$(WARM_CONTAINER) ./target/release/$$scene --cast assets/$$scene.cast; \
+		echo "=== snapshot + paint $$scene at FONT_SIZE=28 ==="; \
+		rm -rf assets/$${scene}_snapshots assets/$${scene}_frames; \
+		./node_modules/.bin/tsx ./renderer/snapshot.ts assets/$$scene.cast assets/$${scene}_snapshots; \
+		./target/release/paint --font-size 28 assets/$${scene}_snapshots assets/$${scene}_frames; \
+		echo "=== encode $$scene: mp4 + gif ==="; \
+		./target/release/encode assets/$${scene}_frames assets/$${scene}_snapshots/timing.json assets/$$scene.mp4 --width 824 & \
+		./target/release/encode assets/$${scene}_frames assets/$${scene}_snapshots/timing.json assets/$$scene.gif --width 824 & \
+		wait; \
+		./target/release/verify $$scene --snapshots-dir assets/$${scene}_snapshots; \
+		echo "wrote assets/$$scene.mp4 + assets/$$scene.gif"; \
+	done
 
 smoke: SCENE=smoke
 smoke: build build-image
