@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::observer::{Fact, Observer, Predicate};
 use crate::proof::{DwellMs, IntentId, ProofState, StateHash, Unverified, Verified};
-use crate::raw_log::{ByteBuf, Direction, RawLog, RawSpan};
+use crate::raw_log::{ByteBuf, RawLog, RawSpan};
 
 /// Expected semantic transition before replay verification.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -183,7 +183,7 @@ impl Trace<Unverified> {
                 .iter()
                 .filter(|event| expectation.span.contains(event.seq()))
             {
-                if event.direction() == Direction::Output {
+                if event.direction().is_visible_output() {
                     output.extend_from_slice(event.bytes());
                     observer.apply_output(event.bytes());
                     covered_outputs.insert(event.seq());

@@ -4,7 +4,11 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
-description = "Deterministic GIF recorder for tint demos."
+description = "Deterministic terminal recorder with virtual time and verifiable CLI demo artifacts."
+repository = "https://github.com/corygabrielsen/tint-recorder"
+readme = "README.md"
+keywords = ["terminal", "pty", "asciinema", "recording", "cli"]
+categories = ["command-line-utilities", "development-tools"]
 
 [lints.clippy]
 pedantic = { level = "deny", priority = -1 }

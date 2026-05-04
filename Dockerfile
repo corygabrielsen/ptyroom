@@ -29,19 +29,6 @@ RUN cat > /home/demo/.tint-recorder.rc <<'EOF' \
     && chown demo:demo /home/demo/.tint-recorder.rc
 cd "$HOME"
 PS1='\[\e[31m\]t\[\e[33m\]i\[\e[32m\]n\[\e[36m\]t\[\e[0m\] $ '
-tint() {
-    if [ "$#" -eq 0 ] && [ -n "${TINT_RECORDER_PICKER_CURRENT:-}" ]; then
-        . /usr/local/bin/tint || return $?
-        local _tint_result _tint_status
-        _tint_result=$(tint_pick "$TINT_RECORDER_PICKER_CURRENT")
-        _tint_status=$?
-        if [ "$_tint_status" -eq 0 ] && [ -n "$_tint_result" ]; then
-            printf '%s\n' "$_tint_result"
-        fi
-        return "$_tint_status"
-    fi
-    command tint "$@"
-}
 printf '\033[H\033[2J\033[3J'
 EOF
 RUN cat > /usr/local/bin/tint-recorder-shell <<'EOF' \

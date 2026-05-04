@@ -16,6 +16,8 @@ import * as fs from "fs";
 import * as path from "path";
 import { Terminal, type IBufferCell } from "@xterm/headless";
 
+const TAIL_DWELL_MS = 0;
+
 // ───────── types ─────────
 
 interface CastHeader {
@@ -202,11 +204,13 @@ async function run(castPath: string, outDir: string): Promise<void> {
     const snap = snapshot(term, state);
     const idx = String(i + 1).padStart(4, "0");
     fs.writeFileSync(path.join(outDir, `${idx}.json`), JSON.stringify(snap));
-    // dwell_ms = (next event's t - this event's t), or 1s for the tail
-    const nextT = i + 1 < events.length ? events[i + 1][0] : t + 1.0;
+    const nextT = i + 1 < events.length ? events[i + 1][0] : null;
     timing.push({
       frame: idx,
-      dwell_ms: Math.max(1, Math.round((nextT - t) * 1000)),
+      dwell_ms:
+        nextT === null
+          ? TAIL_DWELL_MS
+          : Math.max(1, Math.round((nextT - t) * 1000)),
     });
   }
   fs.writeFileSync(path.join(outDir, "timing.json"), JSON.stringify(timing, null, 2));

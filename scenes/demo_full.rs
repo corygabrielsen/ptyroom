@@ -19,17 +19,13 @@ use std::path::PathBuf;
 use clap::Parser;
 use tint_recorder::recorder::{Recorder, RecorderConfig};
 use tint_recorder::scenes::{
-    CLEAR_REGISTER, TYPE_NORMAL, blank, line, lookup_picker_idx, ms, note, run_cd_hook, run_cli,
-    run_custom_theme, run_picker, virtual_clear, wait_for_prompt,
+    CLEAR_REGISTER, TYPE_COMMAND, TYPE_LABEL, blank, line, lookup_picker_idx, ms, note,
+    run_cd_hook, run_cli, run_custom_theme, run_picker, virtual_clear, wait_for_prompt,
 };
 
 /// Theme the picker lands on. Cool/blue register reads better as the
 /// reveal than a warm/orange theme, which can look default-terminal-ish.
 const PICKER_TARGET: &str = "dark-azure";
-/// Start near the target, not on it. This preserves the fast path while
-/// still making the picker visibly navigate to the chosen theme.
-const PICKER_START: &str = "dark-sky-blue";
-const PICKER_DEFAULT_DOWN_TO_TARGET: usize = 1;
 
 #[derive(Parser)]
 struct Args {
@@ -44,10 +40,6 @@ struct Args {
     /// (ends in `clear`) so per-subloop casts splice cleanly.
     #[arg(long)]
     subloop_only: Option<usize>,
-    /// Resolve the picker target by running `tint -l` instead of using the
-    /// baked marketing-demo index. Useful after palette-list edits.
-    #[arg(long)]
-    lookup_picker_target: bool,
 }
 
 /// One subloop: framing + feature, then pure-typing wrap-up.
@@ -73,11 +65,11 @@ fn run_subloop(
     // newline byte). Inlining the typing here (instead of calling the
     // run_preamble / run_reset / run_clear helpers, which carry their
     // own standalone-scene pacing) is intentional.
-    note(r, "# tint — terminal theme switcher", TYPE_NORMAL)?;
+    note(r, "# tint — terminal theme switcher", TYPE_LABEL)?;
     blank(r, ms(0))?;
     feature(r)?;
     blank(r, ms(0))?;
-    line(r, "tint reset", TYPE_NORMAL, ms(0), ms(0))?;
+    line(r, "tint reset", TYPE_COMMAND, ms(0), ms(0))?;
     // No blank between reset and clear — they sit on subsequent prompt
     // lines so the viewer reads the wrap-up as one tight pair.
     // Type `clear` but pause for a beat with the word visible on the
@@ -92,21 +84,13 @@ fn run_subloop(
 
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    let (picker_current, down_to_target) = if args.lookup_picker_target {
-        (None, lookup_picker_idx(&args.tint_path, PICKER_TARGET)?)
-    } else {
-        (
-            Some(PICKER_START.to_string()),
-            PICKER_DEFAULT_DOWN_TO_TARGET,
-        )
-    };
+    let down_to_target = lookup_picker_idx(&args.tint_path, PICKER_TARGET)?;
 
     // 20 rows: each subloop renders at most preamble (1) + feature
     // (~10–14 rows for cd_hook, the tallest) + reset (1) + cursor.
     // Bump if cd_hook clips.
     let mut r = Recorder::start(RecorderConfig {
         rows: 20,
-        picker_current,
         ..RecorderConfig::default()
     })?;
 

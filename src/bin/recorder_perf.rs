@@ -5,14 +5,16 @@
 //! prompt round trips, `tint` commands, or picker interaction is currently
 //! dominating recorder latency.
 
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use clap::{Parser, ValueEnum};
 use tint_recorder::recorder::{Recorder, RecorderConfig};
-use tint_recorder::scenes::{TYPE_NORMAL, blank, ms, run_cli, run_picker, wait_for_prompt};
+use tint_recorder::scenes::{
+    TYPE_COMMAND, TYPE_LABEL, blank, lookup_picker_idx, ms, run_cli, run_picker, wait_for_prompt,
+};
 
-const PICKER_START: &str = "dark-sky-blue";
-const PICKER_DEFAULT_DOWN_TO_TARGET: usize = 1;
+const PICKER_TARGET: &str = "dark-azure";
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum Case {
@@ -31,6 +33,8 @@ struct Args {
     case: Case,
     #[arg(long, default_value_t = 5)]
     iterations: usize,
+    #[arg(long, default_value = "/home/cory/code/tint/tint", env = "TINT_PATH")]
+    tint_path: PathBuf,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -39,7 +43,7 @@ fn main() -> anyhow::Result<()> {
     println!("case,iteration,wall_us,events");
     for case in expand_cases(args.case) {
         for iteration in 1..=args.iterations {
-            let (elapsed, events) = run_case(case)?;
+            let (elapsed, events) = run_case(case, &args.tint_path)?;
             println!("{case:?},{iteration},{},{}", elapsed.as_micros(), events);
         }
     }
@@ -59,11 +63,10 @@ fn expand_cases(case: Case) -> Vec<Case> {
     }
 }
 
-fn run_case(case: Case) -> anyhow::Result<(Duration, usize)> {
+fn run_case(case: Case, tint_path: &std::path::Path) -> anyhow::Result<(Duration, usize)> {
     let started = Instant::now();
     let mut recorder = Recorder::start(RecorderConfig {
         rows: 20,
-        picker_current: matches!(case, Case::Picker).then(|| PICKER_START.to_string()),
         ..RecorderConfig::default()
     })?;
     wait_for_prompt(&mut recorder, ms(0), "startup prompt")?;
@@ -71,9 +74,9 @@ fn run_case(case: Case) -> anyhow::Result<(Duration, usize)> {
     match case {
         Case::Startup => {}
         Case::Typing => {
-            recorder.type_text("# tint -- batched typing benchmark", TYPE_NORMAL)?;
-            recorder.type_text("tint solarized-light", TYPE_NORMAL)?;
-            recorder.type_text("mkdir foo && echo pale-sky-blue > foo/.tint", TYPE_NORMAL)?;
+            recorder.type_text("# tint -- batched typing benchmark", TYPE_LABEL)?;
+            recorder.type_text("tint solarized-light", TYPE_COMMAND)?;
+            recorder.type_text("mkdir foo && echo pale-sky-blue > foo/.tint", TYPE_COMMAND)?;
         }
         Case::Prompt => {
             for _ in 0..20 {
@@ -81,7 +84,10 @@ fn run_case(case: Case) -> anyhow::Result<(Duration, usize)> {
             }
         }
         Case::Tint => run_cli(&mut recorder)?,
-        Case::Picker => run_picker(&mut recorder, PICKER_DEFAULT_DOWN_TO_TARGET)?,
+        Case::Picker => {
+            let down_to_target = lookup_picker_idx(tint_path, PICKER_TARGET)?;
+            run_picker(&mut recorder, down_to_target)?;
+        }
         Case::All => unreachable!("expanded before dispatch"),
     }
 

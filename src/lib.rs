@@ -1,4 +1,4 @@
-//! Deterministic GIF recorder for tint demos.
+//! Deterministic terminal recorder for scripted CLI demos.
 //!
 //! Layered, bottom-up:
 //! - [`color`] — `HexColor`, `CellColor`, `PaletteOverrides`. Total parsers,
@@ -13,7 +13,8 @@
 //!   presentation time.
 //!
 //! Higher layers (paint / encode / inspect / verify / recorder / scenes)
-//! depend only on these lower layers.
+//! depend only on these lower layers. The current scene set targets the
+//! `tint` CLI, but the recorder core can spawn any interactive argv.
 
 pub mod cast;
 pub mod color;

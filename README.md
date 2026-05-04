@@ -1,15 +1,15 @@
 # tint-recorder
 
-Deterministic GIF/MP4 recorder for
-[tint](https://github.com/corygabrielsen/tint) demos. Scene binaries run on
-the host, drive a real `tint` process inside a tiny Docker image through a
-PTY, and emit asciinema casts whose timestamps come from virtual presentation
-time rather than wall-clock recording time.
+Deterministic GIF/MP4 recorder for scripted terminal demos. This repository's
+current scenes target [tint](https://github.com/corygabrielsen/tint), but the
+recorder core is a reusable PTY driver: it can spawn any interactive argv,
+capture terminal IO, and emit asciinema casts whose timestamps come from
+virtual presentation time rather than wall-clock recording time.
 
 ## Pipeline
 
 ```text
-scenes/<scene>.rs    Recorder API: forkpty -> docker run/exec -> bash + tint,
+scenes/<scene>.rs    Recorder API: forkpty -> process or dockerized shell,
                      scripted input, byte capture, OSC 11/10 responder,
                      deterministic cast timestamps.
 
@@ -22,12 +22,19 @@ src/encode.rs        ffmpeg concat-demuxer -> GIF or MP4.
 src/verify.rs        Per-scene contract checks rendered snapshots.
 ```
 
+The reusable crate direction is written down in
+[`docs/crate-architecture.md`](docs/crate-architecture.md). The short version:
+the recorder core owns PTY IO, virtual time, raw evidence, and cast emission;
+tint-specific scenes own theme names, picker targets, and marketing pacing.
+
 Recording is optimized around time virtualization:
 
 - typed spans are sent to bash once, then split into per-character cast events;
 - comment/blank/clear presentation is synthesized without a shell round trip;
-- picker navigation can start from a recorder-only hint, then replay a small
-  deterministic overshoot/return gesture;
+- synthetic presentation output is marked separately from child PTY output in
+  the raw evidence log;
+- picker navigation is driven through the real `tint` CLI with terminal
+  keypresses, while capture and playback time stay decoupled;
 - `TINT_RECORDER_CONTAINER=<name>` reuses a warm container while preserving a
   fresh `$HOME` for every recording.
 
@@ -72,7 +79,7 @@ regression.
 | `src/inspect.rs`       | ASCII row dump + ANSI-color row dump                 | Rust |
 | `src/verify.rs`        | Contract evaluator                                   | Rust |
 | `src/contracts.rs`     | Per-scene contract registry                          | Rust |
-| `src/recorder/`        | PTY + OSC responder + Recorder API                   | Rust |
+| `src/recorder/`        | PTY + shell profile + OSC responder + Recorder API   | Rust |
 | `src/recording.rs`     | Raw IO evidence → verified trace → monotonic cast    | Rust |
 | `src/proof.rs`         | Typestate markers and invariant scalar types         | Rust |
 | `src/raw_log.rs`       | Append-only raw input/output event log               | Rust |
@@ -99,12 +106,55 @@ regression.
 - Proof-backed recorder traces keep raw IO, diagnostic wall time, and playback
   time as separate layers
 - Bundled font (`include_bytes!`) ensures identical glyph rasterization
-- 96 unit tests cover total parsers, color algebra, grid invariants, OSC
+- Unit tests cover total parsers, color algebra, grid invariants, OSC
   query matching, and concat demuxer construction
 
 ## Authoring scenes
 
-Scenes are small Rust binaries under `scenes/` that drive a `Recorder`:
+Scenes are small Rust binaries under `scenes/` that drive a `Recorder`.
+For a generic local process, use `Recorder::spawn`:
+
+```rust
+use std::time::Duration;
+use tint_recorder::recorder::{Recorder, RecorderConfig};
+
+fn main() -> anyhow::Result<()> {
+    let mut r = Recorder::spawn(
+        RecorderConfig {
+            cols: 80, rows: 24, ..Default::default()
+        },
+        &[
+            "env", "-i",
+            "HOME=/",
+            "TERM=xterm-256color",
+            "PS1=$ ",
+            "bash", "--noprofile", "--norc", "-i",
+        ],
+    )?;
+    r.send_raw_wait_for(
+        &[],
+        Duration::ZERO,
+        b"$ ",
+        Duration::from_secs(2),
+        "prompt",
+    )?;
+    r.type_text("echo hello", Duration::from_millis(35))?;
+    r.send_raw_wait_for(
+        b"\n",
+        Duration::from_millis(300),
+        b"$ ",
+        Duration::from_secs(2),
+        "prompt",
+    )?;
+    r.push_presentation_output("# done", Duration::from_millis(100))?;
+    r.stop()?.write("assets/generic.cast")?;
+    Ok(())
+}
+```
+
+The same example lives in `examples/generic_shell.rs`.
+
+For the Docker-backed tint demo shell, use `Recorder::start`:
 
 ```rust
 use std::time::Duration;
@@ -116,20 +166,20 @@ fn main() -> anyhow::Result<()> {
         cols: 80, rows: 30, ..Default::default()
     })?;
     tint_recorder::scenes::wait_for_prompt(&mut r, ms(0), "startup prompt")?;
-    r.type_text("tint dracula", ms(35))?;
+    r.type_text("tint dracula", ms(50))?;
     r.key(Key::Enter, ms(400))?;
-    r.dwell(ms(1200), ms(100))?;
+    r.dwell(ms(1000), ms(100))?;
     let cast = r.stop()?;
     cast.write("assets/myscene.cast")?;
     Ok(())
 }
 ```
 
-Scenes run on the host and spawn or exec the bash session inside the
-container. Prefer content-aware gates (`wait_for_prompt`, `send_raw_wait_for`)
-over fixed sleeps. Use virtual presentation helpers only for output that does
-not affect shell state, such as comments, blank prompt lines, or a visual
-clear boundary.
+Scenes run on the host and can either use `Recorder::start` for the
+Docker-backed demo shell or `Recorder::spawn` for an arbitrary process. Prefer
+content-aware gates (`wait_for_prompt`, `send_raw_wait_for`) over fixed sleeps.
+Use virtual presentation helpers only for output that does not affect shell
+state, such as comments, blank prompt lines, or a visual clear boundary.
 
 ## Why a TypeScript shim
 

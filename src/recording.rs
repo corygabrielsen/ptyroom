@@ -73,6 +73,17 @@ impl RecordingBuilder {
         dwell: DwellMs,
         predicate: Option<Predicate>,
     ) -> anyhow::Result<Option<IntentId>> {
+        self.record_step_with_output_direction(input, output, dwell, predicate, Direction::Output)
+    }
+
+    fn record_step_with_output_direction(
+        &mut self,
+        input: impl Into<ByteBuf>,
+        output: impl Into<ByteBuf>,
+        dwell: DwellMs,
+        predicate: Option<Predicate>,
+        output_direction: Direction,
+    ) -> anyhow::Result<Option<IntentId>> {
         let input = input.into();
         let output = output.into();
 
@@ -88,7 +99,11 @@ impl RecordingBuilder {
         }
 
         self.observed_output_count = self.observed_output_count.saturating_add(1);
-        let output_seq = self.raw_log.append_output(output);
+        let output_seq = match output_direction {
+            Direction::Output => self.raw_log.append_output(output),
+            Direction::PresentationOutput => self.raw_log.append_presentation_output(output),
+            Direction::Input => anyhow::bail!("input cannot be used as an output direction"),
+        };
         let span = RawSpan::new(start.unwrap_or(output_seq), output_seq)?;
         let intent = self.next_intent();
         let predicate = predicate.unwrap_or(Predicate::EventCountIs {
@@ -109,6 +124,28 @@ impl RecordingBuilder {
         dwell: DwellMs,
     ) -> anyhow::Result<Option<IntentId>> {
         self.record_step(Vec::new(), output, dwell)
+    }
+
+    /// Record synthetic presentation output with no associated child input.
+    ///
+    /// Presentation output renders in the cast, participates in snapshot
+    /// verification, and is explicitly marked in the raw evidence log as not
+    /// having come from the child PTY.
+    ///
+    /// # Errors
+    /// Returns an error if raw span construction or dwell accumulation fails.
+    pub fn record_presentation_output(
+        &mut self,
+        output: impl Into<ByteBuf>,
+        dwell: DwellMs,
+    ) -> anyhow::Result<Option<IntentId>> {
+        self.record_step_with_output_direction(
+            Vec::new(),
+            output,
+            dwell,
+            None,
+            Direction::PresentationOutput,
+        )
     }
 
     /// Advance presentation time without new output.
@@ -431,6 +468,20 @@ mod tests {
 
         assert!(json.contains(r#""bytes": "1b5b33316d""#));
         assert!(!json.contains(r#""bytes": ["#));
+    }
+
+    #[test]
+    fn presentation_output_is_marked_in_raw_log() {
+        let mut builder = RecordingBuilder::new();
+        builder
+            .record_presentation_output(b"# heading".to_vec(), DwellMs::new(10))
+            .unwrap();
+
+        let recording = builder.finish_synthetic(80, 24).unwrap();
+
+        let event = recording.raw_log().events().first().unwrap();
+        assert_eq!(event.direction(), Direction::PresentationOutput);
+        assert_eq!(recording.cast().events[0].data, "# heading");
     }
 
     #[test]

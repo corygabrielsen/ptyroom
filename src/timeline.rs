@@ -39,7 +39,7 @@ impl Default for TimelinePolicy {
             picker_nav: Duration::from_millis(50),
             picker_overshoot: Duration::from_millis(500),
             picker_selected: Duration::from_secs(1),
-            picker_digest: Duration::from_secs(2),
+            picker_digest: Duration::from_secs(1),
         }
     }
 }
@@ -81,9 +81,12 @@ mod tests {
     }
 
     #[test]
-    fn default_picker_digest_is_slowest_beat() {
+    fn default_picker_digest_matches_selected_hold() {
         let policy = TimelinePolicy::default();
 
-        assert!(policy.dwell_for(PresentationBeat::PickerDigest) > policy.picker_selected);
+        assert_eq!(
+            policy.dwell_for(PresentationBeat::PickerDigest),
+            policy.picker_selected
+        );
     }
 }

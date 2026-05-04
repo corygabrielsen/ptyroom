@@ -1,8 +1,8 @@
 //! Recorder library.
 //!
-//! Spawns bash inside a Docker container via PTY, drives the demo by
-//! sending scripted keystrokes/dwells, captures every byte written, and
-//! emits an asciinema v2 cast with deterministic timestamps.
+//! Spawns an interactive terminal process via PTY, drives it by sending
+//! scripted keystrokes/dwells, captures every byte written, and emits an
+//! asciinema v2 cast with deterministic timestamps.
 //!
 //! The cast's per-event timestamp is the cumulative sum of the *intended*
 //! dwell, not wall-clock — playback is independent of the speed of the
@@ -29,7 +29,7 @@ use crate::cast::Cast;
 use crate::proof::DwellMs;
 use crate::recording::RecordingBuilder;
 use drainer::Drainer;
-use pty::{PtyMaster, spawn};
+use pty::{PtyMaster, spawn as spawn_pty};
 
 /// Short fallback wall-clock window for inputs that do not have a stronger
 /// content-aware sync point. Text entry and shell commands use watches;
@@ -37,6 +37,111 @@ use pty::{PtyMaster, spawn};
 const DEFAULT_SETTLE: Duration = Duration::from_micros(5);
 const ECHO_TIMEOUT: Duration = Duration::from_millis(250);
 static CONTAINER_HOME_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Bash startup profile used by the Docker convenience launcher.
+///
+/// The recorder core can spawn any argv via [`Recorder::spawn`]. This profile
+/// is only for [`Recorder::start`], which starts bash in the configured
+/// container/image and needs a reproducible prompt and initial screen state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShellProfile {
+    /// Raw bash lines executed before the prompt is installed.
+    ///
+    /// These are intentionally shell lines, not a typed DSL. The profile owns
+    /// shell startup policy; the recorder owns PTY IO and timing.
+    pub setup_commands: Vec<String>,
+    /// Bash `PS1` value.
+    pub prompt: String,
+    /// Whether to clear the terminal after startup setup.
+    pub clear_on_start: bool,
+}
+
+/// Bytes inserted into the presentation stream without touching the PTY.
+///
+/// Presentation output is visible in the final cast, but it is marked
+/// separately from child-process output in the raw evidence log. Use it for
+/// visual structure such as labels or blank prompt lines, not for state that
+/// the child process must observe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PresentationOutput {
+    bytes: Vec<u8>,
+}
+
+impl PresentationOutput {
+    #[must_use]
+    pub fn bytes(bytes: impl Into<Vec<u8>>) -> Self {
+        Self {
+            bytes: bytes.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn text(text: impl Into<String>) -> Self {
+        Self {
+            bytes: text.into().into_bytes(),
+        }
+    }
+
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    #[must_use]
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
+}
+
+impl From<Vec<u8>> for PresentationOutput {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self::bytes(bytes)
+    }
+}
+
+impl From<&[u8]> for PresentationOutput {
+    fn from(bytes: &[u8]) -> Self {
+        Self::bytes(bytes.to_vec())
+    }
+}
+
+impl From<String> for PresentationOutput {
+    fn from(text: String) -> Self {
+        Self::text(text)
+    }
+}
+
+impl From<&str> for PresentationOutput {
+    fn from(text: &str) -> Self {
+        Self::text(text)
+    }
+}
+
+impl ShellProfile {
+    #[must_use]
+    pub fn simple() -> Self {
+        Self {
+            setup_commands: vec!["cd \"$HOME\"".into()],
+            prompt: "$ ".into(),
+            clear_on_start: true,
+        }
+    }
+
+    #[must_use]
+    pub fn tint_demo() -> Self {
+        Self {
+            setup_commands: vec!["cd \"$HOME\"".into()],
+            prompt: r"\[\e[31m\]t\[\e[33m\]i\[\e[32m\]n\[\e[36m\]t\[\e[0m\] $ ".into(),
+            clear_on_start: true,
+        }
+    }
+}
+
+impl Default for ShellProfile {
+    fn default() -> Self {
+        Self::simple()
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct RecorderConfig {
@@ -48,13 +153,13 @@ pub struct RecorderConfig {
     pub image: String,
     /// Optional running container name/id for warm `docker exec` recording.
     pub container: Option<String>,
-    /// Optional no-arg picker current-theme hint.
+    /// Command executed inside a warm container.
     ///
-    /// The recorder rcfile wraps `tint` so `tint` with no arguments invokes
-    /// `tint_pick "$TINT_RECORDER_PICKER_CURRENT"`. Visible demo text remains
-    /// `tint`, but the picker can start at the target to avoid replaying a
-    /// long machine-speed navigation queue.
-    pub picker_current: Option<String>,
+    /// Warm containers cannot receive a host-mounted rcfile per recording, so
+    /// this command is responsible for applying the desired shell profile.
+    pub warm_command: Vec<String>,
+    /// Bash startup profile for cold `docker run` recordings.
+    pub shell: ShellProfile,
     /// Stubbed terminal color query responses.
     pub stubs: StubColors,
     /// Wall-clock guard against hung child processes.
@@ -70,9 +175,8 @@ impl Default for RecorderConfig {
             container: std::env::var("TINT_RECORDER_CONTAINER")
                 .ok()
                 .filter(|value| !value.is_empty()),
-            picker_current: std::env::var("TINT_RECORDER_PICKER_CURRENT")
-                .ok()
-                .filter(|value| !value.is_empty()),
+            warm_command: vec!["tint-recorder-shell".into()],
+            shell: ShellProfile::tint_demo(),
             stubs: StubColors::default(),
             max_runtime: Duration::from_mins(4),
         }
@@ -90,6 +194,20 @@ pub struct Recorder {
 }
 
 impl Recorder {
+    /// Spawn an arbitrary interactive process under a PTY.
+    ///
+    /// This is the reusable-library entry point: callers own the child process,
+    /// environment, shell profile, and any domain-specific setup. The recorder
+    /// owns PTY IO, terminal geometry, OSC stubbing, and deterministic cast
+    /// timestamps.
+    ///
+    /// # Errors
+    /// Empty argv, or `forkpty` / `execvp(argv[0])` failure.
+    pub fn spawn(cfg: RecorderConfig, argv: &[&str]) -> anyhow::Result<Self> {
+        let pty = spawn_pty(argv, cfg.cols, cfg.rows).context("spawn process")?;
+        Ok(Self::from_pty(cfg, pty, None))
+    }
+
     /// Spawn or exec interactive bash inside the recording container.
     ///
     /// With `cfg.container = None`, this runs `docker run --rm ...`.
@@ -103,20 +221,19 @@ impl Recorder {
     /// # Errors
     /// rcfile write fails, or `forkpty` / `execvp("docker")` fails.
     pub fn start(cfg: RecorderConfig) -> anyhow::Result<Self> {
+        if cfg.container.is_some() && cfg.warm_command.is_empty() {
+            anyhow::bail!("warm recorder requires at least one warm_command arg");
+        }
         let rcfile = if cfg.container.is_some() {
             None
         } else {
-            Some(build_rcfile().context("write rcfile")?)
+            Some(build_rcfile(&cfg.shell).context("write rcfile")?)
         };
         let lines_env = format!("LINES={}", cfg.rows);
         let cols_env = format!("COLUMNS={}", cfg.cols);
-        let picker_current_env = cfg
-            .picker_current
-            .as_ref()
-            .map(|current| format!("TINT_RECORDER_PICKER_CURRENT={current}"));
         let home_env;
         let mount;
-        let argv: Vec<&str> = if let Some(container) = &cfg.container {
+        let argv: Vec<String> = if let Some(container) = &cfg.container {
             let seq = CONTAINER_HOME_SEQ.fetch_add(1, Ordering::Relaxed);
             let home = format!(
                 "/home/demo/.tint-recorder-home-{}-{seq}",
@@ -124,12 +241,19 @@ impl Recorder {
             );
             home_env = format!("HOME={home}");
             let mut argv = vec![
-                "docker", "exec", "-i", "-t", "-e", &lines_env, "-e", &cols_env, "-e", &home_env,
+                "docker".into(),
+                "exec".into(),
+                "-i".into(),
+                "-t".into(),
+                "-e".into(),
+                lines_env.clone(),
+                "-e".into(),
+                cols_env.clone(),
+                "-e".into(),
+                home_env,
             ];
-            if let Some(env) = &picker_current_env {
-                argv.extend(["-e", env]);
-            }
-            argv.extend([container, "tint-recorder-shell"]);
+            argv.push(container.clone());
+            argv.extend(cfg.warm_command.iter().cloned());
             argv
         } else {
             let Some(rcfile) = &rcfile else {
@@ -137,32 +261,42 @@ impl Recorder {
             };
             mount = format!("{}:/tmp/recorderrc:ro", rcfile.path().display());
             let mut argv = vec![
-                "docker", "run", "--rm", "-i", "-t", "-e", &lines_env, "-e", &cols_env,
+                "docker".into(),
+                "run".into(),
+                "--rm".into(),
+                "-i".into(),
+                "-t".into(),
+                "-e".into(),
+                lines_env,
+                "-e".into(),
+                cols_env,
             ];
-            if let Some(env) = &picker_current_env {
-                argv.extend(["-e", env]);
-            }
             argv.extend([
-                "-v",
-                &mount,
-                &cfg.image,
-                "bash",
-                "--rcfile",
-                "/tmp/recorderrc",
-                "-i",
+                "-v".into(),
+                mount,
+                cfg.image.clone(),
+                "bash".into(),
+                "--rcfile".into(),
+                "/tmp/recorderrc".into(),
+                "-i".into(),
             ]);
             argv
         };
-        let pty = spawn(&argv, cfg.cols, cfg.rows).context("spawn docker run")?;
+        let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+        let pty = spawn_pty(&argv_refs, cfg.cols, cfg.rows).context("spawn docker run")?;
+        Ok(Self::from_pty(cfg, pty, rcfile))
+    }
+
+    fn from_pty(cfg: RecorderConfig, pty: PtyMaster, rcfile: Option<NamedTempFile>) -> Self {
         let drainer = Drainer::start(pty.fd(), cfg.stubs);
-        Ok(Self {
+        Self {
             cfg,
             pty,
             drainer,
             _rcfile: rcfile,
             recording: RecordingBuilder::new(),
             started_at: Instant::now(),
-        })
+        }
     }
 
     #[must_use]
@@ -252,22 +386,24 @@ impl Recorder {
         Ok(())
     }
 
-    /// Add terminal output directly to the cast without touching the PTY.
+    /// Add presentation output directly to the cast without touching the PTY.
     ///
-    /// This is the low-level presentation-time escape hatch. Use it only for
-    /// bytes that are known not to affect shell state, such as comments,
-    /// blank prompt lines, or screen-clear boundaries in marketing scenes.
+    /// This is the low-level presentation-time escape hatch. The output is
+    /// visible in the cast and explicitly marked as presentation output in
+    /// the raw evidence log.
     ///
     /// # Errors
     /// Recording exceeded `max_runtime`.
-    pub fn push_virtual_output(
+    pub fn push_presentation_output(
         &mut self,
-        output: impl Into<Vec<u8>>,
+        output: impl Into<PresentationOutput>,
         dwell: Duration,
     ) -> anyhow::Result<()> {
         self.check_runtime()?;
-        self.recording
-            .record_output(output.into(), DwellMs::from_duration(dwell))?;
+        self.recording.record_presentation_output(
+            output.into().into_bytes(),
+            DwellMs::from_duration(dwell),
+        )?;
         Ok(())
     }
 
@@ -276,18 +412,18 @@ impl Recorder {
     /// # Errors
     /// Recording exceeded `max_runtime`.
     pub fn advance_virtual_time(&mut self, dwell: Duration) -> anyhow::Result<()> {
-        self.push_virtual_output(Vec::new(), dwell)
+        self.push_presentation_output(Vec::new(), dwell)
     }
 
     /// Type text in the cast without sending it to the shell.
     ///
     /// # Errors
     /// Recording exceeded `max_runtime`.
-    pub fn type_virtual_text(&mut self, text: &str, per_char: Duration) -> anyhow::Result<()> {
+    pub fn type_presentation_text(&mut self, text: &str, per_char: Duration) -> anyhow::Result<()> {
         self.check_runtime()?;
         for ch in text.chars() {
             let mut buf = [0_u8; 4];
-            self.recording.record_output(
+            self.recording.record_presentation_output(
                 ch.encode_utf8(&mut buf).as_bytes().to_vec(),
                 DwellMs::from_duration(per_char),
             )?;
@@ -408,7 +544,7 @@ impl Recorder {
     ///
     /// ```ignore
     /// let alt_in = r.arm_watch(b"\x1b[?1049h");
-    /// r.type_text("tint", TYPE_NORMAL)?;
+    /// r.type_text("tint", TYPE_COMMAND)?;
     /// r.key(Key::Enter, ms(0))?;
     /// alt_in.wait(PICKER_STARTUP_TIMEOUT).expect("picker startup");
     /// r.dwell(PICKER_STARTUP_VISIBLE, ms(0))?;   // small cast-time buffer
@@ -561,50 +697,42 @@ fn escape_bytes(bytes: &[u8]) -> String {
     s
 }
 
-/// Write the rcfile bash will source at startup. Three responsibilities:
-/// pin PWD to `$HOME` so the cd hook can't escape the demo container,
-/// install a colored PS1 that visibly reflects ANSI palette changes, and
-/// clear the screen without spawning an external `clear` process.
+/// Write the rcfile bash will source at startup.
 ///
 /// # Errors
 /// IO error creating or writing the temp file.
-fn build_rcfile() -> std::io::Result<NamedTempFile> {
+fn build_rcfile(profile: &ShellProfile) -> std::io::Result<NamedTempFile> {
     use std::io::Write;
-    // PS1 spells "tint" in red/yellow/green/cyan (ANSI 1/3/2/6) followed by
-    // "$ ". Themes set ANSI 0-15 via OSC 4, so the prompt's letter colors
-    // visibly change across themes.
-    let ps1 = r"\[\e[31m\]t\[\e[33m\]i\[\e[32m\]n\[\e[36m\]t\[\e[0m\] $ ";
     let mut f = tempfile::Builder::new()
         .prefix("tint-recorder-rc-")
         .suffix(".rc")
         .tempfile()?;
-    writeln!(f, "cd \"$HOME\"")?;
-    writeln!(f, "PS1='{ps1}'")?;
-    writeln!(f, "tint() {{")?;
-    writeln!(
-        f,
-        "    if [ \"$#\" -eq 0 ] && [ -n \"${{TINT_RECORDER_PICKER_CURRENT:-}}\" ]; then"
-    )?;
-    writeln!(f, "        . /usr/local/bin/tint || return $?")?;
-    writeln!(f, "        local _tint_result _tint_status")?;
-    writeln!(
-        f,
-        "        _tint_result=$(tint_pick \"$TINT_RECORDER_PICKER_CURRENT\")"
-    )?;
-    writeln!(f, "        _tint_status=$?")?;
-    writeln!(
-        f,
-        "        if [ \"$_tint_status\" -eq 0 ] && [ -n \"$_tint_result\" ]; then"
-    )?;
-    writeln!(f, "            printf '%s\\n' \"$_tint_result\"")?;
-    writeln!(f, "        fi")?;
-    writeln!(f, "        return \"$_tint_status\"")?;
-    writeln!(f, "    fi")?;
-    writeln!(f, "    command tint \"$@\"")?;
-    writeln!(f, "}}")?;
-    writeln!(f, "printf '\\033[H\\033[2J\\033[3J'")?;
+    for line in &profile.setup_commands {
+        writeln!(f, "{line}")?;
+    }
+    writeln!(f, "PS1={}", shell_single_quote(&profile.prompt))?;
+    if profile.clear_on_start {
+        writeln!(f, "printf '\\033[H\\033[2J\\033[3J'")?;
+    }
     f.flush()?;
     Ok(f)
+}
+
+fn shell_single_quote(s: &str) -> String {
+    if s.is_empty() {
+        return "''".into();
+    }
+    let mut quoted = String::with_capacity(s.len() + 2);
+    quoted.push('\'');
+    for ch in s.chars() {
+        if ch == '\'' {
+            quoted.push_str("'\\''");
+        } else {
+            quoted.push(ch);
+        }
+    }
+    quoted.push('\'');
+    quoted
 }
 
 #[cfg(test)]
@@ -617,14 +745,39 @@ mod tests {
         assert_eq!(cfg.cols, 80);
         assert_eq!(cfg.rows, 30);
         assert_eq!(cfg.image, "tint-recorder:demo");
+        assert_eq!(cfg.warm_command, ["tint-recorder-shell"]);
+        assert_eq!(cfg.shell, ShellProfile::tint_demo());
     }
 
     #[test]
     fn rcfile_contains_cd_and_ps1_and_clear() {
-        let f = build_rcfile().unwrap();
+        let f = build_rcfile(&ShellProfile::tint_demo()).unwrap();
         let s = std::fs::read_to_string(f.path()).unwrap();
         assert!(s.contains("cd \"$HOME\""));
         assert!(s.contains("PS1="));
         assert!(s.contains("printf"));
+    }
+
+    #[test]
+    fn rcfile_uses_generic_shell_profile() {
+        let f = build_rcfile(&ShellProfile {
+            setup_commands: vec!["cd /work".into(), "export DEMO=1".into()],
+            prompt: "demo's $ ".into(),
+            clear_on_start: false,
+        })
+        .unwrap();
+        let s = std::fs::read_to_string(f.path()).unwrap();
+        assert!(s.contains("cd /work\n"));
+        assert!(s.contains("export DEMO=1\n"));
+        assert!(s.contains("PS1='demo'\\''s $ '\n"));
+        assert!(!s.contains("\\033[H"));
+        assert!(!s.contains("tint"));
+    }
+
+    #[test]
+    fn shell_quote_handles_empty_and_plain_values() {
+        assert_eq!(shell_single_quote(""), "''");
+        assert_eq!(shell_single_quote("$ "), "'$ '");
+        assert_eq!(shell_single_quote("a'b"), "'a'\\''b'");
     }
 }

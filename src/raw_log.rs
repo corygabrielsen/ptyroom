@@ -19,8 +19,23 @@ pub type ByteBuf = Vec<u8>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Direction {
+    /// Bytes written by the recorder to the child PTY.
     Input,
+    /// Bytes captured from the child PTY.
     Output,
+    /// Synthetic bytes inserted directly into presentation output.
+    ///
+    /// These bytes render in the cast but were not emitted by the child
+    /// process. They are useful for labels, blank prompt lines, and other
+    /// visual-only demo structure.
+    PresentationOutput,
+}
+
+impl Direction {
+    #[must_use]
+    pub const fn is_visible_output(self) -> bool {
+        matches!(self, Self::Output | Self::PresentationOutput)
+    }
 }
 
 /// One ordered adapter-boundary event.
@@ -127,6 +142,10 @@ impl RawLog<Open> {
         self.append(Direction::Output, bytes.into())
     }
 
+    pub fn append_presentation_output(&mut self, bytes: impl Into<ByteBuf>) -> Seq {
+        self.append(Direction::PresentationOutput, bytes.into())
+    }
+
     #[must_use]
     pub fn close(self) -> RawLog<Closed> {
         RawLog {
@@ -162,7 +181,7 @@ impl RawLog<Closed> {
     pub fn output_events(&self) -> impl Iterator<Item = &RawEvent> {
         self.events
             .iter()
-            .filter(|event| event.direction == Direction::Output)
+            .filter(|event| event.direction.is_visible_output())
     }
 
     #[must_use]
@@ -199,10 +218,14 @@ mod tests {
         let mut log = RawLog::<Open>::new();
         log.append_input(b"in".to_vec());
         log.append_output(b"one".to_vec());
-        log.append_output(b"two".to_vec());
+        log.append_presentation_output(b"two".to_vec());
         let closed = log.close();
         let outputs: Vec<_> = closed.output_events().map(RawEvent::bytes).collect();
         assert_eq!(outputs, vec![b"one".as_slice(), b"two".as_slice()]);
+        assert_eq!(
+            closed.event(Seq::new(2)).unwrap().direction(),
+            Direction::PresentationOutput,
+        );
     }
 
     #[test]

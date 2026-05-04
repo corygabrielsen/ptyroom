@@ -109,19 +109,23 @@ demo-all-parallel: build recorder-warm
 demo-readme: SCENE=demo_full
 demo-readme: FONT_SIZE=20
 demo-readme: OUT_EXT=.gif
-demo-readme: build build-image render
+demo-readme: build build-image
+	$(MAKE) render SCENE=$(SCENE) FONT_SIZE=$(FONT_SIZE) OUT_EXT=$(OUT_EXT)
 
 demo-web: SCENE=demo_full
 demo-web: FONT_SIZE=28
 demo-web: OUT_EXT=.mp4
-demo-web: build build-image render
+demo-web: build build-image
+	$(MAKE) render SCENE=$(SCENE) FONT_SIZE=$(FONT_SIZE) OUT_EXT=$(OUT_EXT)
 
 smoke: SCENE=smoke
-smoke: build build-image render
+smoke: build build-image
+	$(MAKE) render SCENE=$(SCENE) FONT_SIZE=$(FONT_SIZE) OUT_EXT=$(OUT_EXT)
 
 # Per-feature scenes (each gets its own GIF + verify contract).
 picker: SCENE=picker
-picker: build build-image render
+picker: build build-image
+	$(MAKE) render SCENE=$(SCENE) FONT_SIZE=$(FONT_SIZE) OUT_EXT=$(OUT_EXT)
 
 picker-timeline-prototype: build build-image
 	@echo "=== record picker semantic trace ==="
@@ -140,13 +144,16 @@ picker-timeline-prototype: build build-image
 	@echo "wrote assets/picker_timeline_libx264.mp4 + assets/picker_timeline_nvenc.mp4 + assets/picker_timeline.gif"
 
 cli: SCENE=cli
-cli: build build-image render
+cli: build build-image
+	$(MAKE) render SCENE=$(SCENE) FONT_SIZE=$(FONT_SIZE) OUT_EXT=$(OUT_EXT)
 
 cd-hook: SCENE=cd_hook
-cd-hook: build build-image render
+cd-hook: build build-image
+	$(MAKE) render SCENE=$(SCENE) FONT_SIZE=$(FONT_SIZE) OUT_EXT=$(OUT_EXT)
 
 custom-theme: SCENE=custom_theme
-custom-theme: build build-image render
+custom-theme: build build-image
+	$(MAKE) render SCENE=$(SCENE) FONT_SIZE=$(FONT_SIZE) OUT_EXT=$(OUT_EXT)
 
 recorder-perf: build recorder-warm
 	TINT_RECORDER_CONTAINER=$(WARM_CONTAINER) ./target/release/recorder_perf --iterations 5
@@ -167,13 +174,16 @@ recorder-perf: build recorder-warm
 # `time make bench-subloops` to see how each stage scales. `make
 # bench` runs all three back-to-back.
 bench-tiny: SCENE=bench_tiny
-bench-tiny: build build-image render
+bench-tiny: build build-image
+	$(MAKE) render SCENE=$(SCENE) FONT_SIZE=$(FONT_SIZE) OUT_EXT=$(OUT_EXT)
 
 bench-churn: SCENE=bench_churn
-bench-churn: build build-image render
+bench-churn: build build-image
+	$(MAKE) render SCENE=$(SCENE) FONT_SIZE=$(FONT_SIZE) OUT_EXT=$(OUT_EXT)
 
 bench-subloops: SCENE=bench_subloops
-bench-subloops: build build-image render
+bench-subloops: build build-image
+	$(MAKE) render SCENE=$(SCENE) FONT_SIZE=$(FONT_SIZE) OUT_EXT=$(OUT_EXT)
 
 # Parallel-record variant: spawn N copies of bench_subloops in
 # parallel, each recording one subloop into its own cast, then
