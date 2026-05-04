@@ -6,8 +6,14 @@
 //! - [`snapshot`] — per-frame terminal state with a rectangular grid invariant.
 //! - [`cast`] — asciinema v2 file format.
 //!
+//! - [`raw_log`] — append-only input/output evidence.
+//! - [`verified_trace`] — replay-checked transitions over deterministic
+//!   observers.
+//! - [`proof_timeline`] — verified transitions compiled to monotonic
+//!   presentation time.
+//!
 //! Higher layers (paint / encode / inspect / verify / recorder / scenes)
-//! depend only on what's below them.
+//! depend only on these lower layers.
 
 pub mod cast;
 pub mod color;

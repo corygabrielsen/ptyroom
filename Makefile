@@ -231,16 +231,15 @@ render:
 	@echo "wrote $(OUT)"
 
 # Manual verify (rerun against existing snapshots).
-verify:
-	docker run --rm -v $(CURDIR)/assets:/work $(IMAGE) \
-		tint-verify $(SCENE) --snapshots-dir /work/snapshots
+verify: build
+	./target/release/verify $(SCENE) --snapshots-dir assets/snapshots
 
 # Render every registered scene and report PASS/FAIL per scene. Drives
 # the scene list from `tint-verify --list-scenes` so it stays in sync
 # with the contract registry. Slow — runs the full render pipeline for
 # each scene. Returns non-zero if any scene fails verify.
 verify-all: build build-image
-	@scenes=$$(docker run --rm $(IMAGE) tint-verify --list-scenes); \
+	@scenes=$$(./target/release/verify --list-scenes); \
 	failed=""; \
 	for scene in $$scenes; do \
 		printf '\n=== %s ===\n' "$$scene"; \

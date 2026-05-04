@@ -79,7 +79,7 @@ regression.
 | `src/verified_trace.rs`| Replay-checked semantic transitions                  | Rust |
 | `src/proof_timeline.rs`| Verified transitions → deterministic presentation    | Rust |
 | `src/scenes.rs`        | Scene helpers and presentation timing knobs          | Rust |
-| `src/timeline.rs`      | Semantic trace + presentation policy prototype       | Rust |
+| `src/timeline.rs`      | Presentation beat timing policy                      | Rust |
 | `src/bin/recorder_perf.rs` | Capture-leg microbenchmark harness              | Rust |
 | `src/bin/compare_snapshots.rs` | Frame-by-frame snapshot A/B comparison      | Rust |
 | `scenes/demo_full.rs`  | 4-act marketing demo                                 | Rust |
