@@ -15,7 +15,10 @@ struct Args {
 
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    let mut r = Recorder::start(RecorderConfig::default())?;
+    let mut r = Recorder::start(RecorderConfig {
+        rows: 20,
+        ..RecorderConfig::default()
+    })?;
     r.dwell(ms(800), ms(600))?;
     run_custom_theme(&mut r)?;
     r.dwell(ms(2500), ms(100))?;
