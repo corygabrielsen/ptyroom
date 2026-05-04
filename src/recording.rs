@@ -10,7 +10,7 @@ use std::path::Path;
 use serde::{Serialize, Serializer};
 
 use crate::cast::Cast;
-use crate::observer::{Fact, Observer, Predicate, SyntheticObserver};
+use crate::observer::{Fact, Observer, Predicate, ScreenObserver, SyntheticObserver};
 use crate::proof::{Closed, DwellMs, IntentId, Monotonic, Open, Seq, StateHash, Verified};
 use crate::proof_timeline::{Timeline, TimelineEvent};
 use crate::raw_log::{ByteBuf, Direction, RawEvent, RawLog, RawSpan};
@@ -142,6 +142,14 @@ impl RecordingBuilder {
     /// Returns an error if verification or timeline compilation fails.
     pub fn finish_synthetic(self, cols: u16, rows: u16) -> anyhow::Result<VerifiedRecording> {
         self.finish(cols, rows, &mut SyntheticObserver::new())
+    }
+
+    /// Verify and compile with a small terminal-like screen observer.
+    ///
+    /// # Errors
+    /// Returns an error if verification or timeline compilation fails.
+    pub fn finish_screen(self, cols: u16, rows: u16) -> anyhow::Result<VerifiedRecording> {
+        self.finish(cols, rows, &mut ScreenObserver::new(cols, rows))
     }
 
     /// Verify and compile with a caller-supplied observer.
@@ -423,6 +431,25 @@ mod tests {
 
         assert!(json.contains(r#""bytes": "1b5b33316d""#));
         assert!(!json.contains(r#""bytes": ["#));
+    }
+
+    #[test]
+    fn finish_screen_verifies_visible_terminal_text() {
+        let mut builder = RecordingBuilder::new();
+        builder
+            .record_step_matching(
+                Vec::new(),
+                b"hello\r\nworld".to_vec(),
+                DwellMs::new(1),
+                Some(Predicate::ContainsText {
+                    text: "hello\nworld".into(),
+                }),
+            )
+            .unwrap();
+
+        let recording = builder.finish_screen(20, 4).unwrap();
+
+        assert_eq!(recording.trace().len(), 1);
     }
 
     #[test]
