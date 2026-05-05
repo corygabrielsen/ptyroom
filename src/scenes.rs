@@ -470,28 +470,31 @@ fn run_cd_hook_setup(r: &mut Recorder) -> anyhow::Result<()> {
 }
 
 fn run_cd_hook_foo_bar(r: &mut Recorder) -> anyhow::Result<()> {
-    // First dir: write a .tint, cd in — bg should change to pale-sky-blue.
-    // Generic foo/bar names instead of theme-suggestive names like
-    // skyroom/yellowroom: the latter read like a magic feature ("a
-    // 'skyroom' is a thing tint understands") instead of the actual
-    // mechanism (tint reads .tint from any directory you cd into).
+    // Three-step tier progression across foo/bar/baz: deep → muted → pale.
+    // Each dir picks a different hue at a different lightness tier so the
+    // viewer reads "this is a system of tiered themes," not "these are
+    // three random colors." Generic foo/bar names instead of theme-
+    // suggestive names like skyroom/yellowroom: the latter read like a
+    // magic feature ("a 'skyroom' is a thing tint understands") instead
+    // of the actual mechanism (tint reads .tint from any directory).
+    //
+    // First dir: deep-sky-blue (deep tier, cool hue) — opens dark.
     line(
         r,
-        "mkdir foo && echo pale-sky-blue > foo/.tint",
+        "mkdir foo && echo deep-sky-blue > foo/.tint",
         TYPE_COMMAND,
         PLUMB_PRE,
         PLUMB_SETTLE,
     )?;
     line(r, "cd foo", TYPE_COMMAND, PAYLOAD_PRE, PAYLOAD_SETTLE)?;
 
-    // Second dir: same pattern with a contrasting theme (warm pale-yellow
-    // vs cool pale-sky-blue). Two dirs instead of one because seeing the bg
-    // change *twice* makes the mechanism unmistakable; one could be
-    // coincidence.
+    // Second dir: yellow (muted base tier, warm hue) — bright contrast.
+    // Seeing the bg change *twice* makes the mechanism unmistakable;
+    // one could be coincidence.
     line(r, "cd ..", TYPE_COMMAND, PLUMB_PRE, PLUMB_SETTLE)?;
     line(
         r,
-        "mkdir bar && echo pale-yellow > bar/.tint",
+        "mkdir bar && echo yellow > bar/.tint",
         TYPE_COMMAND,
         PLUMB_PRE,
         PLUMB_SETTLE,
