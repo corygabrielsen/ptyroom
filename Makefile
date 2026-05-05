@@ -123,10 +123,10 @@ feature-demos: build recorder-warm
 	@for scene in $(FEATURE_SCENES); do \
 		echo "=== record $$scene ==="; \
 		TINT_RECORDER_CONTAINER=$(WARM_CONTAINER) ./target/release/$$scene --cast assets/$$scene.cast; \
-		echo "=== snapshot + paint $$scene at FONT_SIZE=28 ==="; \
+		echo "=== snapshot + paint $$scene at FONT_SIZE=40 ==="; \
 		rm -rf assets/$${scene}_snapshots assets/$${scene}_frames; \
 		./node_modules/.bin/tsx ./renderer/snapshot.ts assets/$$scene.cast assets/$${scene}_snapshots; \
-		./target/release/paint --font-size 28 assets/$${scene}_snapshots assets/$${scene}_frames; \
+		./target/release/paint --font-size 40 assets/$${scene}_snapshots assets/$${scene}_frames; \
 		echo "=== encode $$scene: mp4 + gif ==="; \
 		./target/release/encode assets/$${scene}_frames assets/$${scene}_snapshots/timing.json assets/$$scene.mp4 & \
 		./target/release/encode assets/$${scene}_frames assets/$${scene}_snapshots/timing.json assets/$$scene.gif --width 824 & \
