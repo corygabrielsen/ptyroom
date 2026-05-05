@@ -13,6 +13,12 @@ OUT        = assets/$(SCENE)$(OUT_EXT)
 IMAGE     := tint-recorder:demo
 WARM_CONTAINER ?= tint-recorder-warm
 TINT_PATH ?= ../tint/tint
+# Export so scene binaries pick TINT_PATH up via clap's `env=` attribute
+# without each recipe having to mention it. Without this, demo_full's
+# host-side lookup_picker_idx falls back to its CLI default (a dead
+# absolute path on the original author's machine) and fails with
+# "No such file or directory".
+export TINT_PATH
 FEATURE_SCENES := cli picker cd_hook custom_theme
 # Painter font size in pixels. Cell width and height scale linearly.
 # Default 14 → 7×16 cells → 80×20 grid renders at 584×344 (good for dev
@@ -81,22 +87,14 @@ demo-walkthrough: build recorder-warm
 	@echo "wrote assets/demo_full.mp4 + assets/demo_full.gif"
 
 # Per-feature demos: one cast per feature (cli, picker, cd_hook,
-# custom_theme). Sequential per scene; mp4+gif encode parallel within each.
+# custom_theme). Scenes run in parallel against the shared warm
+# container; the recorder gives each scene a unique container $HOME
+# via the CONTAINER_HOME_SEQ atomic counter + pid, and each scene's
+# disk paths (assets/<scene>_*) are disjoint.
 demo-features: build recorder-warm
-	@for scene in $(FEATURE_SCENES); do \
-		echo "=== record $$scene ==="; \
-		TINT_RECORDER_CONTAINER=$(WARM_CONTAINER) ./target/release/$$scene --cast assets/$$scene.cast; \
-		echo "=== snapshot + paint $$scene at FONT_SIZE=40 ==="; \
-		rm -rf assets/$${scene}_snapshots assets/$${scene}_frames; \
-		./node_modules/.bin/tsx ./renderer/snapshot.ts assets/$$scene.cast assets/$${scene}_snapshots; \
-		./target/release/paint --font-size 40 assets/$${scene}_snapshots assets/$${scene}_frames; \
-		echo "=== encode $$scene: mp4 + gif ==="; \
-		./target/release/encode assets/$${scene}_frames assets/$${scene}_snapshots/timing.json assets/$$scene.mp4 & \
-		./target/release/encode assets/$${scene}_frames assets/$${scene}_snapshots/timing.json assets/$$scene.gif --width 824 & \
-		wait; \
-		./target/release/verify $$scene --snapshots-dir assets/$${scene}_snapshots; \
-		echo "wrote assets/$$scene.mp4 + assets/$$scene.gif"; \
-	done
+	@WARM_CONTAINER=$(WARM_CONTAINER) FONT_SIZE=40 WIDTH=824 \
+	    printf '%s\n' $(FEATURE_SCENES) | \
+	    xargs -P $(words $(FEATURE_SCENES)) -I{} bash scripts/render_feature.sh {}
 
 smoke: SCENE=smoke
 smoke: build build-image
