@@ -1,0 +1,16 @@
+{
+  "scene": "picker",
+  "blessed_at": "2026-05-05T13:12:43Z",
+  "blessed_runs": 3,
+  "hashes": {
+    "concat_o": "24aa2e2d87f2a569503a29b5ae53d2356bcc8680ca052f45553ecd3786136296",
+    "cast_event_count": 201,
+    "final_snapshot": "2c77ece1287159adb6f0691fd177b102905b5684f79ba5b2f2698e0cd53136de",
+    "all_snapshots": "3b7399427dc8a16ba7970463b8ee587be8df031825049fa8694c4679d60abae0",
+    "snapshot_count": 201,
+    "all_pngs": "69e1e881f5d9481a1789d2fbd7239897506a974e73ab0fb35c542ec0e2a5a8b1",
+    "png_count": 201,
+    "mp4": "c38b689f522c12f5bea7586874e3c41d512cb206113b8e1ae9c632ea7503df68",
+    "gif": "1f7662286301b776c712606d01177893c3bdaa1f95da8043f4ee22a7127ded84"
+  }
+}

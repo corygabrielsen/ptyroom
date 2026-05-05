@@ -1,0 +1,16 @@
+{
+  "scene": "cd_hook",
+  "blessed_at": "2026-05-05T13:13:13Z",
+  "blessed_runs": 3,
+  "hashes": {
+    "concat_o": "93f9d728d20ce563912539a786a0b131bc35182cd415c46d4f727a783d603ce1",
+    "cast_event_count": 324,
+    "final_snapshot": "2c77ece1287159adb6f0691fd177b102905b5684f79ba5b2f2698e0cd53136de",
+    "all_snapshots": "3867fce8f83b45c3b8bea0d8439a20fb931f40f7064853405663e7b5e14289e4",
+    "snapshot_count": 324,
+    "all_pngs": "35e5331a232a54e0c4f8ab65e281653762b397d69a639c0f73d19f7e9c2e7100",
+    "png_count": 324,
+    "mp4": "5f82a55e6e3f980b6a69b0842c8df611ec6e83e648bf34ad43159e84eee13144",
+    "gif": "5a7c57040994bedd07dbb276a8fff812f79f976fbf16242a863c7174b70b6f40"
+  }
+}

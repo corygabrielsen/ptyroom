@@ -1,0 +1,16 @@
+{
+  "scene": "cli",
+  "blessed_at": "2026-05-05T13:12:14Z",
+  "blessed_runs": 3,
+  "hashes": {
+    "concat_o": "381d150df05a168b41a353ac3fde5b5d4d2a33694e054bfd0dbe193e01cf0d00",
+    "cast_event_count": 146,
+    "final_snapshot": "2c77ece1287159adb6f0691fd177b102905b5684f79ba5b2f2698e0cd53136de",
+    "all_snapshots": "c9d6e4a4c30d4b84faeb328acd86363b4cf3bba4deefdf7d8fbd90577f8f0101",
+    "snapshot_count": 146,
+    "all_pngs": "c4036617eb6fef9a4235bb09791c3f89a1560865a4e52aaab3123323c15d0561",
+    "png_count": 146,
+    "mp4": "374d246e74b826de17a8cbc4c6c071a986df1b854ac5d4f7736f6bc605d183ae",
+    "gif": "c3e6bae4da239e492d875c78d2e07aa28e5936a0c3a42fc5411a6de321c7539f"
+  }
+}
