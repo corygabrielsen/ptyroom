@@ -149,6 +149,24 @@ impl Drainer {
         std::mem::take(&mut s.bytes)
     }
 
+    /// Push bytes back onto the front of the buffer so the next
+    /// `consume` returns them first. Used by `send_raw_wait_for` to
+    /// retain post-pattern bytes for the next event instead of folding
+    /// them into the wait_for event.
+    pub fn unconsume(&self, bytes: Vec<u8>) {
+        if bytes.is_empty() {
+            return;
+        }
+        let mut s = self.inner.lock().expect("drainer mutex poisoned");
+        if s.bytes.is_empty() {
+            s.bytes = bytes;
+        } else {
+            let mut combined = bytes;
+            combined.extend_from_slice(&s.bytes);
+            s.bytes = combined;
+        }
+    }
+
     /// Register a pattern watch. The drainer scans every subsequent
     /// chunk for the pattern (with carry-over across chunk boundaries)
     /// and fires the returned handle on the first match.

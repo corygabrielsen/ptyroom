@@ -624,8 +624,23 @@ impl Recorder {
             )
         })?;
         let captured = self.drainer.consume();
+        // Tight cutoff: this event contains bytes up to and including
+        // the pattern. Anything after stays in the drainer buffer for
+        // the next operation. Without this split, a slow recorder-thread
+        // wake under contention can scoop up post-pattern bytes that on
+        // a faster wake would belong to the next event — a partition
+        // race that surfaces as event-count drift in downstream
+        // artifacts.
+        let pattern_end = find_subslice(&captured, pattern)
+            .map(|i| i + pattern.len())
+            .unwrap_or(captured.len());
+        let (this_event, leftover) = captured.split_at(pattern_end);
+        let this_event = this_event.to_vec();
+        if !leftover.is_empty() {
+            self.drainer.unconsume(leftover.to_vec());
+        }
         self.recording
-            .record_step(bytes.to_vec(), captured, DwellMs::from_duration(dwell))?;
+            .record_step(bytes.to_vec(), this_event, DwellMs::from_duration(dwell))?;
         Ok(elapsed)
     }
 
