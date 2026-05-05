@@ -488,13 +488,14 @@ fn run_cd_hook_foo_bar(r: &mut Recorder) -> anyhow::Result<()> {
     )?;
     line(r, "cd foo", TYPE_COMMAND, PAYLOAD_PRE, PAYLOAD_SETTLE)?;
 
-    // Second dir: green (muted base tier, neutral hue) — bright midpoint.
-    // Seeing the bg change *twice* makes the mechanism unmistakable;
-    // one could be coincidence.
+    // Second dir: dark-green (dark tier, neutral hue) — softer than the
+    // muted base tier, which can read as harsh when bg-flipped through
+    // in a loop. Seeing the bg change *twice* makes the mechanism
+    // unmistakable; one could be coincidence.
     line(r, "cd ..", TYPE_COMMAND, PLUMB_PRE, PLUMB_SETTLE)?;
     line(
         r,
-        "mkdir bar && echo green > bar/.tint",
+        "mkdir bar && echo dark-green > bar/.tint",
         TYPE_COMMAND,
         PLUMB_PRE,
         PLUMB_SETTLE,
