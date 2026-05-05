@@ -123,6 +123,13 @@ pub const PICKER_READY_MARKER: &[u8] = b"more";
 /// Prompt suffix emitted by the recorder rcfile's PS1. Scene helpers use
 /// this as a content-aware shell-command completion gate.
 pub const PROMPT_READY: &[u8] = b"\x1b[0m $ ";
+/// PS2 (heredoc/continuation) prompt with bash's bracketed-paste-on
+/// prefix. Bash emits `\x1b[?2004h> ` only at PS2 boundaries; the
+/// `\x1b[?2004h` prefix never co-occurs with `> ` outside this case
+/// (PS1 has no `> `; user input echoes have no bracketed-paste prefix),
+/// making this an unambiguous content-aware sync target for heredoc
+/// body line transitions.
+pub const PS2_READY: &[u8] = b"\x1b[?2004h> ";
 /// Full prompt bytes emitted by the recorder rcfile.
 pub const PROMPT: &[u8] = b"\x1b[31mt\x1b[33mi\x1b[32mn\x1b[36mt\x1b[0m $ ";
 /// Screen clear emitted by the recorder rcfile and synthetic clear helper.
@@ -231,6 +238,27 @@ pub fn prompt_enter(r: &mut Recorder, dwell: Duration, label: &str) -> anyhow::R
 /// Any [`Recorder`] IO error, or prompt timeout.
 pub fn wait_for_prompt(r: &mut Recorder, dwell: Duration, label: &str) -> anyhow::Result<()> {
     r.send_raw_wait_for(&[], dwell, PROMPT_READY, SHELL_PROMPT_TIMEOUT, label)?;
+    Ok(())
+}
+
+/// Press Enter inside an open heredoc and wait until bash has redrawn
+/// the PS2 continuation prompt.
+///
+/// Use after every heredoc body line. A bare `Key::Enter` followed by
+/// `DEFAULT_SETTLE` is racy: bash's `\x1b[?2004h> ` (bracketed-paste-on +
+/// PS2) sometimes lands after the recorder's consume, leaking into the
+/// next event.
+///
+/// # Errors
+/// Any [`Recorder`] IO error, or PS2 timeout.
+pub fn ps2_enter(r: &mut Recorder, dwell: Duration, label: &str) -> anyhow::Result<()> {
+    r.send_raw_wait_for(
+        Key::Enter.bytes(),
+        dwell,
+        PS2_READY,
+        SHELL_PROMPT_TIMEOUT,
+        label,
+    )?;
     Ok(())
 }
 
@@ -534,9 +562,9 @@ pub fn run_custom_theme(r: &mut Recorder) -> anyhow::Result<()> {
         "cat > ~/.config/tint/themes/matrix.theme <<EOF",
         TYPE_COMMAND,
     )?;
-    r.key(Key::Enter, ms(0))?;
+    ps2_enter(r, ms(0), "custom theme heredoc start")?;
     r.type_text(CUSTOM_THEME_LINE, TYPE_FAST)?;
-    r.key(Key::Enter, ms(0))?;
+    ps2_enter(r, ms(0), "custom theme heredoc body")?;
     r.type_text("EOF", TYPE_COMMAND)?;
     prompt_enter(r, ms(0), "custom theme heredoc prompt")?;
 
