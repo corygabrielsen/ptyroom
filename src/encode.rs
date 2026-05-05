@@ -28,16 +28,30 @@ impl TimingEntry {
 /// MP4 video encoder backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mp4Encoder {
+    /// Software x264 encoder. Default. Deterministic and broadly
+    /// available; no GPU required.
     Libx264,
+    /// NVIDIA NVENC hardware H.264 encoder. Faster wall-time but
+    /// requires a CUDA-capable GPU + matching ffmpeg build, and is
+    /// not bit-for-bit reproducible across driver versions.
     H264Nvenc,
 }
 
+/// Inputs for one encode invocation. The output format is selected from
+/// `out_path`'s extension (`.mp4` or `.gif`).
 #[derive(Debug, Clone)]
 pub struct EncodeRequest {
+    /// Directory containing the PNG frames named `<frame>.png` for each
+    /// `TimingEntry::frame` in `timing`.
     pub frames_dir: PathBuf,
+    /// Per-frame dwell schedule; ordering defines playback order.
     pub timing: Vec<TimingEntry>,
+    /// Output media path. Extension picks the encoder path
+    /// (`.mp4` → libx264/NVENC, `.gif` → palettegen + paletteuse).
     pub out_path: PathBuf,
+    /// Output frame rate fed to ffmpeg's `fps` filter.
     pub fps: u32,
+    /// MP4 backend selection. Ignored for `.gif` outputs.
     pub mp4_encoder: Mp4Encoder,
     /// Optional output width in pixels. When set, ffmpeg's lanczos scale
     /// filter resizes frames to this width preserving aspect ratio
@@ -72,22 +86,30 @@ pub fn encode(req: &EncodeRequest) -> anyhow::Result<()> {
         )
     })?;
 
-    let concat_path = frames_dir
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("frames_dir has no parent: {}", frames_dir.display()))?
-        .join("concat.txt");
-
+    // Per-call tempfile so concurrent encode() invocations against the same
+    // frames_dir (e.g. mp4 + gif siblings) cannot race on a shared concat
+    // path. Held alive until encode() returns, which is after ffmpeg exits.
     let concat_text = build_concat(&frames_dir, &req.timing)?;
-    std::fs::write(&concat_path, concat_text)?;
+    let concat_file = {
+        use std::io::Write as _;
+        let mut f = tempfile::Builder::new()
+            .prefix("tint-recorder-concat-")
+            .suffix(".txt")
+            .tempfile()?;
+        f.write_all(concat_text.as_bytes())?;
+        f.flush()?;
+        f
+    };
+    let concat_path = concat_file.path();
 
     let ext = req
         .out_path
         .extension()
         .and_then(|s| s.to_str())
         .map(str::to_ascii_lowercase);
-    match ext.as_deref() {
-        Some("gif") => encode_gif(req, &concat_path),
-        Some("mp4") => encode_mp4(req, &concat_path),
+    let result = match ext.as_deref() {
+        Some("gif") => encode_gif(req, concat_path),
+        Some("mp4") => encode_mp4(req, concat_path),
         Some(other) => {
             anyhow::bail!("encode: unsupported output extension '.{other}' (expected .gif or .mp4)")
         }
@@ -95,7 +117,9 @@ pub fn encode(req: &EncodeRequest) -> anyhow::Result<()> {
             "encode: output path has no extension: {}",
             req.out_path.display()
         ),
-    }
+    };
+    drop(concat_file);
+    result
 }
 
 fn encode_gif(req: &EncodeRequest, concat_path: &Path) -> anyhow::Result<()> {
@@ -157,6 +181,12 @@ fn encode_mp4(req: &EncodeRequest, concat_path: &Path) -> anyhow::Result<()> {
                 "medium",
                 "-tune",
                 "stillimage",
+                // Single-threaded slice encoding: the only way to get
+                // byte-stable output across runs. Multi-threaded x264
+                // partitions slices nondeterministically. Cost on terminal
+                // content (mostly static text) is small.
+                "-threads",
+                "1",
             ]);
         }
         Mp4Encoder::H264Nvenc => {
