@@ -35,11 +35,13 @@ RUN cat > /usr/local/bin/tint-recorder-shell <<'EOF' \
     && chmod +x /usr/local/bin/tint-recorder-shell
 #!/bin/sh
 set -eu
+# Per-session $HOME is unique (recorder picks the path via
+# CONTAINER_HOME_SEQ + pid), so wiping and recreating it gives each
+# concurrent docker exec a clean private workspace. Scene scratch
+# dirs (cd_hook foo/bar/baz, custom_theme ~/.config/tint/themes)
+# all live under $HOME, so this single reset covers them.
 rm -rf "$HOME"
 mkdir -p "$HOME"
-# The cd-hook scene intentionally demonstrates `cd /tmp`, so warm
-# container recordings must reset those visible demo paths too.
-rm -rf /tmp/foo /tmp/bar
 cd "$HOME"
 exec bash --rcfile /home/demo/.tint-recorder.rc -i
 EOF

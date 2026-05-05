@@ -493,7 +493,12 @@ fn run_cd_hook_setup(r: &mut Recorder) -> anyhow::Result<()> {
         PLUMB_PRE,
         PLUMB_SETTLE,
     )?;
-    line(r, "cd /tmp", TYPE_COMMAND, PLUMB_PRE, PLUMB_SETTLE)?;
+    // Stay in `$HOME` rather than cd-ing to /tmp so the foo/bar/baz
+    // scratch dirs land under a per-session-unique path. The recorder
+    // gives each docker exec a fresh `$HOME` via `CONTAINER_HOME_SEQ`,
+    // so concurrent cd_hook recordings (e.g. demo_full's subloop and
+    // demo-features's standalone running in parallel under `make all`)
+    // can't race on shared /tmp paths.
     Ok(())
 }
 
