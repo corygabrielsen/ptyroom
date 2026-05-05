@@ -87,11 +87,11 @@ demo-all-fast: demo-all-parallel
 demo-all-parallel: build recorder-warm
 	@echo "=== fast record: warm content-aware recorder ==="
 	TINT_RECORDER_CONTAINER=$(WARM_CONTAINER) ./target/release/demo_full --cast assets/demo_full.cast
-	@echo "=== paint at FONT_SIZE=28 ==="
+	@echo "=== paint at FONT_SIZE=40 ==="
 	rm -rf assets/snapshots assets/frames
 	./node_modules/.bin/tsx ./renderer/snapshot.ts assets/demo_full.cast assets/snapshots
-	./target/release/paint --font-size 28 assets/snapshots assets/frames
-	@echo "=== parallel encode: mp4 + scaled gif ==="
+	./target/release/paint --font-size 40 assets/snapshots assets/frames
+	@echo "=== parallel encode: mp4 native (~1704×864 Retina-crisp) + scaled gif ==="
 	./target/release/encode assets/frames assets/snapshots/timing.json assets/demo_full.mp4 & \
 	./target/release/encode assets/frames assets/snapshots/timing.json assets/demo_full.gif --width 824 & \
 	wait
@@ -128,7 +128,7 @@ feature-demos: build recorder-warm
 		./node_modules/.bin/tsx ./renderer/snapshot.ts assets/$$scene.cast assets/$${scene}_snapshots; \
 		./target/release/paint --font-size 28 assets/$${scene}_snapshots assets/$${scene}_frames; \
 		echo "=== encode $$scene: mp4 + gif ==="; \
-		./target/release/encode assets/$${scene}_frames assets/$${scene}_snapshots/timing.json assets/$$scene.mp4 --width 824 & \
+		./target/release/encode assets/$${scene}_frames assets/$${scene}_snapshots/timing.json assets/$$scene.mp4 & \
 		./target/release/encode assets/$${scene}_frames assets/$${scene}_snapshots/timing.json assets/$$scene.gif --width 824 & \
 		wait; \
 		./target/release/verify $$scene --snapshots-dir assets/$${scene}_snapshots; \
