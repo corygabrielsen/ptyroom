@@ -327,7 +327,7 @@ pub fn run_preamble(r: &mut Recorder) -> anyhow::Result<()> {
 /// # Errors
 /// Any [`Recorder`] IO error.
 pub fn run_picker(r: &mut Recorder, down_to_target: usize) -> anyhow::Result<()> {
-    feature_note(r, "# pick interactively")?;
+    feature_note(r, "# browse and select themes interactively")?;
 
     r.type_text("tint", TYPE_COMMAND)?;
     // Arm the watch BEFORE sending Enter. Otherwise the alt-screen-enter
@@ -392,7 +392,7 @@ pub fn run_picker(r: &mut Recorder, down_to_target: usize) -> anyhow::Result<()>
 /// # Errors
 /// Any [`Recorder`] IO error.
 pub fn run_cli(r: &mut Recorder) -> anyhow::Result<()> {
-    feature_note(r, "# apply by name")?;
+    feature_note(r, "# apply a theme by name")?;
     // Three themes: dracula (dark purple) → solarized-light (cream) →
     // monokai (classic dark with vivid accents). Three is the rule-of-
     // three rhythm — completes the "you can pick anything by name" beat
@@ -427,7 +427,7 @@ pub fn run_cli(r: &mut Recorder) -> anyhow::Result<()> {
 /// # Errors
 /// Any [`Recorder`] IO error.
 pub fn run_cd_hook(r: &mut Recorder) -> anyhow::Result<()> {
-    feature_note(r, "# auto-apply on cd")?;
+    feature_note(r, "# automatically switch themes when changing directories")?;
     run_cd_hook_setup(r)?;
     run_cd_hook_foo_bar(r)?;
     Ok(())
@@ -442,7 +442,7 @@ pub fn run_cd_hook(r: &mut Recorder) -> anyhow::Result<()> {
 /// # Errors
 /// Any [`Recorder`] IO error.
 pub fn run_cd_hook_feature(r: &mut Recorder) -> anyhow::Result<()> {
-    feature_note(r, "# auto-apply on cd")?;
+    feature_note(r, "# automatically switch themes when changing directories")?;
     run_cd_hook_setup(r)?;
     run_cd_hook_foo_bar(r)?;
     line(r, "cd ..", TYPE_COMMAND, PLUMB_PRE, PLUMB_SETTLE)?;
@@ -518,7 +518,7 @@ fn run_cd_hook_foo_bar(r: &mut Recorder) -> anyhow::Result<()> {
 /// # Errors
 /// Any [`Recorder`] IO error.
 pub fn run_custom_theme(r: &mut Recorder) -> anyhow::Result<()> {
-    feature_note(r, "# bring your own theme")?;
+    feature_note(r, "# use custom themes")?;
     // Smooth typing through the whole "configure a theme" sequence: the
     // viewer doesn't need to absorb each intermediate command (mkdir,
     // heredoc start, color spec, EOF); they're plumbing for the
@@ -608,6 +608,7 @@ fn run_feature_subloop_with_reset_dwell(
     reset_dwell: Duration,
 ) -> anyhow::Result<()> {
     note(r, "# tint — terminal theme switcher", TYPE_LABEL)?;
+    note(r, "# https://tint.sh", TYPE_LABEL)?;
     blank(r, ms(0))?;
     feature(r)?;
     if !reset_dwell.is_zero() {
