@@ -69,6 +69,9 @@ pub const PLUMB_SETTLE: Duration = ms(400);
 /// Pre-Enter on `clear` — "you've seen everything; clearing now" beat
 /// with the typed `clear` visible on the prompt.
 pub const CLEAR_REGISTER: Duration = ms(250);
+/// Breath between a feature's payoff and the reset/clear coda in standalone
+/// feature GIFs.
+pub const STANDALONE_FEATURE_RESET_DWELL: Duration = ms(1000);
 
 // Picker.
 /// Maximum real-time wait for the picker to claim alt-screen after
@@ -425,6 +428,36 @@ pub fn run_cli(r: &mut Recorder) -> anyhow::Result<()> {
 /// Any [`Recorder`] IO error.
 pub fn run_cd_hook(r: &mut Recorder) -> anyhow::Result<()> {
     feature_note(r, "# auto-apply on cd")?;
+    run_cd_hook_setup(r)?;
+    run_cd_hook_foo_bar(r)?;
+    Ok(())
+}
+
+/// Extended cd-hook feature scene for the standalone feature GIF.
+///
+/// The full demo keeps the shorter two-directory version; the standalone
+/// feature clip has room to breathe, so it shows a third directory to make
+/// the repeating mechanism explicit.
+///
+/// # Errors
+/// Any [`Recorder`] IO error.
+pub fn run_cd_hook_feature(r: &mut Recorder) -> anyhow::Result<()> {
+    feature_note(r, "# auto-apply on cd")?;
+    run_cd_hook_setup(r)?;
+    run_cd_hook_foo_bar(r)?;
+    line(r, "cd ..", TYPE_COMMAND, PLUMB_PRE, PLUMB_SETTLE)?;
+    line(
+        r,
+        "mkdir baz && echo pale-green > baz/.tint",
+        TYPE_COMMAND,
+        PLUMB_PRE,
+        PLUMB_SETTLE,
+    )?;
+    line(r, "cd baz", TYPE_COMMAND, PAYLOAD_PRE, PAYLOAD_SETTLE)?;
+    Ok(())
+}
+
+fn run_cd_hook_setup(r: &mut Recorder) -> anyhow::Result<()> {
     line(
         r,
         "eval \"$(tint hook bash)\"",
@@ -433,7 +466,10 @@ pub fn run_cd_hook(r: &mut Recorder) -> anyhow::Result<()> {
         PLUMB_SETTLE,
     )?;
     line(r, "cd /tmp", TYPE_COMMAND, PLUMB_PRE, PLUMB_SETTLE)?;
+    Ok(())
+}
 
+fn run_cd_hook_foo_bar(r: &mut Recorder) -> anyhow::Result<()> {
     // First dir: write a .tint, cd in — bg should change to pale-sky-blue.
     // Generic foo/bar names instead of theme-suggestive names like
     // skyroom/yellowroom: the latter read like a magic feature ("a
@@ -530,5 +566,51 @@ pub fn run_reset(r: &mut Recorder) -> anyhow::Result<()> {
 /// Any [`Recorder`] IO error.
 pub fn run_clear(r: &mut Recorder) -> anyhow::Result<()> {
     line(r, "clear", TYPE_COMMAND, ms(300), ms(0))?;
+    Ok(())
+}
+
+/// One compact full-demo subloop: brand preamble, feature body, reset,
+/// and a clear-to-blank ending.
+///
+/// The full reel has to stay brief, so there is no extra dwell between
+/// the feature's own end-beat and the reset/clear coda.
+///
+/// # Errors
+/// Any [`Recorder`] IO error.
+pub fn run_feature_subloop(
+    r: &mut Recorder,
+    feature: impl FnOnce(&mut Recorder) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    run_feature_subloop_with_reset_dwell(r, feature, Duration::ZERO)
+}
+
+/// One standalone feature GIF subloop.
+///
+/// Standalone feature media has room to breathe, so it holds the feature
+/// payoff for one extra second before resetting and clearing.
+///
+/// # Errors
+/// Any [`Recorder`] IO error.
+pub fn run_standalone_feature_subloop(
+    r: &mut Recorder,
+    feature: impl FnOnce(&mut Recorder) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    run_feature_subloop_with_reset_dwell(r, feature, STANDALONE_FEATURE_RESET_DWELL)
+}
+
+fn run_feature_subloop_with_reset_dwell(
+    r: &mut Recorder,
+    feature: impl FnOnce(&mut Recorder) -> anyhow::Result<()>,
+    reset_dwell: Duration,
+) -> anyhow::Result<()> {
+    note(r, "# tint — terminal theme switcher", TYPE_LABEL)?;
+    blank(r, ms(0))?;
+    feature(r)?;
+    if !reset_dwell.is_zero() {
+        r.dwell(reset_dwell, ms(0))?;
+    }
+    blank(r, ms(0))?;
+    line(r, "tint reset", TYPE_COMMAND, ms(0), ms(0))?;
+    virtual_clear(r, CLEAR_REGISTER)?;
     Ok(())
 }

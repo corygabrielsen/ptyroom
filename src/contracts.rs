@@ -34,9 +34,11 @@ const SOLARIZED_LIGHT: HexColor = rgb(0xfd, 0xf6, 0xe3);
 const MONOKAI: HexColor = rgb(0x27, 0x28, 0x22);
 const PALE_SKY_BLUE: HexColor = rgb(0xba, 0xd5, 0xde);
 const PALE_YELLOW: HexColor = rgb(0xde, 0xde, 0xba);
+const PALE_GREEN: HexColor = rgb(0xba, 0xde, 0xba);
 const MATRIX: HexColor = rgb(0x00, 0x00, 0x00);
 /// Snapshot bg after `tint reset` — matches the `recorder/snapshot.ts`
-/// startup default (`#1a1b26`). Used by `demo_full`'s act-5 reset check.
+/// startup default (`#1a1b26`). Feature-loop contracts use this to check
+/// the clear-to-blank ending matches the loop's start state.
 const DEFAULT_BG: HexColor = rgb(0x1a, 0x1b, 0x26);
 
 #[must_use]
@@ -68,8 +70,8 @@ fn demo_full() -> Contract {
         bg_reaches("matrix-custom", MATRIX),
         no_row_contains("joined-picker-prompt", "dark-azuretint $"),
         no_row_contains("mkdir-exists", "cannot create directory"),
-        // Act 5: `tint reset` returns to the snapshot's default bg.
-        // Matches the loop's start state — graceful wrap-around.
+        // `tint reset` returns to the snapshot's default bg. Matches the
+        // loop's start state for a graceful wrap-around.
         final_bg_is("reset-default", DEFAULT_BG),
     ];
     Contract {
@@ -92,7 +94,7 @@ fn picker() -> Contract {
             picker_scroll_indicator_visible(),
             bg_reaches("dark-indigo-picker-overshoot", DARK_INDIGO),
             bg_reaches("dark-azure", DARK_AZURE),
-            final_bg_is("dark-azure", DARK_AZURE),
+            final_bg_is("reset-default", DEFAULT_BG),
         ],
     }
 }
@@ -104,7 +106,7 @@ fn cli() -> Contract {
             bg_reaches("dracula", DRACULA),
             bg_reaches("solarized-light", SOLARIZED_LIGHT),
             bg_reaches("monokai", MONOKAI),
-            final_bg_is("monokai", MONOKAI),
+            final_bg_is("reset-default", DEFAULT_BG),
         ],
     }
 }
@@ -115,8 +117,9 @@ fn cd_hook() -> Contract {
         checks: vec![
             bg_reaches("pale-sky-blue", PALE_SKY_BLUE),
             bg_reaches("pale-yellow", PALE_YELLOW),
+            bg_reaches("pale-green", PALE_GREEN),
             no_row_contains("mkdir-exists", "cannot create directory"),
-            final_bg_is("pale-yellow", PALE_YELLOW),
+            final_bg_is("reset-default", DEFAULT_BG),
         ],
     }
 }
@@ -124,7 +127,10 @@ fn cd_hook() -> Contract {
 fn custom_theme() -> Contract {
     Contract {
         scene: "custom_theme",
-        checks: vec![bg_reaches("matrix", MATRIX), final_bg_is("matrix", MATRIX)],
+        checks: vec![
+            bg_reaches("matrix", MATRIX),
+            final_bg_is("reset-default", DEFAULT_BG),
+        ],
     }
 }
 

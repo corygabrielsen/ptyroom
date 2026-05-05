@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use tint_recorder::recorder::{Recorder, RecorderConfig};
-use tint_recorder::scenes::{ms, run_cli};
+use tint_recorder::scenes::{ms, run_cli, run_standalone_feature_subloop, wait_for_prompt};
 
 #[derive(Parser)]
 struct Args {
@@ -18,9 +18,8 @@ fn main() -> anyhow::Result<()> {
         rows: 20,
         ..RecorderConfig::default()
     })?;
-    r.dwell(ms(800), ms(600))?;
-    run_cli(&mut r)?;
-    r.dwell(ms(2500), ms(100))?;
+    wait_for_prompt(&mut r, ms(0), "startup prompt")?;
+    run_standalone_feature_subloop(&mut r, run_cli)?;
 
     let cast = r.stop()?;
     cast.write_with_summary(&args.cast)?;
