@@ -33,8 +33,8 @@ const DRACULA: HexColor = rgb(0x28, 0x2a, 0x36);
 const SOLARIZED_LIGHT: HexColor = rgb(0xfd, 0xf6, 0xe3);
 const MONOKAI: HexColor = rgb(0x27, 0x28, 0x22);
 const DEEP_SKY_BLUE: HexColor = rgb(0x21, 0x3c, 0x45);
-const YELLOW: HexColor = rgb(0xac, 0xac, 0x53);
-const PALE_GREEN: HexColor = rgb(0xba, 0xde, 0xba);
+const GREEN: HexColor = rgb(0x53, 0xac, 0x53);
+const PALE_YELLOW: HexColor = rgb(0xde, 0xde, 0xba);
 const MATRIX: HexColor = rgb(0x00, 0x00, 0x00);
 /// Snapshot bg after `tint reset` — matches the `recorder/snapshot.ts`
 /// startup default (`#1a1b26`). Feature-loop contracts use this to check
@@ -66,7 +66,7 @@ fn demo_full() -> Contract {
         bg_reaches("solarized-light", SOLARIZED_LIGHT),
         bg_reaches("monokai", MONOKAI),
         bg_reaches("deep-sky-blue-cd-hook", DEEP_SKY_BLUE),
-        bg_reaches("yellow-cd-hook", YELLOW),
+        bg_reaches("green-cd-hook", GREEN),
         bg_reaches("matrix-custom", MATRIX),
         no_row_contains("joined-picker-prompt", "dark-azuretint $"),
         no_row_contains("mkdir-exists", "cannot create directory"),
@@ -116,8 +116,8 @@ fn cd_hook() -> Contract {
         scene: "cd_hook",
         checks: vec![
             bg_reaches("deep-sky-blue", DEEP_SKY_BLUE),
-            bg_reaches("yellow", YELLOW),
-            bg_reaches("pale-green", PALE_GREEN),
+            bg_reaches("green", GREEN),
+            bg_reaches("pale-yellow", PALE_YELLOW),
             no_row_contains("mkdir-exists", "cannot create directory"),
             final_bg_is("reset-default", DEFAULT_BG),
         ],

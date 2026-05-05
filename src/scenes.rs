@@ -448,7 +448,7 @@ pub fn run_cd_hook_feature(r: &mut Recorder) -> anyhow::Result<()> {
     line(r, "cd ..", TYPE_COMMAND, PLUMB_PRE, PLUMB_SETTLE)?;
     line(
         r,
-        "mkdir baz && echo pale-green > baz/.tint",
+        "mkdir baz && echo pale-yellow > baz/.tint",
         TYPE_COMMAND,
         PLUMB_PRE,
         PLUMB_SETTLE,
@@ -478,7 +478,7 @@ fn run_cd_hook_foo_bar(r: &mut Recorder) -> anyhow::Result<()> {
     // magic feature ("a 'skyroom' is a thing tint understands") instead
     // of the actual mechanism (tint reads .tint from any directory).
     //
-    // First dir: deep-sky-blue (deep tier, cool hue) — opens dark.
+    // First dir: deep-sky-blue (deep tier, cool hue) — opens dark and cool.
     line(
         r,
         "mkdir foo && echo deep-sky-blue > foo/.tint",
@@ -488,13 +488,13 @@ fn run_cd_hook_foo_bar(r: &mut Recorder) -> anyhow::Result<()> {
     )?;
     line(r, "cd foo", TYPE_COMMAND, PAYLOAD_PRE, PAYLOAD_SETTLE)?;
 
-    // Second dir: yellow (muted base tier, warm hue) — bright contrast.
+    // Second dir: green (muted base tier, neutral hue) — bright midpoint.
     // Seeing the bg change *twice* makes the mechanism unmistakable;
     // one could be coincidence.
     line(r, "cd ..", TYPE_COMMAND, PLUMB_PRE, PLUMB_SETTLE)?;
     line(
         r,
-        "mkdir bar && echo yellow > bar/.tint",
+        "mkdir bar && echo green > bar/.tint",
         TYPE_COMMAND,
         PLUMB_PRE,
         PLUMB_SETTLE,
