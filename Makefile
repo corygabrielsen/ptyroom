@@ -2,7 +2,7 @@
         all demo-walkthrough demo-features \
         smoke picker picker-timeline-prototype cli cd-hook custom-theme \
         recorder-perf bench-tiny bench-churn bench-subloops bench-subloops-parallel bench \
-        all-scenes verify verify-all bless-goldens verify-goldens clean
+        all-scenes verify verify-all bless-goldens verify-goldens characterize clean
 
 .DEFAULT_GOAL := all
 
@@ -42,7 +42,8 @@ build:
 	            --bin picker --bin picker_timeline --bin cli --bin cd_hook --bin custom_theme \
 	            --bin bench_tiny --bin bench_churn --bin bench_subloops \
 	            --bin paint --bin encode --bin verify --bin stitch \
-	            --bin recorder_perf --bin compare_snapshots
+	            --bin recorder_perf --bin compare_snapshots \
+	            --bin pipeline-test
 
 # Build the recording-only image. Just Dockerfile + the tint script —
 # everything post-recording (snapshot replay, paint, encode, verify)
@@ -92,9 +93,9 @@ demo-walkthrough: build recorder-warm
 # via the CONTAINER_HOME_SEQ atomic counter + pid, and each scene's
 # disk paths (assets/<scene>_*) are disjoint.
 demo-features: build recorder-warm
-	@WARM_CONTAINER=$(WARM_CONTAINER) FONT_SIZE=40 WIDTH=824 \
-	    printf '%s\n' $(FEATURE_SCENES) | \
-	    xargs -P $(words $(FEATURE_SCENES)) -I{} bash scripts/render_feature.sh {}
+	@printf '%s\n' $(FEATURE_SCENES) | \
+	    xargs -P $(words $(FEATURE_SCENES)) -I{} \
+	    ./target/release/pipeline-test render {}
 
 smoke: SCENE=smoke
 smoke: build build-image
@@ -243,18 +244,24 @@ verify-all: build build-image
 		printf '\nall scenes passed\n'; \
 	fi
 
-# Run the pipeline N=BLESS_RUNS times per scene (default 3); refuse to
-# write a golden if any layer disagrees across runs (the safety net
-# against goldening non-deterministic output). On success, writes
-# `goldens/<scene>.json`. Override SCENES=... to bless a subset.
-bless-goldens:
-	bash scripts/bless_goldens.sh
+# Run the pipeline N=10 times per scene (`pipeline-test bless --runs`);
+# refuse to write a golden if any layer disagrees across runs (the
+# safety net against goldening non-deterministic output). On success,
+# writes `goldens/<scene>.json`. Override BLESS_RUNS=... or pass extra
+# `--scenes=foo,bar` flags via PIPELINE_TEST_FLAGS.
+bless-goldens: build recorder-warm
+	./target/release/pipeline-test bless $(if $(BLESS_RUNS),--runs $(BLESS_RUNS),) $(PIPELINE_TEST_FLAGS)
 
 # Run the pipeline once per scene, compare each layer hash against the
 # committed `goldens/<scene>.json`, print PASS/FAIL per layer. Exits
-# non-zero on any FAIL or missing golden. Override SCENES=... for subset.
-verify-goldens:
-	bash scripts/verify_goldens.sh
+# non-zero on any FAIL or missing golden. Override via PIPELINE_TEST_FLAGS.
+verify-goldens: build recorder-warm
+	./target/release/pipeline-test verify $(PIPELINE_TEST_FLAGS)
+
+# Run each scene N=RUNS times (default 3); aggregate distinct hashes
+# per layer into a STABLE/VARIES report at target/characterize/report.md.
+characterize: build recorder-warm
+	./target/release/pipeline-test characterize $(if $(RUNS),--runs $(RUNS),) $(PIPELINE_TEST_FLAGS)
 
 clean:
 	rm -rf assets/snapshots assets/frames assets/*_snapshots assets/*_frames

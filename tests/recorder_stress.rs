@@ -1,9 +1,10 @@
 //! Recorder-layer stress tests.
 //!
 //! These tests exercise the recorder's timing-sensitive primitives
-//! against a synthetic host child (`tests/fixtures/stress_child.sh`)
-//! and assert library-level correctness contracts directly — not
-//! through any marketing scene.
+//! against a synthetic host child (`target/debug/stress-child` or the
+//! release equivalent, built from `src/bin/stress_child.rs`) and
+//! assert library-level correctness contracts directly — not through
+//! any marketing scene.
 //!
 //! Architectural rule: this file imports `tint_recorder::recorder`
 //! and `tint_recorder::cast` only. **Never** `tint_recorder::scenes` —
@@ -33,11 +34,12 @@ fn ms(n: u64) -> Duration {
     Duration::from_millis(n)
 }
 
+/// Path to the `stress-child` binary cargo built alongside this test.
+/// Cargo sets `CARGO_BIN_EXE_<name>` for every `[[bin]]` listed in
+/// `Cargo.toml` whenever it builds an integration test, so we never
+/// need to hard-code a debug/release path.
 fn fixture_path() -> String {
-    format!(
-        "{}/tests/fixtures/stress_child.sh",
-        env!("CARGO_MANIFEST_DIR")
-    )
+    env!("CARGO_BIN_EXE_stress-child").to_string()
 }
 
 fn run_scene() -> anyhow::Result<Cast> {

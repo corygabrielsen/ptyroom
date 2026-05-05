@@ -72,6 +72,21 @@ path = "src/bin/recorder_perf.rs"
 name = "compare_snapshots"
 path = "src/bin/compare_snapshots.rs"
 
+# Pipeline test driver: characterize / bless / verify / render
+# subcommands. Replaces the bash scripts that previously orchestrated
+# the full record→snapshot→paint→encode→verify pipeline.
+[[bin]]
+name = "pipeline-test"
+path = "src/bin/pipeline_test.rs"
+
+# Synthetic child for the recorder stress tests
+# (tests/recorder_stress.rs). Emits pattern + trailing in one print!,
+# which is one write syscall, which exposes the wait_for cutoff
+# contract under deterministic conditions.
+[[bin]]
+name = "stress-child"
+path = "src/bin/stress_child.rs"
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
@@ -83,6 +98,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 ab_glyph = "0.2"
 nix = { version = "0.31", features = ["fs", "ioctl", "poll", "process", "signal", "term"] }
 tempfile = "3"
+sha2 = "0.10"
 
 [profile.release]
 opt-level = 3

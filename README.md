@@ -37,24 +37,25 @@ See `Makefile` for the full target list.
 
 The pipeline pins nine layer hashes per scene under `goldens/<scene>.json`
 (concat-of-output-bytes, cast event count, final + concatenated snapshot
-JSON, concatenated PNGs, mp4, gif, plus snapshot/png counts). Two
-make targets:
+JSON, concatenated PNGs, mp4, gif, plus snapshot/png counts). Make
+targets driven by the `pipeline-test` binary:
 
 ```bash
 make verify-goldens     # one pass per scene; PASS/FAIL per layer
 make bless-goldens      # re-bake goldens; refuses if N=10 runs disagree
+make characterize       # report determinism per layer per scene
 ```
 
 The bless agreement gate is the safety net against goldening
 non-determinism: if any layer's hash differs across the N=10 verify
-runs the bless aborts. Override `SCENES=...` for subset operation,
-`BLESS_RUNS=...` to tune the floor.
+runs the bless aborts. Override `BLESS_RUNS=...` to tune the floor;
+pass `PIPELINE_TEST_FLAGS='--scenes=foo,bar'` for subset operation.
 
 Recorder library timing primitives are exercised in
 `tests/recorder_stress.rs` against a synthetic non-tint child
-(`tests/fixtures/stress_child.sh`). Tests assert the wait_for
-cutoff contract directly and verify byte-stability under parallel
-load and CPU contention. **Architectural rule:** these tests import
+(`src/bin/stress_child.rs`). Tests assert the wait_for cutoff
+contract directly and verify byte-stability under parallel load
+and CPU contention. **Architectural rule:** these tests import
 `tint_recorder::recorder` and `cast` only — never `scenes`. The
 recorder library is meant to be domain-generic; the seam is enforced
 by where tests draw their dependencies.

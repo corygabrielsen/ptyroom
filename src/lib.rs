@@ -23,6 +23,7 @@ pub mod encode;
 pub mod inspect;
 pub mod observer;
 pub mod paint;
+pub mod pipeline_test;
 pub mod proof;
 pub mod proof_timeline;
 pub mod raw_log;
