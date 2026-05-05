@@ -21,9 +21,13 @@ use crate::snapshot::{Cell, Snapshot};
 /// Bundled `DejaVu` Sans Mono. Embedded for byte-stable rendering.
 pub const FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/DejaVuSansMono.ttf");
 
+/// Knobs for how a [`Painter`] sizes its output: font size, image padding,
+/// and optional cell-dimension overrides.
 #[derive(Debug, Clone, Copy)]
 pub struct PaintConfig {
+    /// Font height in pixels passed to the rasterizer.
     pub font_size_px: f32,
+    /// Outer padding (in pixels) applied to all four sides of the image.
     pub padding_px: u32,
     /// Cell width override; `None` derives from the font's `M` advance.
     pub cell_w_px: Option<u32>,
@@ -45,7 +49,9 @@ impl Default for PaintConfig {
 /// Computed cell dimensions for a given font + config.
 #[derive(Debug, Clone, Copy)]
 pub struct CellMetrics {
+    /// Cell width in pixels.
     pub width: u32,
+    /// Cell height in pixels.
     pub height: u32,
     /// Y offset from cell top to glyph baseline.
     pub baseline: u32,
@@ -87,11 +93,14 @@ impl<'a> Painter<'a> {
         })
     }
 
+    /// Computed cell metrics (cell width/height, baseline) for this painter.
     #[must_use]
     pub fn metrics(&self) -> CellMetrics {
         self.metrics
     }
 
+    /// `(width, height)` in pixels of the image that [`Self::paint`] will
+    /// produce for `snap`, including padding.
     #[must_use]
     pub fn image_dims(&self, snap: &Snapshot) -> (u32, u32) {
         (
@@ -100,6 +109,8 @@ impl<'a> Painter<'a> {
         )
     }
 
+    /// Render `snap` to an in-memory RGB image. Pure function of
+    /// `(self, snap)` — no painter state mutates.
     #[must_use]
     pub fn paint(&self, snap: &Snapshot) -> RgbImage {
         let (w, h) = self.image_dims(snap);

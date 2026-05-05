@@ -41,6 +41,9 @@ const MATRIX: HexColor = rgb(0x00, 0x00, 0x00);
 /// the clear-to-blank ending matches the loop's start state.
 const DEFAULT_BG: HexColor = rgb(0x1a, 0x1b, 0x26);
 
+/// Look up the contract for `scene`. Returns `None` if `scene` isn't in
+/// [`SCENES`]. Pure: no IO, no global state — safe to call concurrently
+/// from a parallel `verify-all` fan-out.
 #[must_use]
 pub fn registry(scene: &str) -> Option<Contract> {
     match scene {

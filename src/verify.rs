@@ -19,6 +19,8 @@ pub struct Check {
     pub eval: CheckFn,
 }
 
+/// Outcome of a single [`Check`]. Both variants carry a human-readable
+/// detail string surfaced in the report.
 #[derive(Debug, Clone)]
 pub enum CheckResult {
     Pass(String),
@@ -26,10 +28,12 @@ pub enum CheckResult {
 }
 
 impl CheckResult {
+    /// `true` iff this is the `Pass` variant.
     #[must_use]
     pub fn passed(&self) -> bool {
         matches!(self, CheckResult::Pass(_))
     }
+    /// The detail string regardless of variant.
     #[must_use]
     pub fn detail(&self) -> &str {
         match self {
@@ -38,12 +42,16 @@ impl CheckResult {
     }
 }
 
+/// Per-scene contract: a scene name plus the ordered list of checks to
+/// evaluate against that scene's snapshots.
 pub struct Contract {
     pub scene: &'static str,
     pub checks: Vec<Check>,
 }
 
 impl Contract {
+    /// Evaluate every check against `snaps` (pure; no IO, no mutation of
+    /// `self`) and aggregate the outcomes into a [`ContractReport`].
     #[must_use]
     pub fn run(&self, snaps: &[Snapshot]) -> ContractReport {
         let results: Vec<(String, CheckResult)> = self
@@ -60,6 +68,9 @@ impl Contract {
     }
 }
 
+/// Aggregate result of running a [`Contract`]: the scene name, per-check
+/// `(name, result)` pairs in registry order, and a `failed` count derived
+/// from `results`.
 #[derive(Debug)]
 pub struct ContractReport {
     pub scene: String,
@@ -68,6 +79,7 @@ pub struct ContractReport {
 }
 
 impl ContractReport {
+    /// Print one `PASS|FAIL  scene/name  detail` line per check to stdout.
     pub fn print(&self) {
         let name_width = self.results.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
         for (name, r) in &self.results {
@@ -80,6 +92,8 @@ impl ContractReport {
         }
     }
 
+    /// `0` if every check passed, `1` otherwise. Suitable for
+    /// `process::exit`.
     #[must_use]
     pub fn exit_code(&self) -> i32 {
         i32::from(self.failed != 0)
@@ -88,6 +102,8 @@ impl ContractReport {
 
 // ─────────────── Builders ───────────────
 
+/// Check: passes iff some snapshot has terminal-default `bg == color`.
+/// `label` distinguishes multiple bg checks within one contract.
 #[must_use]
 pub fn bg_reaches(label: &'static str, color: HexColor) -> Check {
     Check {
@@ -99,6 +115,9 @@ pub fn bg_reaches(label: &'static str, color: HexColor) -> Check {
     }
 }
 
+/// Check: passes iff the final snapshot has `bg == color`. Used to verify
+/// that a loop ends in a known state (typically the default snapshot bg
+/// after `tint reset`).
 #[must_use]
 pub fn final_bg_is(label: &'static str, color: HexColor) -> Check {
     Check {
@@ -115,6 +134,8 @@ pub fn final_bg_is(label: &'static str, color: HexColor) -> Check {
     }
 }
 
+/// Check: passes iff some snapshot has a row containing both `↓` and
+/// `more` (the picker's "↓ N more" overflow indicator).
 #[must_use]
 pub fn picker_scroll_indicator_visible() -> Check {
     Check {
@@ -139,6 +160,9 @@ pub fn picker_scroll_indicator_visible() -> Check {
     }
 }
 
+/// Check: passes iff `needle` never appears as a substring of any row in
+/// any snapshot. Used to assert that visual artifacts (e.g. joined
+/// prompts, error strings) never render.
 #[must_use]
 pub fn no_row_contains(label: &'static str, needle: &'static str) -> Check {
     Check {
