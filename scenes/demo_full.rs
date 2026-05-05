@@ -30,7 +30,7 @@ struct Args {
     tint_path: PathBuf,
     #[arg(long, default_value = "assets/demo_full.cast")]
     cast: PathBuf,
-    /// Record only one subloop (0=cli, 1=picker, 2=cd-hook, 3=custom-theme).
+    /// Record only one subloop (0=cli, 1=cd-hook, 2=picker, 3=custom-theme).
     /// Used by the parallel-record flow: spawn 4 copies of this binary
     /// concurrently with --subloop-only 0..3 each writing its own cast,
     /// then stitch the resulting casts. Each subloop is self-contained
@@ -55,21 +55,22 @@ fn main() -> anyhow::Result<()> {
     // waits only until bash actually draws the prompt.
     wait_for_prompt(&mut r, ms(0), "startup prompt")?;
 
-    // Order: cli → picker → cd-hook → custom-theme. cli first because
-    // it's the fastest demonstration of the verb; picker is the visually
-    // impressive moment but lands harder *after* the viewer already
-    // understands the basic form; cd-hook adds automation; custom-theme
-    // shows extensibility.
+    // Order: cli → cd-hook → picker → custom-theme. cli first because
+    // it's the fastest demonstration of the verb; cd-hook second because
+    // it's the most distinctive feature and lands strongest while the
+    // viewer is still fresh; picker is the visually impressive moment
+    // but reads as "and there's a picker too"; custom-theme shows
+    // extensibility.
     match args.subloop_only {
         Some(0) => run_feature_subloop(&mut r, run_cli)?,
-        Some(1) => run_feature_subloop(&mut r, |r| run_picker(r, down_to_target))?,
-        Some(2) => run_feature_subloop(&mut r, run_cd_hook)?,
+        Some(1) => run_feature_subloop(&mut r, run_cd_hook)?,
+        Some(2) => run_feature_subloop(&mut r, |r| run_picker(r, down_to_target))?,
         Some(3) => run_feature_subloop(&mut r, run_custom_theme)?,
         Some(other) => anyhow::bail!("--subloop-only out of range: {other} (valid: 0..=3)"),
         None => {
             run_feature_subloop(&mut r, run_cli)?;
-            run_feature_subloop(&mut r, |r| run_picker(r, down_to_target))?;
             run_feature_subloop(&mut r, run_cd_hook)?;
+            run_feature_subloop(&mut r, |r| run_picker(r, down_to_target))?;
             run_feature_subloop(&mut r, run_custom_theme)?;
         }
     }
