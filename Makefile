@@ -2,7 +2,7 @@
         all demo-walkthrough demo-features \
         smoke picker picker-timeline-prototype cli cd-hook custom-theme \
         recorder-perf bench-tiny bench-churn bench-subloops bench-subloops-parallel bench \
-        all-scenes verify verify-all clean
+        all-scenes verify verify-all bless-goldens verify-goldens clean
 
 .DEFAULT_GOAL := all
 
@@ -244,6 +244,19 @@ verify-all: build build-image
 	else \
 		printf '\nall scenes passed\n'; \
 	fi
+
+# Run the pipeline N=BLESS_RUNS times per scene (default 3); refuse to
+# write a golden if any layer disagrees across runs (the safety net
+# against goldening non-deterministic output). On success, writes
+# `goldens/<scene>.json`. Override SCENES=... to bless a subset.
+bless-goldens:
+	bash scripts/bless_goldens.sh
+
+# Run the pipeline once per scene, compare each layer hash against the
+# committed `goldens/<scene>.json`, print PASS/FAIL per layer. Exits
+# non-zero on any FAIL or missing golden. Override SCENES=... for subset.
+verify-goldens:
+	bash scripts/verify_goldens.sh
 
 clean:
 	rm -rf assets/snapshots assets/frames assets/*_snapshots assets/*_frames
