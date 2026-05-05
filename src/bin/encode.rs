@@ -23,7 +23,7 @@ struct Args {
     fps: u32,
     /// Optional output width in pixels. When set, frames are scaled
     /// (lanczos) to this width with height auto-computed to preserve
-    /// aspect ratio. Used by the demo-all flow to encode a single
+    /// aspect ratio. Used by the marketing render flow to encode a single
     /// high-resolution frame set into multiple output sizes.
     #[arg(long)]
     width: Option<u32>,

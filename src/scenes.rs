@@ -608,8 +608,9 @@ fn run_feature_subloop_with_reset_dwell(
     reset_dwell: Duration,
 ) -> anyhow::Result<()> {
     note(r, "# tint — terminal theme switcher", TYPE_LABEL)?;
+    note(r, "#", TYPE_LABEL)?;
     note(r, "# https://tint.sh", TYPE_LABEL)?;
-    blank(r, ms(0))?;
+    note(r, "#", TYPE_LABEL)?;
     feature(r)?;
     if !reset_dwell.is_zero() {
         r.dwell(reset_dwell, ms(0))?;

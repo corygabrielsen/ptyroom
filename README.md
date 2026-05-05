@@ -25,8 +25,10 @@ Requires `cargo`, `docker`, Node/npm, and `ffmpeg`.
 ## Run
 
 ```bash
-make demo-all-parallel   # marketing MP4 + GIF, verified
-make verify              # re-run contract against existing snapshots
+make all                # render every demo
+make demo-walkthrough   # composite walkthrough (cli + cd_hook + picker + custom_theme)
+make demo-features      # per-feature demos (one each)
+make verify             # re-run contract against existing snapshots
 ```
 
 See `Makefile` for the full target list.

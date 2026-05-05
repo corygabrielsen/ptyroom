@@ -1,4 +1,10 @@
-.PHONY: setup build build-image recorder-warm recorder-warm-reset render demo demo-fast demo-parallel demo-all demo-all-fast demo-all-parallel demo-readme demo-web feature-demos smoke picker picker-timeline-prototype cli cd-hook custom-theme recorder-perf bench-tiny bench-churn bench-subloops bench-subloops-parallel bench all-scenes verify verify-all clean
+.PHONY: setup build build-image recorder-warm recorder-warm-reset render \
+        all demo-walkthrough demo-features \
+        smoke picker picker-timeline-prototype cli cd-hook custom-theme \
+        recorder-perf bench-tiny bench-churn bench-subloops bench-subloops-parallel bench \
+        all-scenes verify verify-all clean
+
+.DEFAULT_GOAL := all
 
 SCENE     ?= demo_full
 CAST       = assets/$(SCENE).cast
@@ -6,12 +12,12 @@ OUT_EXT   ?= .gif
 OUT        = assets/$(SCENE)$(OUT_EXT)
 IMAGE     := tint-recorder:demo
 WARM_CONTAINER ?= tint-recorder-warm
-TINT_PATH ?= /home/cory/code/tint/tint
+TINT_PATH ?= ../tint/tint
 FEATURE_SCENES := cli picker cd_hook custom_theme
 # Painter font size in pixels. Cell width and height scale linearly.
 # Default 14 → 7×16 cells → 80×20 grid renders at 584×344 (good for dev
-# loops; smaller files; not crisp on HiDPI). Marketing targets bump this
-# in the demo-readme / demo-web targets below.
+# loops; smaller files; not crisp on HiDPI). The marketing demo-walkthrough
+# and demo-features targets pin FONT_SIZE=40 internally for crisp output.
 FONT_SIZE ?= 14
 
 # Host requirements: cargo (build scene/render binaries), docker (recording),
@@ -53,73 +59,30 @@ recorder-warm-reset: build-image
 	docker run -d --name $(WARM_CONTAINER) $(IMAGE) sleep infinity >/dev/null
 	@echo "started warm recorder: $(WARM_CONTAINER)"
 
-demo: demo-parallel
-demo-fast: demo-parallel
+# Render every demo: the composite walkthrough + each per-feature demo.
+# Sequential because both targets drive the same warm recorder container.
+all: demo-walkthrough demo-features
 
-# Fast demo render. The recorder now uses content-aware sync points, so a
-# single warm container is faster than four parallel docker starts plus stitch.
-#
-# Override OUT_EXT and FONT_SIZE for high-res variants:
-#   make demo-parallel                       # default GIF, FONT_SIZE=14
-#   make demo-parallel OUT_EXT=.mp4 FONT_SIZE=28
-demo-parallel: build recorder-warm
-	@echo "=== fast record: warm content-aware recorder ==="
-	TINT_RECORDER_CONTAINER=$(WARM_CONTAINER) ./target/release/demo_full --cast assets/demo_full.cast
-	@echo "=== render ==="
-	rm -rf assets/snapshots assets/frames
-	./node_modules/.bin/tsx ./renderer/snapshot.ts assets/demo_full.cast assets/snapshots
-	./target/release/paint --font-size $(FONT_SIZE) assets/snapshots assets/frames
-	./target/release/encode assets/frames assets/snapshots/timing.json assets/demo_full$(OUT_EXT)
-	./target/release/verify demo_full --snapshots-dir assets/snapshots
-	@echo "wrote assets/demo_full$(OUT_EXT)"
-
-# Render BOTH the MP4 (for the website) and the GIF (for the README)
-# from a single set of paint frames. Paint at FONT_SIZE=28 once
-# (1144x624), then encode MP4 native + GIF scaled-down to width=824
-# in parallel. Saves duplicate paint work and lets the two encoders
-# share CPU cores via parallel ffmpeg invocations.
-#
-# Full marketing render flow:
-#   make demo-all-parallel  →  fast record + paint + parallel encode
-demo-all: demo-all-parallel
-demo-all-fast: demo-all-parallel
-
-demo-all-parallel: build recorder-warm
-	@echo "=== fast record: warm content-aware recorder ==="
+# Composite walkthrough demo (cli + cd_hook + picker + custom_theme in one cast).
+# Paint at FONT_SIZE=40 once (~1704×864 Retina-crisp); encode MP4 native +
+# GIF scaled to width 824 in parallel via `& wait`.
+demo-walkthrough: build recorder-warm
+	@echo "=== record demo_full ==="
 	TINT_RECORDER_CONTAINER=$(WARM_CONTAINER) ./target/release/demo_full --cast assets/demo_full.cast
 	@echo "=== paint at FONT_SIZE=40 ==="
 	rm -rf assets/snapshots assets/frames
 	./node_modules/.bin/tsx ./renderer/snapshot.ts assets/demo_full.cast assets/snapshots
 	./target/release/paint --font-size 40 assets/snapshots assets/frames
-	@echo "=== parallel encode: mp4 native (~1704×864 Retina-crisp) + scaled gif ==="
+	@echo "=== parallel encode: mp4 native + scaled gif ==="
 	./target/release/encode assets/frames assets/snapshots/timing.json assets/demo_full.mp4 & \
 	./target/release/encode assets/frames assets/snapshots/timing.json assets/demo_full.gif --width 824 & \
 	wait
 	./target/release/verify demo_full --snapshots-dir assets/snapshots
 	@echo "wrote assets/demo_full.mp4 + assets/demo_full.gif"
 
-# Marketing-quality renders. Both use FONT_SIZE bumps so cell metrics
-# scale up proportionally. Dimensions are 80 cols × 20 rows × cell.
-#
-# - demo-readme: GIF at FONT_SIZE=20 → ~824×464. Fits the GitHub
-#   README content area (~924px) without scaling, stays under the
-#   per-image size budget, and is crisp at 1× DPR.
-# - demo-web:    MP4 at FONT_SIZE=28 → ~1144×624 (≈2× the dev default).
-#   MP4's compression handles this resolution at <500KB; the same
-#   content as a GIF would be several MB. Crisp on HiDPI displays.
-demo-readme: SCENE=demo_full
-demo-readme: FONT_SIZE=20
-demo-readme: OUT_EXT=.gif
-demo-readme: build build-image
-	$(MAKE) render SCENE=$(SCENE) FONT_SIZE=$(FONT_SIZE) OUT_EXT=$(OUT_EXT)
-
-demo-web: SCENE=demo_full
-demo-web: FONT_SIZE=28
-demo-web: OUT_EXT=.mp4
-demo-web: build build-image
-	$(MAKE) render SCENE=$(SCENE) FONT_SIZE=$(FONT_SIZE) OUT_EXT=$(OUT_EXT)
-
-feature-demos: build recorder-warm
+# Per-feature demos: one cast per feature (cli, picker, cd_hook,
+# custom_theme). Sequential per scene; mp4+gif encode parallel within each.
+demo-features: build recorder-warm
 	@for scene in $(FEATURE_SCENES); do \
 		echo "=== record $$scene ==="; \
 		TINT_RECORDER_CONTAINER=$(WARM_CONTAINER) ./target/release/$$scene --cast assets/$$scene.cast; \
@@ -283,5 +246,5 @@ verify-all: build build-image
 	fi
 
 clean:
-	rm -rf assets/snapshots assets/frames assets/*_snapshots assets/*_frames assets/concat.txt
+	rm -rf assets/snapshots assets/frames assets/*_snapshots assets/*_frames
 	rm -f assets/*.cast assets/*.gif assets/*.mp4 assets/*.trace.json
