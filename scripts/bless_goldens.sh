@@ -18,7 +18,11 @@
 set -euo pipefail
 
 SCENES="${SCENES:-cli picker cd_hook custom_theme demo_full}"
-BLESS_RUNS="${BLESS_RUNS:-3}"
+# 10 is the floor: 3 missed real races at this scale (e.g. picker
+# parallel-event-loss). Higher N takes more wall-time but is the
+# difference between a gate that protects the project and one that
+# rubber-stamps subtle non-determinism.
+BLESS_RUNS="${BLESS_RUNS:-10}"
 GOLDEN_DIR="${GOLDEN_DIR:-goldens}"
 export TINT_PATH="${TINT_PATH:-../tint/tint}"
 
