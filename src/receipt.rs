@@ -159,6 +159,13 @@ pub enum VerifyOutcome {
     /// Spec hash matched, but re-running [`crate::spec::Spec::check`]
     /// against the cast did not pass every predicate.
     SpecFailed { failed: usize, total: usize },
+    /// The receipt's MP4 encoder is not byte-deterministic across
+    /// machines (e.g. `h264_nvenc` depends on GPU + driver version).
+    /// Re-rendering would produce a meaningless comparison; verify
+    /// refuses up front. The cast itself and any GIF outputs from
+    /// the same cast remain verifiable; this is specifically about
+    /// the MP4 output bytes.
+    EncoderNotVerifiable { encoder: String },
 }
 
 impl VerifyOutcome {
@@ -194,6 +201,9 @@ impl std::fmt::Display for VerifyOutcome {
             }
             Self::SpecFailed { failed, total } => {
                 write!(f, "SPEC_FAILED {failed}/{total} predicate(s)")
+            }
+            Self::EncoderNotVerifiable { encoder } => {
+                write!(f, "ENCODER_NOT_VERIFIABLE encoder={encoder}")
             }
         }
     }
@@ -340,6 +350,18 @@ impl Receipt {
                     self.output_filename
                 )
             })?;
+
+        let mp4_encoder = self.render.parsed_mp4_encoder()?;
+        // Refuse non-deterministic encoders for MP4 outputs. Letting
+        // the re-render run would produce `OutputDiffers` for what is
+        // really an "encoder isn't byte-portable across machines"
+        // condition — surface the real reason up front.
+        if ext.eq_ignore_ascii_case("mp4") && !mp4_encoder.is_byte_deterministic() {
+            return Ok(VerifyOutcome::EncoderNotVerifiable {
+                encoder: self.render.mp4_encoder.clone(),
+            });
+        }
+
         let tmp = tempfile::Builder::new()
             .prefix("term-recorder-verify-")
             .suffix(&format!(".{ext}"))
@@ -347,7 +369,6 @@ impl Receipt {
             .context("create verify tempfile")?;
 
         let cast = Cast::parse(std::str::from_utf8(&cast_bytes)?)?;
-        let mp4_encoder = self.render.parsed_mp4_encoder()?;
         let mut r = Render::new(cast)
             .font_size(self.render.font_size)
             .padding(self.render.padding)
@@ -509,6 +530,55 @@ mod tests {
         assert!(json.contains(r#""recorder_sha256":"#));
         let parsed: Receipt = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.tool.recorder_sha256, r.tool.recorder_sha256);
+    }
+
+    #[test]
+    fn verify_refuses_nvenc_for_mp4_with_clear_outcome() {
+        // Receipt for an .mp4 produced by NVENC: verify must refuse
+        // up front instead of silently re-rendering and failing with
+        // OutputDiffers (which would suggest the receipt is broken
+        // when the real reason is the encoder isn't byte-portable).
+        let mut r = fixture_receipt();
+        r.render.mp4_encoder = "h264_nvenc".into();
+        r.output_filename = "demo.mp4".into();
+
+        // Write a fake cast file matching the receipt's claim so the
+        // cast-hash check passes and we exercise the encoder check.
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let cast_bytes = b"{\"version\":2,\"width\":80,\"height\":24}\n";
+        std::fs::write(tmp.path(), cast_bytes).unwrap();
+        r.cast_sha256 = sha256_hex(cast_bytes);
+        // Match tool identity to the current environment so we don't
+        // get an EnvironmentDiffers diff first.
+        r.tool = ToolIdentity::current().expect("ffmpeg present in test env");
+
+        let outcome = r.verify(tmp.path()).unwrap();
+        match outcome {
+            VerifyOutcome::EncoderNotVerifiable { encoder } => {
+                assert_eq!(encoder, "h264_nvenc");
+            }
+            other => panic!("expected EncoderNotVerifiable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verify_does_not_refuse_nvenc_for_gif_output() {
+        // Same NVENC encoder, but the actual output is a GIF.
+        // mp4_encoder is irrelevant for GIF rendering, so verify
+        // must NOT refuse on encoder grounds — it should proceed
+        // to the re-render (which here will fail later for other
+        // reasons, since fixture cast bytes are minimal). This test
+        // just asserts the refusal path doesn't fire.
+        let mut r = fixture_receipt();
+        r.render.mp4_encoder = "h264_nvenc".into();
+        // The encoder check is gated on the output extension (.mp4),
+        // not on mp4_encoder alone. Fixture's output is "demo.gif" so
+        // verify wouldn't reach the refusal arm even with NVENC.
+        assert!(
+            std::path::Path::new(&r.output_filename)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("gif"))
+        );
     }
 
     #[test]

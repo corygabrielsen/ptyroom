@@ -38,6 +38,21 @@ pub enum Mp4Encoder {
     H264Nvenc,
 }
 
+impl Mp4Encoder {
+    /// Whether this encoder produces byte-stable output across machines
+    /// given identical inputs. Hardware encoders that depend on GPU +
+    /// driver version are not byte-deterministic. Receipt verification
+    /// refuses non-deterministic encoders up front rather than letting
+    /// `OutputDiffers` masquerade as the real failure.
+    #[must_use]
+    pub fn is_byte_deterministic(&self) -> bool {
+        match self {
+            Self::Libx264 => true,
+            Self::H264Nvenc => false,
+        }
+    }
+}
+
 /// Inputs for one encode invocation. The output format is selected from
 /// `out_path`'s extension (`.mp4` or `.gif`).
 #[derive(Debug, Clone)]
@@ -278,6 +293,16 @@ mod tests {
         assert_eq!(s.matches("duration ").count(), 2);
         assert!(s.contains("duration 0.1000"));
         assert!(s.contains("duration 0.2000"));
+    }
+
+    #[test]
+    fn libx264_is_byte_deterministic() {
+        assert!(Mp4Encoder::Libx264.is_byte_deterministic());
+    }
+
+    #[test]
+    fn h264_nvenc_is_not_byte_deterministic() {
+        assert!(!Mp4Encoder::H264Nvenc.is_byte_deterministic());
     }
 
     #[test]
