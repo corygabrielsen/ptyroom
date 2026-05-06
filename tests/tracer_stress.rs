@@ -1,4 +1,4 @@
-//! Recorder-layer stress tests.
+//! Tracer-layer stress tests.
 //!
 //! These tests exercise the recorder's timing-sensitive primitives
 //! against a synthetic host child (`target/debug/stress-child` or the
@@ -6,7 +6,7 @@
 //! assert library-level correctness contracts directly — not through
 //! any application-layer scene.
 //!
-//! Architectural rule: this file imports `term_recorder::*` only —
+//! Architectural rule: this file imports `tracer::*` only —
 //! it must not depend on any consumer crate. The recorder library is
 //! meant to be domain-generic, and these tests guard that seam.
 //! Consumer-layer integration coverage belongs in the consumer crate.
@@ -17,8 +17,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use term_recorder::cast::{Cast, EventKind};
-use term_recorder::recorder::{Recorder, RecorderConfig};
+use tracer::trace::{EventKind, Trace};
+use tracer::tracer::{Tracer, TracerConfig};
 
 const PATTERN: &[u8] = b"PROMPT$ ";
 const TRAILING: &str = "payload-extra-bytes-here";
@@ -40,13 +40,13 @@ fn fixture_path() -> String {
     env!("CARGO_BIN_EXE_stress-child").to_string()
 }
 
-fn run_scene() -> anyhow::Result<Cast> {
-    let cfg = RecorderConfig {
+fn run_scene() -> anyhow::Result<Trace> {
+    let cfg = TracerConfig {
         container: None,
         max_runtime: Duration::from_secs(10),
-        ..RecorderConfig::default()
+        ..TracerConfig::default()
     };
-    let mut r = Recorder::spawn(cfg, &[fixture_path().as_str()])?;
+    let mut r = Tracer::spawn(cfg, &[fixture_path().as_str()])?;
     r.send_raw_wait_for(&[], ms(0), PATTERN, ms(2000), "wait_pattern")?;
     // Capture any leftover bytes that the wait_for event correctly
     // declined to absorb.
@@ -54,7 +54,7 @@ fn run_scene() -> anyhow::Result<Cast> {
     r.stop()
 }
 
-fn output_event_data(cast: &Cast) -> Vec<&str> {
+fn output_event_data(cast: &Trace) -> Vec<&str> {
     cast.events
         .iter()
         .filter(|e| matches!(e.kind, EventKind::Output))
@@ -62,7 +62,7 @@ fn output_event_data(cast: &Cast) -> Vec<&str> {
         .collect()
 }
 
-fn cast_string(cast: &Cast) -> String {
+fn cast_string(cast: &Trace) -> String {
     cast.to_string()
 }
 

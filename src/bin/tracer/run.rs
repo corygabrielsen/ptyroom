@@ -4,8 +4,8 @@
 
 use std::path::PathBuf;
 
-use term_recorder::receipt::sha256_hex;
-use term_recorder::scene::Scene;
+use tracer::script::Script;
+use tracer::witness::sha256_hex;
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -26,7 +26,7 @@ pub struct Args {
 }
 
 pub fn run(args: &Args) -> anyhow::Result<()> {
-    let scene = Scene::read(&args.scene)?;
+    let scene = Script::read(&args.scene)?;
     let cast = scene.run()?;
 
     let ext = args
@@ -47,21 +47,21 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
     // Chain through render: cast → media. Use a tempfile for the
     // intermediate cast so the user only sees the media output.
     let cast_tmp = tempfile::Builder::new()
-        .prefix("term-recorder-scene-")
+        .prefix("tracer-script-")
         .suffix(".cast")
         .tempfile()?;
     cast.write(cast_tmp.path())?;
 
-    let mut r = term_recorder::render(cast_tmp.path())?;
+    let mut r = tracer::render(cast_tmp.path())?;
     if let Some(spec_path) = &args.spec {
         let spec_bytes = std::fs::read(spec_path)?;
-        r = r.spec_sha256(sha256_hex(&spec_bytes));
+        r = r.contract_sha256(sha256_hex(&spec_bytes));
     }
     // Always pin the scene as provenance when a receipt is requested —
     // the scene file IS the recipe, no flag needed.
     if args.receipt.is_some() {
         let scene_bytes = std::fs::read(&args.scene)?;
-        r = r.scene_sha256(sha256_hex(&scene_bytes));
+        r = r.script_sha256(sha256_hex(&scene_bytes));
     }
 
     if let Some(receipt_path) = &args.receipt {

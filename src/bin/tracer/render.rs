@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use term_recorder::receipt::sha256_hex;
+use tracer::witness::sha256_hex;
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -29,14 +29,14 @@ pub struct Args {
     receipt: Option<PathBuf>,
     /// Optional behavioral spec path. When set, the spec file's hash
     /// is embedded in the receipt so verifiers can require the
-    /// matching spec via `term-recorder verify --spec`. Requires
+    /// matching spec via `tracer verify --spec`. Requires
     /// `--receipt` to be set.
     #[arg(long, requires = "receipt")]
     spec: Option<PathBuf>,
 }
 
 pub fn run(args: &Args) -> anyhow::Result<()> {
-    let mut r = term_recorder::render(&args.cast)?
+    let mut r = tracer::render(&args.cast)?
         .font_size(args.font_size)
         .padding(args.padding)
         .fps(args.fps);
@@ -45,7 +45,7 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
     }
     if let Some(spec_path) = &args.spec {
         let spec_bytes = std::fs::read(spec_path)?;
-        r = r.spec_sha256(sha256_hex(&spec_bytes));
+        r = r.contract_sha256(sha256_hex(&spec_bytes));
     }
 
     if let Some(receipt_path) = &args.receipt {

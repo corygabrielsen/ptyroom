@@ -1,8 +1,8 @@
-//! Snapshot data: per-frame terminal state captured by `snapshot.ts`.
+//! Frame data: per-frame terminal state captured by `snapshot.ts`.
 //!
-//! Each `Snapshot` encodes the state visible after one cast event:
+//! Each `Frame` encodes the state visible after one cast event:
 //! terminal-default bg/fg, the OSC 4 palette overrides, and a `cols × rows`
-//! grid of [`Cell`]s. `Snapshot::load` reads the JSON written by
+//! grid of [`Cell`]s. `Frame::load` reads the JSON written by
 //! `renderer/snapshot.ts`.
 //!
 //! Invariants enforced by the constructors:
@@ -119,7 +119,7 @@ impl Cell {
     /// attribute as a final swap. Single source of truth — both the PNG
     /// renderer and the ASCII inspector go through here.
     #[must_use]
-    pub fn resolve_layers(&self, snap: &Snapshot) -> (HexColor, HexColor) {
+    pub fn resolve_layers(&self, snap: &Frame) -> (HexColor, HexColor) {
         let mut fg = self.fg.resolve(snap.fg, &snap.palette);
         let mut bg = self.bg.resolve(snap.bg, &snap.palette);
         if self.is_inverse() {
@@ -132,7 +132,7 @@ impl Cell {
 /// Captured frame: bg/fg/palette state + a rectangular grid.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[non_exhaustive]
-pub struct Snapshot {
+pub struct Frame {
     pub bg: HexColor,
     pub fg: HexColor,
     #[serde(default)]
@@ -140,14 +140,14 @@ pub struct Snapshot {
     pub grid: Grid,
 }
 
-impl Snapshot {
+impl Frame {
     /// Read and validate a snapshot JSON file.
     ///
     /// # Errors
     /// IO error, JSON parse error, or non-rectangular/empty grid.
     pub fn load(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let bytes = std::fs::read(path.as_ref())?;
-        let snap: Snapshot = serde_json::from_slice(&bytes)?;
+        let snap: Frame = serde_json::from_slice(&bytes)?;
         snap.validate()?;
         Ok(snap)
     }
@@ -189,7 +189,7 @@ impl Snapshot {
 /// The inner `Vec` is private — every `Grid` either came from the
 /// validating [`Grid::new`] constructor or from JSON deserialization that
 /// also runs [`Grid::validate`]. Callers can't construct a non-rectangular
-/// grid, so [`Snapshot::row_text`] and the renderer can iterate without
+/// grid, so [`Frame::row_text`] and the renderer can iterate without
 /// width-mismatch defense.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(transparent)]
@@ -323,7 +323,7 @@ mod tests {
             Some(solid_cell(' ')),
             Some(solid_cell(' ')),
         ]]);
-        let s = Snapshot {
+        let s = Frame {
             bg: HexColor::from_rgb(0, 0, 0),
             fg: HexColor::from_rgb(255, 255, 255),
             palette: PaletteOverrides::new(),
@@ -339,7 +339,7 @@ mod tests {
             None,
             Some(solid_cell('b')),
         ]]);
-        let s = Snapshot {
+        let s = Frame {
             bg: HexColor::from_rgb(0, 0, 0),
             fg: HexColor::from_rgb(255, 255, 255),
             palette: PaletteOverrides::new(),
@@ -395,14 +395,14 @@ mod tests {
 
     #[test]
     fn snapshot_json_round_trip() {
-        let s = Snapshot {
+        let s = Frame {
             bg: HexColor::from_rgb(0x1a, 0x1b, 0x26),
             fg: HexColor::from_rgb(0xc0, 0xca, 0xf5),
             palette: PaletteOverrides::new(),
             grid: Grid::from_unchecked(vec![vec![Some(solid_cell('x'))]]),
         };
         let json = serde_json::to_string(&s).unwrap();
-        let back: Snapshot = serde_json::from_str(&json).unwrap();
+        let back: Frame = serde_json::from_str(&json).unwrap();
         assert_eq!(back.rows(), 1);
         assert_eq!(back.cols(), 1);
         assert_eq!(back.bg, s.bg);

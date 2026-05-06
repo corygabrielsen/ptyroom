@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use clap::ValueEnum;
-use term_recorder::encode::{EncodeRequest, Mp4Encoder, TimingEntry, encode};
+use tracer::encode::{EncodeRequest, Mp4Encoder, TimingEntry, encode};
 
 #[derive(clap::Args)]
 pub struct Args {

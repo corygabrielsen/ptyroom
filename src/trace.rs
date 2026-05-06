@@ -1,18 +1,18 @@
 //! asciinema v2 cast file format.
 //!
-//! A cast is a JSONL file: line 0 is a [`CastHeader`] object, lines 1..N
+//! A cast is a JSONL file: line 0 is a [`TraceHeader`] object, lines 1..N
 //! are 3-element arrays `[time_seconds, "o"|"i", data_string]`. The recorder
 //! emits casts whose timestamps are the cumulative sum of intent-based
 //! `dwell_ms`, never wall-clock — this is what makes playback deterministic.
 //!
-//! Spec: <https://docs.asciinema.org/manual/asciicast/v2/>
+//! Contract: <https://docs.asciinema.org/manual/asciicast/v2/>
 
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CastHeader {
+pub struct TraceHeader {
     pub version: u32,
     pub width: u32,
     pub height: u32,
@@ -39,13 +39,13 @@ impl EventKind {
 }
 
 #[derive(Debug, Clone)]
-pub struct CastEvent {
+pub struct TraceEvent {
     pub time_s: f64,
     pub kind: EventKind,
     pub data: String,
 }
 
-impl Serialize for CastEvent {
+impl Serialize for TraceEvent {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeSeq;
         let mut seq = s.serialize_seq(Some(3))?;
@@ -56,7 +56,7 @@ impl Serialize for CastEvent {
     }
 }
 
-impl<'de> Deserialize<'de> for CastEvent {
+impl<'de> Deserialize<'de> for TraceEvent {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         // 3-element heterogeneous array. Use a tuple deserialize with the
         // kind field as a single-char string.
@@ -70,24 +70,24 @@ impl<'de> Deserialize<'de> for CastEvent {
                 )));
             }
         };
-        Ok(CastEvent { time_s, kind, data })
+        Ok(TraceEvent { time_s, kind, data })
     }
 }
 
 /// In-memory cast: header + events, deterministic order.
 #[derive(Debug, Clone)]
-pub struct Cast {
-    pub header: CastHeader,
-    pub events: Vec<CastEvent>,
+pub struct Trace {
+    pub header: TraceHeader,
+    pub events: Vec<TraceEvent>,
 }
 
-impl Cast {
+impl Trace {
     /// Read a cast file from disk.
     ///
     /// ```no_run
-    /// use term_recorder::cast::Cast;
+    /// use tracer::trace::Trace;
     ///
-    /// let cast = Cast::read("demo.cast")?;
+    /// let cast = Trace::read("demo.cast")?;
     /// println!("{}x{} cast with {} events", cast.header.width, cast.header.height, cast.events.len());
     /// # Ok::<(), anyhow::Error>(())
     /// ```
@@ -106,11 +106,11 @@ impl Cast {
     pub fn parse(text: &str) -> anyhow::Result<Self> {
         let mut lines = text.lines().filter(|l| !l.is_empty());
         let header_line = lines.next().ok_or_else(|| anyhow::anyhow!("empty cast"))?;
-        let header: CastHeader = serde_json::from_str(header_line)?;
+        let header: TraceHeader = serde_json::from_str(header_line)?;
         let events = lines
             .map(serde_json::from_str)
-            .collect::<Result<Vec<CastEvent>, _>>()?;
-        Ok(Cast { header, events })
+            .collect::<Result<Vec<TraceEvent>, _>>()?;
+        Ok(Trace { header, events })
     }
 
     /// Write the cast to `path`, creating parent directories as needed.
@@ -130,7 +130,7 @@ impl Cast {
     /// summary (`wrote PATH (BYTES bytes, N events)`).
     ///
     /// # Errors
-    /// Same as [`Cast::write`]; additionally fails if file metadata can't
+    /// Same as [`Trace::write`]; additionally fails if file metadata can't
     /// be read for the byte-count summary.
     pub fn write_with_summary(&self, path: impl AsRef<Path>) -> anyhow::Result<()> {
         let path = path.as_ref();
@@ -145,7 +145,7 @@ impl Cast {
     }
 }
 
-impl std::fmt::Display for Cast {
+impl std::fmt::Display for Trace {
     /// Emit the cast as JSONL text. Panics only if `serde_json` fails to
     /// serialize a struct that is, by construction, always serializable.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -166,7 +166,7 @@ mod tests {
 
     #[test]
     fn header_round_trip() {
-        let h = CastHeader {
+        let h = TraceHeader {
             version: 2,
             width: 80,
             height: 30,
@@ -175,7 +175,7 @@ mod tests {
                 .collect(),
         };
         let s = serde_json::to_string(&h).unwrap();
-        let back: CastHeader = serde_json::from_str(&s).unwrap();
+        let back: TraceHeader = serde_json::from_str(&s).unwrap();
         assert_eq!(back.width, 80);
         assert_eq!(back.height, 30);
         assert_eq!(back.env.get("TERM").unwrap(), "xterm-256color");
@@ -183,7 +183,7 @@ mod tests {
 
     #[test]
     fn event_serializes_as_3_array() {
-        let ev = CastEvent {
+        let ev = TraceEvent {
             time_s: 1.234,
             kind: EventKind::Output,
             data: "hi".into(),
@@ -194,7 +194,7 @@ mod tests {
 
     #[test]
     fn event_deserializes_from_3_array() {
-        let ev: CastEvent = serde_json::from_str(r#"[2.5,"i","x"]"#).unwrap();
+        let ev: TraceEvent = serde_json::from_str(r#"[2.5,"i","x"]"#).unwrap();
         assert!((ev.time_s - 2.5).abs() < 1e-9);
         assert_eq!(ev.kind, EventKind::Input);
         assert_eq!(ev.data, "x");
@@ -202,26 +202,26 @@ mod tests {
 
     #[test]
     fn rejects_unknown_event_kind() {
-        let r: Result<CastEvent, _> = serde_json::from_str(r#"[0.0,"z","x"]"#);
+        let r: Result<TraceEvent, _> = serde_json::from_str(r#"[0.0,"z","x"]"#);
         assert!(r.is_err());
     }
 
     #[test]
     fn cast_round_trip() {
-        let c = Cast {
-            header: CastHeader {
+        let c = Trace {
+            header: TraceHeader {
                 version: 2,
                 width: 80,
                 height: 30,
                 env: std::collections::BTreeMap::default(),
             },
             events: vec![
-                CastEvent {
+                TraceEvent {
                     time_s: 0.0,
                     kind: EventKind::Output,
                     data: "hello".into(),
                 },
-                CastEvent {
+                TraceEvent {
                     time_s: 0.5,
                     kind: EventKind::Output,
                     data: " world".into(),
@@ -229,7 +229,7 @@ mod tests {
             ],
         };
         let s = c.to_string();
-        let back = Cast::parse(&s).unwrap();
+        let back = Trace::parse(&s).unwrap();
         assert_eq!(back.events.len(), 2);
         assert_eq!(back.events[1].data, " world");
     }

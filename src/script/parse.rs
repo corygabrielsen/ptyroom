@@ -1,4 +1,4 @@
-//! Parse lexed lines into the [`Scene`] AST.
+//! Parse lexed lines into the [`Script`] AST.
 //!
 //! The parser splits work in two passes:
 //!  - Header pass: consume `Set*` (and `Version`) verbs, build a `Config`.
@@ -12,9 +12,9 @@ use std::time::Duration;
 use anyhow::{Context, anyhow, bail};
 use regex::bytes::Regex;
 
-use crate::recorder::Key;
+use crate::tracer::Key;
 
-use super::ast::{Action, Config, Located, Scene, SpawnTarget};
+use super::ast::{Action, Config, Located, Script, SpawnTarget};
 use super::lex::{Line, Token, lex};
 
 const SCHEMA_VERSION: u32 = 1;
@@ -29,17 +29,17 @@ const DEFAULT_PER_KEY_DWELL: Duration = Duration::from_millis(35);
 #[allow(clippy::duration_suboptimal_units)]
 const DEFAULT_MAX_RUNTIME: Duration = Duration::from_secs(240);
 
-/// Parse a `.scene` source string into a [`Scene`].
+/// Parse a `.scene` source string into a [`Script`].
 ///
 /// # Errors
 /// Lex errors, version mismatch, missing required header verbs, unknown
 /// verb, malformed argument list — annotated with line number.
-pub fn parse(source: &str) -> anyhow::Result<Scene> {
+pub fn parse(source: &str) -> anyhow::Result<Script> {
     let lines = lex(source)?;
     parse_lines(lines)
 }
 
-fn parse_lines(lines: Vec<Line>) -> anyhow::Result<Scene> {
+fn parse_lines(lines: Vec<Line>) -> anyhow::Result<Script> {
     let mut iter = lines.into_iter().peekable();
 
     // 1. Version line — must be first non-empty statement.
@@ -80,7 +80,7 @@ fn parse_lines(lines: Vec<Line>) -> anyhow::Result<Scene> {
         parse_body_line(&line, &config, &mut body)?;
     }
 
-    Ok(Scene {
+    Ok(Script {
         version,
         config,
         body,
@@ -630,7 +630,7 @@ fn key_from_name(name: &str) -> Option<Key> {
 mod tests {
     use super::*;
 
-    fn p(src: &str) -> Scene {
+    fn p(src: &str) -> Script {
         parse(src).unwrap_or_else(|e| panic!("parse failed: {e:?}"))
     }
 

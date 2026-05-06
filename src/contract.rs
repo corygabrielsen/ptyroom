@@ -1,8 +1,8 @@
-//! Cast specifications: post-hoc behavioral attestations.
+//! Trace specifications: post-hoc behavioral attestations.
 //!
-//! A [`Spec`] is a JSON sidecar carrying a list of [`Predicate`]s
+//! A [`Contract`] is a JSON sidecar carrying a list of [`Predicate`]s
 //! that are expected to hold against the cast's accumulated output
-//! text. [`Spec::check`] replays the cast in memory and reports
+//! text. [`Contract::check`] replays the cast in memory and reports
 //! per-predicate pass/fail.
 //!
 //! This is the "C" half of the (B) reproducibility-receipt /
@@ -16,8 +16,8 @@ use std::path::Path;
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
-use crate::cast::{Cast, EventKind};
 use crate::observer::Predicate;
+use crate::trace::{EventKind, Trace};
 
 /// Current schema version.
 pub const SPEC_VERSION: u32 = 1;
@@ -26,14 +26,14 @@ pub const SPEC_VERSION: u32 = 1;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
-pub struct Spec {
+pub struct Contract {
     /// Schema version; must equal [`SPEC_VERSION`].
     pub version: u32,
     /// Predicates that must hold against the cast's accumulated output.
     pub predicates: Vec<Predicate>,
 }
 
-impl Spec {
+impl Contract {
     /// Construct an empty spec.
     #[must_use]
     pub const fn new() -> Self {
@@ -82,31 +82,31 @@ impl Spec {
     /// UTF-8-lossy accumulation of all `"o"` (output) event bodies.
     ///
     /// Predicate semantics match record-time evaluation in
-    /// [`crate::recording::RecordingBuilder::record_step_matching`]
+    /// [`crate::recording::TraceBuilder::record_step_matching`]
     /// — same haystack, same `check`, so a spec built from the same
     /// predicates that gated recording always passes verification.
     ///
     /// ```
-    /// use term_recorder::cast::{Cast, CastEvent, CastHeader, EventKind};
-    /// use term_recorder::observer::Predicate;
-    /// use term_recorder::spec::Spec;
+    /// use tracer::trace::{Trace, TraceEvent, TraceHeader, EventKind};
+    /// use tracer::observer::Predicate;
+    /// use tracer::contract::Contract;
     ///
-    /// let cast = Cast {
-    ///     header: CastHeader { version: 2, width: 80, height: 24, env: Default::default() },
-    ///     events: vec![CastEvent {
+    /// let cast = Trace {
+    ///     header: TraceHeader { version: 2, width: 80, height: 24, env: Default::default() },
+    ///     events: vec![TraceEvent {
     ///         time_s: 0.0,
     ///         kind: EventKind::Output,
     ///         data: "hello world".into(),
     ///     }],
     /// };
-    /// let spec = Spec::new()
+    /// let spec = Contract::new()
     ///     .with(Predicate::ContainsText { text: "hello".into() })
     ///     .with(Predicate::DoesNotContainText { text: "error".into() });
     /// let report = spec.check(&cast);
     /// assert!(report.all_passed());
     /// ```
     #[must_use]
-    pub fn check(&self, cast: &Cast) -> SpecReport {
+    pub fn check(&self, cast: &Trace) -> ContractReport {
         let mut accumulated = String::new();
         for event in &cast.events {
             if matches!(event.kind, EventKind::Output) {
@@ -124,11 +124,11 @@ impl Spec {
                 }
             })
             .collect();
-        SpecReport { outcomes }
+        ContractReport { outcomes }
     }
 }
 
-impl Default for Spec {
+impl Default for Contract {
     fn default() -> Self {
         Self::new()
     }
@@ -166,14 +166,14 @@ impl std::fmt::Display for CheckOutcome {
     }
 }
 
-/// Per-predicate verdict from a [`Spec::check`] call.
+/// Per-predicate verdict from a [`Contract::check`] call.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub struct SpecReport {
+pub struct ContractReport {
     pub outcomes: Vec<CheckOutcome>,
 }
 
-impl SpecReport {
+impl ContractReport {
     /// `true` iff every predicate in the spec passed.
     #[must_use]
     pub fn all_passed(&self) -> bool {
@@ -191,19 +191,19 @@ impl SpecReport {
 mod tests {
     use std::collections::BTreeMap;
 
-    use crate::cast::{CastEvent, CastHeader};
+    use crate::trace::{TraceEvent, TraceHeader};
 
     use super::*;
 
-    fn cast_with(output: &str) -> Cast {
-        Cast {
-            header: CastHeader {
+    fn cast_with(output: &str) -> Trace {
+        Trace {
+            header: TraceHeader {
                 version: 2,
                 width: 80,
                 height: 24,
                 env: BTreeMap::new(),
             },
-            events: vec![CastEvent {
+            events: vec![TraceEvent {
                 time_s: 0.0,
                 kind: EventKind::Output,
                 data: output.into(),
@@ -214,7 +214,7 @@ mod tests {
     #[test]
     fn passing_spec_reports_all_pass() {
         let cast = cast_with("hello world");
-        let spec = Spec::new()
+        let spec = Contract::new()
             .with(Predicate::ContainsText {
                 text: "hello".into(),
             })
@@ -229,7 +229,7 @@ mod tests {
     #[test]
     fn failing_predicate_reports_fail() {
         let cast = cast_with("hello world");
-        let spec = Spec::new().with(Predicate::ContainsText {
+        let spec = Contract::new().with(Predicate::ContainsText {
             text: "missing".into(),
         });
         let report = spec.check(&cast);
@@ -243,12 +243,12 @@ mod tests {
         // Input events shouldn't affect predicate evaluation —
         // predicates assert what the user *sees*, not what was typed.
         let mut cast = cast_with("");
-        cast.events.push(CastEvent {
+        cast.events.push(TraceEvent {
             time_s: 1.0,
             kind: EventKind::Input,
             data: "secret".into(),
         });
-        let spec = Spec::new().with(Predicate::DoesNotContainText {
+        let spec = Contract::new().with(Predicate::DoesNotContainText {
             text: "secret".into(),
         });
         let report = spec.check(&cast);
@@ -258,7 +258,7 @@ mod tests {
     #[test]
     fn empty_spec_passes_trivially() {
         let cast = cast_with("anything");
-        let spec = Spec::new();
+        let spec = Contract::new();
         let report = spec.check(&cast);
         assert!(report.all_passed());
     }

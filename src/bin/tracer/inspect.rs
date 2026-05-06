@@ -2,8 +2,8 @@
 
 use std::path::PathBuf;
 
-use term_recorder::inspect::{InspectMode, RowRange, render};
-use term_recorder::snapshot::Snapshot;
+use tracer::frame::Frame;
+use tracer::inspect::{InspectMode, RowRange, render};
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -17,7 +17,7 @@ pub struct Args {
 }
 
 pub fn run(args: &Args) -> anyhow::Result<()> {
-    let snap = Snapshot::load(&args.snapshot)?;
+    let snap = Frame::load(&args.snapshot)?;
     let range = RowRange::parse(&args.rows, snap.rows()).map_err(|e| anyhow::anyhow!("{e}"))?;
     let mode = if args.color {
         InspectMode::Color

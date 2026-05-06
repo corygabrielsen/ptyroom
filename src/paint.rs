@@ -1,4 +1,4 @@
-//! Snapshot → PNG renderer.
+//! Frame → PNG renderer.
 //!
 //! Three-pass per-row paint:
 //!  1. Resolve every cell's fg/bg to concrete RGB given the snapshot's
@@ -16,7 +16,7 @@ use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
 use image::{Rgb, RgbImage};
 
 use crate::color::HexColor;
-use crate::snapshot::{Cell, Snapshot};
+use crate::frame::{Cell, Frame};
 
 /// Bundled `DejaVu` Sans Mono. Embedded for byte-stable rendering.
 pub const FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/DejaVuSansMono.ttf");
@@ -102,7 +102,7 @@ impl<'a> Painter<'a> {
     /// `(width, height)` in pixels of the image that [`Self::paint`] will
     /// produce for `snap`, including padding.
     #[must_use]
-    pub fn image_dims(&self, snap: &Snapshot) -> (u32, u32) {
+    pub fn image_dims(&self, snap: &Frame) -> (u32, u32) {
         (
             usize_to_u32(snap.cols()) * self.metrics.width + 2 * self.padding,
             usize_to_u32(snap.rows()) * self.metrics.height + 2 * self.padding,
@@ -112,7 +112,7 @@ impl<'a> Painter<'a> {
     /// Render `snap` to an in-memory RGB image. Pure function of
     /// `(self, snap)` — no painter state mutates.
     #[must_use]
-    pub fn paint(&self, snap: &Snapshot) -> RgbImage {
+    pub fn paint(&self, snap: &Frame) -> RgbImage {
         let (w, h) = self.image_dims(snap);
         let bg_rgb = Rgb([snap.bg.r(), snap.bg.g(), snap.bg.b()]);
         let mut img = RgbImage::from_pixel(w, h, bg_rgb);
@@ -125,13 +125,13 @@ impl<'a> Painter<'a> {
 
     /// # Errors
     /// IO error writing the PNG.
-    pub fn save_png(&self, snap: &Snapshot, path: impl AsRef<Path>) -> anyhow::Result<()> {
+    pub fn save_png(&self, snap: &Frame, path: impl AsRef<Path>) -> anyhow::Result<()> {
         let img = self.paint(snap);
         img.save(path.as_ref())?;
         Ok(())
     }
 
-    fn paint_row(&self, img: &mut RgbImage, snap: &Snapshot, row: &[Option<Cell>], y_idx: usize) {
+    fn paint_row(&self, img: &mut RgbImage, snap: &Frame, row: &[Option<Cell>], y_idx: usize) {
         let cy = self.padding + usize_to_u32(y_idx) * self.metrics.height;
 
         // Pass 1: resolve every cell's effective fg/bg once.
@@ -266,7 +266,7 @@ struct ResolvedCell<'a> {
     bg: HexColor,
 }
 
-fn resolve<'a>(cell: &'a Cell, snap: &Snapshot) -> ResolvedCell<'a> {
+fn resolve<'a>(cell: &'a Cell, snap: &Frame) -> ResolvedCell<'a> {
     let (fg, bg) = cell.resolve_layers(snap);
     ResolvedCell { cell, fg, bg }
 }
@@ -305,7 +305,7 @@ fn mix(a: HexColor, b: HexColor, t: f32) -> HexColor {
 mod tests {
     use super::*;
     use crate::color::{CellColor, PaletteOverrides};
-    use crate::snapshot::{Cell, Grid};
+    use crate::frame::{Cell, Grid};
 
     fn cell(ch: char, fg: CellColor, bg: CellColor) -> Cell {
         Cell {
@@ -328,7 +328,7 @@ mod tests {
     #[test]
     fn dims_match_grid() {
         let p = Painter::new(FONT_BYTES, PaintConfig::default()).unwrap();
-        let snap = Snapshot {
+        let snap = Frame {
             bg: HexColor::from_rgb(0, 0, 0),
             fg: HexColor::from_rgb(255, 255, 255),
             palette: PaletteOverrides::new(),
@@ -370,7 +370,7 @@ mod tests {
     #[test]
     fn paint_produces_image_with_correct_dims() {
         let p = Painter::new(FONT_BYTES, PaintConfig::default()).unwrap();
-        let snap = Snapshot {
+        let snap = Frame {
             bg: HexColor::from_rgb(0, 0, 0),
             fg: HexColor::from_rgb(255, 255, 255),
             palette: PaletteOverrides::new(),
@@ -393,7 +393,7 @@ mod tests {
     fn paint_is_byte_stable() {
         // Two separate paints of identical input must produce identical bytes.
         let p = Painter::new(FONT_BYTES, PaintConfig::default()).unwrap();
-        let snap = Snapshot {
+        let snap = Frame {
             bg: HexColor::from_rgb(0x1a, 0x1b, 0x26),
             fg: HexColor::from_rgb(0xc0, 0xca, 0xf5),
             palette: PaletteOverrides::new(),

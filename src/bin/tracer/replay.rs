@@ -3,13 +3,13 @@
 use std::fs;
 use std::path::PathBuf;
 
-use term_recorder::cast::Cast;
-use term_recorder::recorder::StubColors;
-use term_recorder::snapshot_replay::replay;
+use tracer::frame_replay::replay;
+use tracer::trace::Trace;
+use tracer::tracer::StubColors;
 
 #[derive(clap::Args)]
 pub struct Args {
-    /// Cast file (asciinema v2 JSONL).
+    /// Trace file (asciinema v2 JSONL).
     cast: PathBuf,
     /// Output directory; created if absent. Receives one JSON file per
     /// cast `"o"` event plus `timing.json`.
@@ -17,7 +17,7 @@ pub struct Args {
 }
 
 pub fn run(args: &Args) -> anyhow::Result<()> {
-    let cast = Cast::read(&args.cast)?;
+    let cast = Trace::read(&args.cast)?;
     let (snapshots, timing) = replay(&cast, StubColors::default())?;
 
     fs::create_dir_all(&args.out_dir)?;

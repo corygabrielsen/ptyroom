@@ -1,4 +1,4 @@
-//! Recorder library.
+//! Tracer library.
 //!
 //! Spawns an interactive terminal process via PTY, drives it by sending
 //! scripted keystrokes/dwells, captures every byte written, and emits an
@@ -16,7 +16,7 @@ mod pty;
 
 pub use drainer::WatchHandle;
 pub use keys::Key;
-pub use live::{LiveOpts, record_interactive};
+pub use live::{CaptureOpts, capture};
 pub use osc::StubColors;
 
 use std::os::fd::BorrowedFd;
@@ -28,8 +28,8 @@ use anyhow::Context;
 use nix::unistd::write;
 use tempfile::NamedTempFile;
 
-use crate::cast::Cast;
-use crate::recording::{DwellMs, RecordingBuilder};
+use crate::recording::{DwellMs, TraceBuilder};
+use crate::trace::Trace;
 use drainer::Drainer;
 use pty::{PtyMaster, spawn as spawn_pty};
 
@@ -42,8 +42,8 @@ static CONTAINER_HOME_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Bash startup profile used by the Docker convenience launcher.
 ///
-/// The recorder core can spawn any argv via [`Recorder::spawn`]. This profile
-/// is only for [`Recorder::start`], which starts bash in the configured
+/// The recorder core can spawn any argv via [`Tracer::spawn`]. This profile
+/// is only for [`Tracer::start`], which starts bash in the configured
 /// container/image and needs a reproducible prompt and initial screen state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShellProfile {
@@ -143,7 +143,7 @@ impl Default for ShellProfile {
 }
 
 #[derive(Debug, Clone)]
-pub struct RecorderConfig {
+pub struct TracerConfig {
     /// Terminal columns.
     pub cols: u16,
     /// Terminal rows.
@@ -158,8 +158,8 @@ pub struct RecorderConfig {
     /// this command is responsible for applying the desired shell profile.
     pub warm_command: Vec<String>,
     /// Parent directory under which each warm-container recording gets a
-    /// fresh `$HOME` (`<warm_home_root>/.term-recorder-home-<pid>-<seq>`).
-    /// The wrapper named in [`RecorderConfig::warm_command`] is responsible
+    /// fresh `$HOME` (`<warm_home_root>/.tracer-home-<pid>-<seq>`).
+    /// The wrapper named in [`TracerConfig::warm_command`] is responsible
     /// for `mkdir`-ing this path inside the container before exec-ing the
     /// shell. Default is `/tmp` (universally writable on POSIX); override
     /// to point at any path the in-container user can `mkdir` under.
@@ -172,13 +172,13 @@ pub struct RecorderConfig {
     pub max_runtime: Duration,
 }
 
-impl Default for RecorderConfig {
+impl Default for TracerConfig {
     fn default() -> Self {
         Self {
             cols: 80,
             rows: 30,
             image: "bash:latest".into(),
-            container: std::env::var("TERM_RECORDER_CONTAINER")
+            container: std::env::var("TRACER_CONTAINER")
                 .ok()
                 .filter(|value| !value.is_empty()),
             warm_command: vec!["bash".into(), "-i".into()],
@@ -190,17 +190,17 @@ impl Default for RecorderConfig {
     }
 }
 
-pub struct Recorder {
-    cfg: RecorderConfig,
+pub struct Tracer {
+    cfg: TracerConfig,
     pty: PtyMaster,
     drainer: Drainer,
     /// Hold the cold `docker run` rcfile alive — `Drop` unlinks it.
     _rcfile: Option<NamedTempFile>,
-    recording: RecordingBuilder,
+    recording: TraceBuilder,
     started_at: Instant,
 }
 
-impl Recorder {
+impl Tracer {
     /// Spawn an arbitrary interactive process under a PTY.
     ///
     /// This is the reusable-library entry point: callers own the child process,
@@ -210,9 +210,9 @@ impl Recorder {
     ///
     /// ```no_run
     /// use std::time::Duration;
-    /// use term_recorder::recorder::{Recorder, RecorderConfig};
+    /// use tracer::tracer::{Tracer, TracerConfig};
     ///
-    /// let mut rec = Recorder::spawn(RecorderConfig::default(), &["bash"])?;
+    /// let mut rec = Tracer::spawn(TracerConfig::default(), &["bash"])?;
     /// rec.send_raw_wait_for(
     ///     &[], Duration::ZERO,
     ///     b"$ ", Duration::from_secs(2),
@@ -225,7 +225,7 @@ impl Recorder {
     ///
     /// # Errors
     /// Empty argv, or `forkpty` / `execvp(argv[0])` failure.
-    pub fn spawn(cfg: RecorderConfig, argv: &[&str]) -> anyhow::Result<Self> {
+    pub fn spawn(cfg: TracerConfig, argv: &[&str]) -> anyhow::Result<Self> {
         let pty = spawn_pty(argv, cfg.cols, cfg.rows).context("spawn process")?;
         Ok(Self::from_pty(cfg, pty, None))
     }
@@ -242,7 +242,7 @@ impl Recorder {
     ///
     /// # Errors
     /// rcfile write fails, or `forkpty` / `execvp("docker")` fails.
-    pub fn start(cfg: RecorderConfig) -> anyhow::Result<Self> {
+    pub fn start(cfg: TracerConfig) -> anyhow::Result<Self> {
         if cfg.container.is_some() && cfg.warm_command.is_empty() {
             anyhow::bail!("warm recorder requires at least one warm_command arg");
         }
@@ -259,7 +259,7 @@ impl Recorder {
             let seq = CONTAINER_HOME_SEQ.fetch_add(1, Ordering::Relaxed);
             let home = cfg
                 .warm_home_root
-                .join(format!(".term-recorder-home-{}-{seq}", std::process::id()))
+                .join(format!(".tracer-home-{}-{seq}", std::process::id()))
                 .to_string_lossy()
                 .into_owned();
             home_env = format!("HOME={home}");
@@ -310,14 +310,14 @@ impl Recorder {
         Ok(Self::from_pty(cfg, pty, rcfile))
     }
 
-    fn from_pty(cfg: RecorderConfig, pty: PtyMaster, rcfile: Option<NamedTempFile>) -> Self {
+    fn from_pty(cfg: TracerConfig, pty: PtyMaster, rcfile: Option<NamedTempFile>) -> Self {
         let drainer = Drainer::start(pty.fd(), cfg.stubs);
         Self {
             cfg,
             pty,
             drainer,
             _rcfile: rcfile,
-            recording: RecordingBuilder::new(),
+            recording: TraceBuilder::new(),
             started_at: Instant::now(),
         }
     }
@@ -347,7 +347,7 @@ impl Recorder {
     /// Send a single key, dwell `dwell` after.
     ///
     /// # Errors
-    /// As [`Recorder::dwell`].
+    /// As [`Tracer::dwell`].
     pub fn key(&mut self, key: Key, dwell: Duration) -> anyhow::Result<()> {
         self.send_and_capture(key.bytes(), dwell, DEFAULT_SETTLE)
     }
@@ -359,7 +359,7 @@ impl Recorder {
     /// the program emits a reliable marker.
     ///
     /// # Errors
-    /// As [`Recorder::dwell`].
+    /// As [`Tracer::dwell`].
     pub fn key_settle(
         &mut self,
         key: Key,
@@ -372,7 +372,7 @@ impl Recorder {
     /// Send a key `repeat` times, with `dwell` between each.
     ///
     /// # Errors
-    /// As [`Recorder::dwell`].
+    /// As [`Tracer::dwell`].
     pub fn keys(&mut self, key: Key, dwell: Duration, repeat: usize) -> anyhow::Result<()> {
         for _ in 0..repeat {
             self.key(key, dwell)?;
@@ -383,7 +383,7 @@ impl Recorder {
     /// Send repeated raw key bytes as one live burst while advancing cast time
     /// as if each key happened at `dwell` cadence.
     ///
-    /// This is the virtual-time form of [`Recorder::keys`]: useful when the
+    /// This is the virtual-time form of [`Tracer::keys`]: useful when the
     /// child program can process queued input deterministically and the demo
     /// does not need host sleeps between individual keys.
     ///
@@ -458,7 +458,7 @@ impl Recorder {
     /// after each byte sequence.
     ///
     /// # Errors
-    /// As [`Recorder::dwell`].
+    /// As [`Tracer::dwell`].
     pub fn type_text(&mut self, text: &str, per_char: Duration) -> anyhow::Result<()> {
         if text.is_empty() {
             return Ok(());
@@ -527,7 +527,7 @@ impl Recorder {
     /// Send raw bytes (escape sequences, control codes) with the given dwell.
     ///
     /// # Errors
-    /// As [`Recorder::dwell`].
+    /// As [`Tracer::dwell`].
     pub fn send_raw(&mut self, bytes: &[u8], dwell: Duration) -> anyhow::Result<()> {
         self.send_and_capture(bytes, dwell, DEFAULT_SETTLE)
     }
@@ -560,7 +560,7 @@ impl Recorder {
     /// during the action's settle window and be consumed before the
     /// watch is in place — the watch then never fires.
     ///
-    /// Cast time is **not** advanced by waiting; bytes that arrive
+    /// Trace time is **not** advanced by waiting; bytes that arrive
     /// during the wait are folded into the next `dwell`/`key` event.
     /// Combine with a small explicit `dwell` for cast-side visible
     /// time:
@@ -573,7 +573,7 @@ impl Recorder {
     /// r.dwell(STARTUP_VISIBLE, ms(0))?;   // small cast-time buffer
     /// ```
     ///
-    /// When `TERM_RECORDER_PROFILE=1` is set in the environment,
+    /// When `TRACER_PROFILE=1` is set in the environment,
     /// `WatchHandle::wait` logs the pattern + elapsed time to stderr.
     /// Use this to tune timeouts: run the demo once with the env var,
     /// observe actual wait times, then bump the timeout constants down
@@ -741,7 +741,7 @@ impl Recorder {
     ///
     /// # Errors
     /// `finish_synthetic` failed to assemble the recorded cast.
-    pub fn stop(mut self) -> anyhow::Result<Cast> {
+    pub fn stop(mut self) -> anyhow::Result<Trace> {
         let cast = self
             .recording
             .finish_synthetic(self.cfg.cols, self.cfg.rows)?
@@ -800,7 +800,7 @@ fn escape_bytes(bytes: &[u8]) -> String {
 fn build_rcfile(profile: &ShellProfile) -> std::io::Result<NamedTempFile> {
     use std::io::Write;
     let mut f = tempfile::Builder::new()
-        .prefix("term-recorder-rc-")
+        .prefix("tracer-rc-")
         .suffix(".rc")
         .tempfile()?;
     if let Some(raw) = &profile.raw_rcfile {
@@ -841,7 +841,7 @@ mod tests {
 
     #[test]
     fn config_defaults_are_generic() {
-        let cfg = RecorderConfig::default();
+        let cfg = TracerConfig::default();
         assert_eq!(cfg.cols, 80);
         assert_eq!(cfg.rows, 30);
         assert_eq!(cfg.image, "bash:latest");

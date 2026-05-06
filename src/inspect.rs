@@ -1,10 +1,10 @@
-//! ASCII inspector — render a `Snapshot` to a terminal as either plain text
+//! ASCII inspector — render a `Frame` to a terminal as either plain text
 //! or true-color ANSI for visual debugging.
 //!
 //! Mirrors `paint.py`'s color resolution path, so what you see in the
 //! terminal matches what `paint.rs` would emit to PNG.
 
-use crate::snapshot::{Cell, Snapshot};
+use crate::frame::{Cell, Frame};
 
 /// Half-open `[start, end)` row range; out-of-range bounds clamp.
 #[derive(Debug, Clone, Copy)]
@@ -59,7 +59,7 @@ pub enum InspectMode {
 
 /// Render `snap` to lines numbered with their 1-based row index.
 #[must_use]
-pub fn render(snap: &Snapshot, range: RowRange, mode: InspectMode) -> String {
+pub fn render(snap: &Frame, range: RowRange, mode: InspectMode) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
     let width = snap.rows().to_string().len();
@@ -74,7 +74,7 @@ pub fn render(snap: &Snapshot, range: RowRange, mode: InspectMode) -> String {
     out
 }
 
-fn render_row_plain(snap: &Snapshot, y: usize) -> String {
+fn render_row_plain(snap: &Frame, y: usize) -> String {
     snap.grid
         .row(y)
         .map(|row| {
@@ -85,7 +85,7 @@ fn render_row_plain(snap: &Snapshot, y: usize) -> String {
         .unwrap_or_default()
 }
 
-fn render_row_color(snap: &Snapshot, y: usize) -> String {
+fn render_row_color(snap: &Frame, y: usize) -> String {
     use std::fmt::Write as _;
     let Some(row) = snap.grid.row(y) else {
         return String::new();

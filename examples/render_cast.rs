@@ -9,9 +9,7 @@ fn main() -> anyhow::Result<()> {
     let cast: PathBuf = args.next().expect("usage: render_cast <cast> <out>").into();
     let out: PathBuf = args.next().expect("usage: render_cast <cast> <out>").into();
 
-    term_recorder::render(&cast)?
-        .font_size(40.0)
-        .to_path(&out)?;
+    tracer::render(&cast)?.font_size(40.0).to_path(&out)?;
 
     println!("wrote {}", out.display());
     Ok(())

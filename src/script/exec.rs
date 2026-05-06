@@ -1,36 +1,36 @@
-//! Execute a parsed [`Scene`] against the recorder library.
+//! Execute a parsed [`Script`] against the recorder library.
 //!
 //! Maps each AST [`Action`] to one or more recorder calls, then
-//! returns the assembled [`Cast`]. Errors carry the source line number
+//! returns the assembled [`Trace`]. Errors carry the source line number
 //! from the AST for diagnostic clarity.
 
 use std::time::Duration;
 
 use anyhow::{Context, anyhow};
 
-use crate::cast::Cast;
-use crate::recorder::{Recorder, RecorderConfig, ShellProfile};
+use crate::trace::Trace;
+use crate::tracer::{ShellProfile, Tracer, TracerConfig};
 
-use super::ast::{Action, Config, Located, Scene, SpawnTarget};
+use super::ast::{Action, Config, Located, Script, SpawnTarget};
 
 const DEFAULT_WAITFOR_TIMEOUT: Duration = Duration::from_secs(2);
 
-impl Scene {
-    /// Run the scene to completion, returning the produced [`Cast`].
+impl Script {
+    /// Run the scene to completion, returning the produced [`Trace`].
     ///
     /// # Errors
     /// PTY spawn / docker invocation failure, `WaitFor` timeout (with
     /// scene line number in the message), or any underlying recorder
     /// error.
-    pub fn run(self) -> anyhow::Result<Cast> {
+    pub fn run(self) -> anyhow::Result<Trace> {
         let cfg = build_recorder_config(&self.config);
         let mut rec = match self.config.spawn.clone() {
             SpawnTarget::Spawn(argv) => {
                 let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-                Recorder::spawn(cfg, &argv_refs).context("scene: Recorder::spawn failed")?
+                Tracer::spawn(cfg, &argv_refs).context("scene: Tracer::spawn failed")?
             }
             SpawnTarget::Warm(_) | SpawnTarget::Cold(_) => {
-                Recorder::start(cfg).context("scene: Recorder::start failed")?
+                Tracer::start(cfg).context("scene: Tracer::start failed")?
             }
         };
 
@@ -43,17 +43,17 @@ impl Scene {
     }
 }
 
-fn build_recorder_config(scene_config: &Config) -> RecorderConfig {
-    let mut cfg = RecorderConfig {
+fn build_recorder_config(scene_config: &Config) -> TracerConfig {
+    let mut cfg = TracerConfig {
         cols: scene_config.cols,
         rows: scene_config.rows,
         max_runtime: scene_config.max_runtime,
-        ..RecorderConfig::default()
+        ..TracerConfig::default()
     };
 
     match &scene_config.spawn {
         SpawnTarget::Spawn(_) => {
-            // Local spawn — Recorder::spawn handles argv directly; we
+            // Local spawn — Tracer::spawn handles argv directly; we
             // don't pass anything here. Container/image fields ignored.
         }
         SpawnTarget::Warm(name) => {
@@ -76,12 +76,12 @@ fn build_recorder_config(scene_config: &Config) -> RecorderConfig {
 
     // SetEnv currently passes through only for Warm and Cold (which
     // forward via docker -e). Local Spawn ignores it for now.
-    // TODO: wire scene env into Recorder::spawn argv prefix.
+    // TODO: wire scene env into Tracer::spawn argv prefix.
     cfg
 }
 
 fn execute_action(
-    rec: &mut Recorder,
+    rec: &mut Tracer,
     located: &Located<Action>,
     scene_config: &Config,
 ) -> anyhow::Result<()> {
@@ -106,7 +106,7 @@ fn execute_action(
         }
         Action::Type { text, per_char } => {
             let per_char = per_char.unwrap_or(scene_config.per_char_dwell);
-            // Scene `Type` uses recorder.type_text, which expects str.
+            // Script `Type` uses recorder.type_text, which expects str.
             let s = std::str::from_utf8(text)
                 .map_err(|_| anyhow!("Type with non-UTF-8 bytes is not supported yet"))?;
             rec.type_text(s, per_char)?;
@@ -130,11 +130,11 @@ fn execute_action(
         }
         Action::Mark(label) => {
             // Markers are diagnostic-only; record at the current
-            // elapsed time. Recorder doesn't expose an elapsed-since-
+            // elapsed time. Tracer doesn't expose an elapsed-since-
             // start helper directly; we use the recording's marker
             // mechanism via push_marker when one becomes available.
             // For v1, log the marker to stderr if PROFILE is set.
-            if std::env::var_os("TERM_RECORDER_PROFILE").is_some() {
+            if std::env::var_os("TRACER_PROFILE").is_some() {
                 eprintln!("[scene] mark {label}");
             }
         }

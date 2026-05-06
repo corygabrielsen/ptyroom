@@ -1,9 +1,9 @@
-//! `check` subcommand: replay a cast and verify it against a [`Spec`].
+//! `check` subcommand: replay a cast and verify it against a [`Contract`].
 
 use std::path::PathBuf;
 
-use term_recorder::cast::Cast;
-use term_recorder::spec::Spec;
+use tracer::contract::Contract;
+use tracer::trace::Trace;
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -17,8 +17,8 @@ pub struct Args {
 
 /// Returns true when every predicate in the spec passes.
 pub fn run(args: &Args) -> anyhow::Result<bool> {
-    let cast = Cast::read(&args.cast)?;
-    let spec = Spec::read(&args.spec)?;
+    let cast = Trace::read(&args.cast)?;
+    let spec = Contract::read(&args.spec)?;
     let report = spec.check(&cast);
     for outcome in &report.outcomes {
         println!("{outcome}");

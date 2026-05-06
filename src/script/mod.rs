@@ -1,4 +1,4 @@
-//! Scene DSL — load `.scene` files, parse them, run them against the
+//! Script DSL — load `.scene` files, parse them, run them against the
 //! recorder library to produce an asciinema cast.
 //!
 //! See `docs/scene-grammar.md` for the v1 grammar specification.
@@ -8,14 +8,14 @@ mod exec;
 mod lex;
 mod parse;
 
-pub use ast::{Action, Config, Located, Scene, SpawnTarget};
+pub use ast::{Action, Config, Located, Script, SpawnTarget};
 pub use parse::parse;
 
 use std::path::Path;
 
 use anyhow::Context;
 
-impl Scene {
+impl Script {
     /// Read a scene file from disk and parse it.
     ///
     /// # Errors

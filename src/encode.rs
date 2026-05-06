@@ -41,7 +41,7 @@ pub enum Mp4Encoder {
 impl Mp4Encoder {
     /// Whether this encoder produces byte-stable output across machines
     /// given identical inputs. Hardware encoders that depend on GPU +
-    /// driver version are not byte-deterministic. Receipt verification
+    /// driver version are not byte-deterministic. Witness verification
     /// refuses non-deterministic encoders up front rather than letting
     /// `OutputDiffers` masquerade as the real failure.
     #[must_use]
@@ -109,7 +109,7 @@ pub fn encode(req: &EncodeRequest) -> anyhow::Result<()> {
     let concat_file = {
         use std::io::Write as _;
         let mut f = tempfile::Builder::new()
-            .prefix("term-recorder-concat-")
+            .prefix("tracer-concat-")
             .suffix(".txt")
             .tempfile()?;
         f.write_all(concat_text.as_bytes())?;

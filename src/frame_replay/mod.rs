@@ -1,4 +1,4 @@
-//! Cast → per-frame [`Snapshot`] replay.
+//! Trace → per-frame [`Frame`] replay.
 //!
 //! Drives a [`vt100::Parser`] through every `"o"` event in the cast,
 //! capturing screen state after each event. Terminal-default bg/fg
@@ -11,11 +11,11 @@
 
 pub mod osc_tracker;
 
-use crate::cast::{Cast, EventKind};
 use crate::color::{CellColor as SnapCellColor, HexColor, PaletteOverrides};
 use crate::encode::TimingEntry;
-use crate::recorder::StubColors;
-use crate::snapshot::{Cell, Grid, Snapshot};
+use crate::frame::{Cell, Frame, Grid};
+use crate::trace::{EventKind, Trace};
+use crate::tracer::StubColors;
 
 pub use osc_tracker::OscTracker;
 
@@ -30,13 +30,13 @@ pub const TAIL_DWELL_MS: u32 = 0;
 /// the right choice for casts produced by this crate.
 ///
 /// ```
-/// use term_recorder::cast::{Cast, CastEvent, CastHeader, EventKind};
-/// use term_recorder::recorder::StubColors;
-/// use term_recorder::snapshot_replay::replay;
+/// use tracer::trace::{Trace, TraceEvent, TraceHeader, EventKind};
+/// use tracer::tracer::StubColors;
+/// use tracer::frame_replay::replay;
 ///
-/// let cast = Cast {
-///     header: CastHeader { version: 2, width: 80, height: 24, env: Default::default() },
-///     events: vec![CastEvent {
+/// let cast = Trace {
+///     header: TraceHeader { version: 2, width: 80, height: 24, env: Default::default() },
+///     events: vec![TraceEvent {
 ///         time_s: 0.0,
 ///         kind: EventKind::Output,
 ///         data: "hello".into(),
@@ -50,11 +50,11 @@ pub const TAIL_DWELL_MS: u32 = 0;
 /// ```
 ///
 /// # Errors
-/// Cast header has zero width or height (otherwise vt100 panics).
+/// Trace header has zero width or height (otherwise vt100 panics).
 pub fn replay(
-    cast: &Cast,
+    cast: &Trace,
     defaults: StubColors,
-) -> anyhow::Result<(Vec<Snapshot>, Vec<TimingEntry>)> {
+) -> anyhow::Result<(Vec<Frame>, Vec<TimingEntry>)> {
     let cols = u16::try_from(cast.header.width)?;
     let rows = u16::try_from(cast.header.height)?;
     if cols == 0 || rows == 0 {
@@ -71,7 +71,7 @@ pub fn replay(
     let mut snapshots = Vec::with_capacity(cast.events.len());
     let mut timing = Vec::with_capacity(cast.events.len());
 
-    // Snapshot frame indices (1-based, 4-digit zero-padded) come from
+    // Frame frame indices (1-based, 4-digit zero-padded) come from
     // the original cast event index — preserves the previous TS
     // implementation's filenames so paint/encode/golden checks line up.
     for (i, event) in cast.events.iter().enumerate() {
@@ -112,7 +112,7 @@ pub fn replay(
     Ok((snapshots, timing))
 }
 
-fn capture(parser: &vt100::Parser, osc: &OscTracker) -> Snapshot {
+fn capture(parser: &vt100::Parser, osc: &OscTracker) -> Frame {
     let screen = parser.screen();
     let (rows, cols) = screen.size();
     let mut grid: Vec<Vec<Option<Cell>>> = Vec::with_capacity(rows as usize);
@@ -126,7 +126,7 @@ fn capture(parser: &vt100::Parser, osc: &OscTracker) -> Snapshot {
 
     let palette = palette_overrides(osc);
 
-    Snapshot {
+    Frame {
         bg: osc.bg(),
         fg: osc.fg(),
         palette,

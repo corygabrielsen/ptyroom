@@ -793,25 +793,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "term-recorder"
-version = "0.1.0"
-dependencies = [
- "ab_glyph",
- "anyhow",
- "clap",
- "image",
- "nix 0.31.2",
- "portable-pty",
- "rayon",
- "regex",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "vt100",
-]
-
-[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -829,6 +810,25 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "tracer"
+version = "0.1.0"
+dependencies = [
+ "ab_glyph",
+ "anyhow",
+ "clap",
+ "image",
+ "nix 0.31.2",
+ "portable-pty",
+ "rayon",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "vt100",
 ]
 
 [[package]]

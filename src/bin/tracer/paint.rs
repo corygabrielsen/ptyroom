@@ -5,9 +5,9 @@
 use std::path::PathBuf;
 
 use rayon::prelude::*;
-use term_recorder::paint::{FONT_BYTES, PaintConfig, Painter};
-use term_recorder::snapshot::Snapshot;
-use term_recorder::verify::list_numbered_snapshots;
+use tracer::frame::Frame;
+use tracer::paint::{FONT_BYTES, PaintConfig, Painter};
+use tracer::verify::list_numbered_snapshots;
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -44,7 +44,7 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
     entries
         .par_iter()
         .try_for_each(|path| -> anyhow::Result<()> {
-            let snap = Snapshot::load(path)?;
+            let snap = Frame::load(path)?;
             let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
             let out = args.out_dir.join(format!("{stem}.png"));
             painter.save_png(&snap, &out)?;

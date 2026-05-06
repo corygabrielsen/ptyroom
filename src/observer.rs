@@ -1,7 +1,7 @@
 //! Predicates checked against captured output during recording.
 //!
 //! A [`Predicate`] is an optional content-shaped assertion attached
-//! to a step in [`crate::recording::RecordingBuilder`]. When the
+//! to a step in [`crate::recording::TraceBuilder`]. When the
 //! recorder is set up to verify a step (`record_step_matching`), the
 //! predicate runs at record time against the accumulated UTF-8-lossy
 //! text of all output bytes seen so far. A predicate that fails halts

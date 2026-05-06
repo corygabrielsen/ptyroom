@@ -1,6 +1,6 @@
 //! Headline rendering API: cast file → MP4/GIF in one call.
 //!
-//! Wraps `snapshot_replay → paint → encode` so callers who don't need
+//! Wraps `frame_replay → paint → encode` so callers who don't need
 //! the intermediate snapshot/PNG artifacts on disk can render in a
 //! single chained expression. Intermediate frames live in a tempdir
 //! for the duration of the call.
@@ -10,28 +10,28 @@ use std::path::{Path, PathBuf};
 use rayon::prelude::*;
 use tempfile::TempDir;
 
-use crate::cast::Cast;
 use crate::encode::{EncodeRequest, Mp4Encoder, encode};
+use crate::frame_replay::replay;
 use crate::paint::{FONT_BYTES, PaintConfig, Painter};
-use crate::receipt::{RECEIPT_VERSION, Receipt, RenderOptions, ToolIdentity, sha256_hex};
-use crate::recorder::StubColors;
-use crate::snapshot_replay::replay;
+use crate::trace::Trace;
+use crate::tracer::StubColors;
+use crate::witness::{RenderOptions, ToolIdentity, WITNESS_VERSION, Witness, sha256_hex};
 
 /// Builder for one cast → media render.
 pub struct Render {
-    cast: Cast,
+    cast: Trace,
     /// SHA-256 of the cast's raw bytes when loaded from a file.
     /// `None` for in-memory casts built via [`Render::new`]; receipt
     /// emission requires a hashed cast and will error otherwise.
-    cast_sha256: Option<String>,
+    trace_sha256: Option<String>,
     /// Optional behavioral attestation hash. When set, the emitted
-    /// receipt carries `spec_sha256: Some(...)` so verifiers know to
+    /// receipt carries `contract_sha256: Some(...)` so verifiers know to
     /// require a spec.
-    spec_sha256: Option<String>,
+    contract_sha256: Option<String>,
     /// Optional source-scene provenance hash. When set, the emitted
-    /// receipt carries `scene_sha256: Some(...)` recording which
+    /// receipt carries `script_sha256: Some(...)` recording which
     /// `.scene` file the input cast was produced from.
-    scene_sha256: Option<String>,
+    script_sha256: Option<String>,
     font_size: f32,
     padding: u32,
     width: Option<u32>,
@@ -43,12 +43,12 @@ pub struct Render {
 impl Render {
     /// Begin rendering an in-memory cast.
     #[must_use]
-    pub fn new(cast: Cast) -> Self {
+    pub fn new(cast: Trace) -> Self {
         Self {
             cast,
-            cast_sha256: None,
-            spec_sha256: None,
-            scene_sha256: None,
+            trace_sha256: None,
+            contract_sha256: None,
+            script_sha256: None,
             font_size: 14.0,
             padding: 12,
             width: None,
@@ -60,10 +60,10 @@ impl Render {
 
     /// Pre-computed SHA-256 of a behavioral spec file. When set, the
     /// emitted receipt carries this hash so verifiers can require the
-    /// matching spec via [`crate::receipt::Receipt::verify_with_spec`].
+    /// matching spec via [`crate::witness::Witness::verify_with_spec`].
     #[must_use]
-    pub fn spec_sha256(mut self, hash: impl Into<String>) -> Self {
-        self.spec_sha256 = Some(hash.into());
+    pub fn contract_sha256(mut self, hash: impl Into<String>) -> Self {
+        self.contract_sha256 = Some(hash.into());
         self
     }
 
@@ -72,8 +72,8 @@ impl Render {
     /// confirm a held scene file is byte-identical to the recipe that
     /// produced this cast.
     #[must_use]
-    pub fn scene_sha256(mut self, hash: impl Into<String>) -> Self {
-        self.scene_sha256 = Some(hash.into());
+    pub fn script_sha256(mut self, hash: impl Into<String>) -> Self {
+        self.script_sha256 = Some(hash.into());
         self
     }
 
@@ -124,13 +124,13 @@ impl Render {
     /// extension (`.mp4` or `.gif`).
     ///
     /// # Errors
-    /// Snapshot replay failed, paint failed, or ffmpeg invocation
+    /// Frame replay failed, paint failed, or ffmpeg invocation
     /// returned non-zero.
     pub fn to_path(self, out: impl AsRef<Path>) -> anyhow::Result<()> {
         self.execute(out.as_ref())
     }
 
-    /// Render to a media file and produce a [`Receipt`] describing
+    /// Render to a media file and produce a [`Witness`] describing
     /// the inputs, environment, and output hash.
     ///
     /// Requires the cast to have been loaded via [`render`] (so its
@@ -138,7 +138,7 @@ impl Render {
     /// errors.
     ///
     /// ```no_run
-    /// let receipt = term_recorder::render("demo.cast")?
+    /// let receipt = tracer::render("demo.cast")?
     ///     .font_size(40.0)
     ///     .to_path_with_receipt("demo.gif")?;
     /// receipt.write("demo.gif.receipt.json")?;
@@ -149,15 +149,15 @@ impl Render {
     /// Same as [`Render::to_path`], plus: cast hash unknown (built
     /// via `Render::new` rather than `render(path)`); ffmpeg version
     /// query failed; output read-back failed.
-    pub fn to_path_with_receipt(self, out: impl AsRef<Path>) -> anyhow::Result<Receipt> {
-        let cast_sha256 = self.cast_sha256.clone().ok_or_else(|| {
+    pub fn to_path_with_receipt(self, out: impl AsRef<Path>) -> anyhow::Result<Witness> {
+        let trace_sha256 = self.trace_sha256.clone().ok_or_else(|| {
             anyhow::anyhow!(
-                "to_path_with_receipt requires a cast loaded via term_recorder::render(path); \
+                "to_path_with_receipt requires a cast loaded via tracer::render(path); \
                  Render::new(cast) does not track the source bytes"
             )
         })?;
-        let spec_sha256 = self.spec_sha256.clone();
-        let scene_sha256 = self.scene_sha256.clone();
+        let contract_sha256 = self.contract_sha256.clone();
+        let script_sha256 = self.script_sha256.clone();
         let render_opts = self.render_options();
         let out_path = out.as_ref().to_path_buf();
 
@@ -175,15 +175,15 @@ impl Render {
             .unwrap_or_default()
             .to_string();
 
-        Ok(Receipt {
-            version: RECEIPT_VERSION,
+        Ok(Witness {
+            version: WITNESS_VERSION,
             tool,
-            cast_sha256,
+            trace_sha256,
             render: render_opts,
             output_sha256,
             output_filename,
-            spec_sha256,
-            scene_sha256,
+            contract_sha256,
+            script_sha256,
         })
     }
 
@@ -239,22 +239,22 @@ impl Render {
 /// Headline API: read a cast file and prepare to render it.
 ///
 /// The returned [`Render`] tracks the cast's content hash so callers
-/// can later request a [`Receipt`] via [`Render::to_path_with_receipt`].
+/// can later request a [`Witness`] via [`Render::to_path_with_receipt`].
 ///
 /// ```no_run
-/// term_recorder::render("demo.cast")?.to_path("demo.mp4")?;
+/// tracer::render("demo.cast")?.to_path("demo.mp4")?;
 /// # Ok::<(), anyhow::Error>(())
 /// ```
 ///
 /// # Errors
-/// Cast file missing, unreadable, or has a malformed header.
+/// Trace file missing, unreadable, or has a malformed header.
 pub fn render(cast: impl AsRef<Path>) -> anyhow::Result<Render> {
     let path: PathBuf = cast.as_ref().to_path_buf();
     let bytes = std::fs::read(&path)?;
-    let cast_sha256 = sha256_hex(&bytes);
+    let trace_sha256 = sha256_hex(&bytes);
     let text = std::str::from_utf8(&bytes)?;
-    let cast = Cast::parse(text)?;
+    let cast = Trace::parse(text)?;
     let mut r = Render::new(cast);
-    r.cast_sha256 = Some(cast_sha256);
+    r.trace_sha256 = Some(trace_sha256);
     Ok(r)
 }

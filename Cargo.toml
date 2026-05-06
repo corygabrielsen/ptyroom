@@ -1,24 +1,24 @@
 
 [package]
-name = "term-recorder"
+name = "tracer"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
-description = "Deterministic terminal session recorder with virtual time and verifiable artifacts. Spawns any interactive process under a PTY and emits asciinema casts, painted PNG frames, and encoded GIF/MP4."
+description = "Deterministic terminal-session tracer with virtual time and verifiable artifacts. Drives any interactive process under a PTY and emits asciinema-shaped traces, painted PNG frames, and encoded GIF/MP4."
 repository = "https://github.com/corygabrielsen/term-recorder"
 readme = "README.md"
-keywords = ["terminal", "pty", "asciinema", "recording", "cli"]
+keywords = ["terminal", "pty", "trace", "asciinema", "cli"]
 categories = ["command-line-utilities", "development-tools"]
 
 [lib]
-name = "term_recorder"
+name = "tracer"
 path = "src/lib.rs"
 
 # Generic pipeline binaries:
-# - encode, paint, snapshot, stitch, compare_snapshots, inspect —
-#   auto-discovered from src/bin/<name>.rs.
-# - stress-child — explicit because the test integration uses the
+# - The unified CLI is at src/bin/tracer/main.rs (binary name "tracer",
+#   auto-discovered from the dir).
+# - stress-child is explicit because the test integration uses the
 #   hyphenated form via env!("CARGO_BIN_EXE_stress-child").
 
 [[bin]]

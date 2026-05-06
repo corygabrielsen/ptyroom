@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use term_recorder::cast::{Cast, CastEvent};
+use tracer::trace::{Trace, TraceEvent};
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -21,10 +21,10 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
         anyhow::bail!("stitch: no input casts");
     }
 
-    let casts: Vec<Cast> = args
+    let casts: Vec<Trace> = args
         .inputs
         .iter()
-        .map(Cast::read)
+        .map(Trace::read)
         .collect::<Result<_, _>>()?;
 
     let (w, h) = (casts[0].header.width, casts[0].header.height);
@@ -41,11 +41,11 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
         }
     }
 
-    let mut events: Vec<CastEvent> = Vec::new();
+    let mut events: Vec<TraceEvent> = Vec::new();
     let mut t_offset = 0.0_f64;
     for cast in &casts {
         for ev in &cast.events {
-            events.push(CastEvent {
+            events.push(TraceEvent {
                 time_s: ev.time_s + t_offset,
                 kind: ev.kind,
                 data: ev.data.clone(),
@@ -56,7 +56,7 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
         }
     }
 
-    let stitched = Cast {
+    let stitched = Trace {
         header: casts[0].header.clone(),
         events,
     };

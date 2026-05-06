@@ -2,7 +2,7 @@
 //!
 //! Sniffs cast bytes for the OSC sequences that affect terminal default
 //! colors and palette overrides, maintaining the running state needed
-//! to populate each per-frame [`Snapshot`]'s `bg`, `fg`, and `palette`
+//! to populate each per-frame [`Frame`]'s `bg`, `fg`, and `palette`
 //! fields. Independent of any particular terminal-emulator backend
 //! (e.g. `vt100`), because those backends typically expose only SGR
 //! per-cell colors, not the terminal-default state we need here.
@@ -19,7 +19,7 @@
 //! `<color>` is `rgb:RR[RR]/GG[GG]/BB[BB]` (xterm-spec) or `#RRGGBB`
 //! (compact form). Both terminators (`\x1b\\` ST and `\x07` BEL) accepted.
 //!
-//! [`Snapshot`]: crate::snapshot::Snapshot
+//! [`Frame`]: crate::frame::Frame
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -27,7 +27,7 @@ use std::sync::OnceLock;
 use regex::bytes::Regex;
 
 use crate::color::HexColor;
-use crate::recorder::StubColors;
+use crate::tracer::StubColors;
 
 /// Running OSC state observable while replaying a cast.
 #[derive(Debug, Clone)]

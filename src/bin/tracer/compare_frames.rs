@@ -3,10 +3,10 @@
 
 use std::path::{Path, PathBuf};
 
-use term_recorder::color::HexColor;
-use term_recorder::encode::TimingEntry;
-use term_recorder::snapshot::{Cell, Snapshot};
-use term_recorder::verify::list_numbered_snapshots;
+use tracer::color::HexColor;
+use tracer::encode::TimingEntry;
+use tracer::frame::{Cell, Frame};
+use tracer::verify::list_numbered_snapshots;
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -40,7 +40,7 @@ pub fn run(args: &Args) -> anyhow::Result<bool> {
     Ok(report.is_clean())
 }
 
-fn load_named_snapshots(dir: &Path) -> anyhow::Result<Vec<(String, Snapshot)>> {
+fn load_named_snapshots(dir: &Path) -> anyhow::Result<Vec<(String, Frame)>> {
     list_numbered_snapshots(dir)?
         .into_iter()
         .map(|path| {
@@ -49,15 +49,15 @@ fn load_named_snapshots(dir: &Path) -> anyhow::Result<Vec<(String, Snapshot)>> {
                 .and_then(|stem| stem.to_str())
                 .ok_or_else(|| anyhow::anyhow!("invalid snapshot filename: {}", path.display()))?
                 .to_owned();
-            let snapshot = Snapshot::load(&path)?;
+            let snapshot = Frame::load(&path)?;
             Ok((frame, snapshot))
         })
         .collect()
 }
 
 fn compare_frame_counts(
-    baseline: &[(String, Snapshot)],
-    candidate: &[(String, Snapshot)],
+    baseline: &[(String, Frame)],
+    candidate: &[(String, Frame)],
     report: &mut DiffReport,
 ) {
     if baseline.len() != candidate.len() {
@@ -73,8 +73,8 @@ fn compare_frame_counts(
 fn compare_snapshot(
     base_name: &str,
     cand_name: &str,
-    baseline: &Snapshot,
-    candidate: &Snapshot,
+    baseline: &Frame,
+    candidate: &Frame,
     report: &mut DiffReport,
 ) {
     if base_name != cand_name {
@@ -245,7 +245,7 @@ impl AttrFlags {
     }
 }
 
-fn visual_cell(cell: Option<&Cell>, snap: &Snapshot) -> VisualCell {
+fn visual_cell(cell: Option<&Cell>, snap: &Frame) -> VisualCell {
     let Some(cell) = cell else {
         return VisualCell {
             ch: ' ',

@@ -1,17 +1,17 @@
 use std::time::Duration;
 
-use term_recorder::recorder::{Recorder, RecorderConfig};
+use tracer::tracer::{Tracer, TracerConfig};
 
 fn ms(n: u64) -> Duration {
     Duration::from_millis(n)
 }
 
 fn main() -> anyhow::Result<()> {
-    let mut recorder = Recorder::spawn(
-        RecorderConfig {
+    let mut recorder = Tracer::spawn(
+        TracerConfig {
             cols: 80,
             rows: 24,
-            ..RecorderConfig::default()
+            ..TracerConfig::default()
         },
         &[
             "env",

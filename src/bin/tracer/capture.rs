@@ -8,7 +8,7 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use term_recorder::recorder::{LiveOpts, record_interactive};
+use tracer::tracer::{CaptureOpts, capture};
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -21,7 +21,7 @@ pub struct Args {
     #[arg(long, default_value_t = 3600)]
     max_secs: u64,
     /// Shell argv (default: `$SHELL`, falling back to `bash`).
-    /// Pass after `--`, e.g. `term-recorder rec -- /usr/bin/zsh -i`.
+    /// Pass after `--`, e.g. `tracer rec -- /usr/bin/zsh -i`.
     #[arg(last = true)]
     argv: Vec<String>,
 }
@@ -38,7 +38,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         out.display()
     );
 
-    let cast = record_interactive(LiveOpts {
+    let cast = capture(CaptureOpts {
         argv: args.argv,
         cols: None,
         rows: None,

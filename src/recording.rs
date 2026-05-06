@@ -1,7 +1,7 @@
 //! Flat-list recording builder.
 //!
 //! Collects (input, output, dwell) tuples plus optional predicates,
-//! and emits an asciinema v2 [`Cast`] on finish. Predicates run at
+//! and emits an asciinema v2 [`Trace`] on finish. Predicates run at
 //! record time against the UTF-8-lossy accumulation of all output
 //! bytes seen so far — a failing predicate halts recording with an
 //! error so the caller can react before the recording is finalized.
@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::cast::{Cast, CastEvent, CastHeader, EventKind};
 use crate::observer::Predicate;
+use crate::trace::{EventKind, Trace, TraceEvent, TraceHeader};
 
 /// Step dwell time in whole milliseconds.
 ///
@@ -48,12 +48,12 @@ struct Step {
 
 /// Labeled instant relative to the start of recording.
 #[derive(Debug, Clone, Serialize)]
-pub struct RecordingMarker {
+pub struct TraceMarker {
     label: String,
     elapsed_ms: u64,
 }
 
-impl RecordingMarker {
+impl TraceMarker {
     #[must_use]
     pub fn label(&self) -> &str {
         &self.label
@@ -67,15 +67,15 @@ impl RecordingMarker {
 
 /// Builds a [`Recording`] from incrementally captured steps.
 #[derive(Debug, Default)]
-pub struct RecordingBuilder {
+pub struct TraceBuilder {
     steps: Vec<Step>,
-    markers: Vec<RecordingMarker>,
+    markers: Vec<TraceMarker>,
     /// UTF-8-lossy accumulation of all output bytes seen so far.
     /// Used as the haystack for `record_step_matching`'s predicate.
     accumulated_text: String,
 }
 
-impl RecordingBuilder {
+impl TraceBuilder {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -170,7 +170,7 @@ impl RecordingBuilder {
 
     /// Push a labeled marker at `elapsed` time-since-start.
     pub fn push_marker(&mut self, label: impl Into<String>, elapsed: Duration) {
-        self.markers.push(RecordingMarker {
+        self.markers.push(TraceMarker {
             label: label.into(),
             elapsed_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
         });
@@ -226,7 +226,7 @@ impl RecordingBuilder {
     }
 
     fn finish(self, cols: u16, rows: u16) -> Recording {
-        let header = CastHeader {
+        let header = TraceHeader {
             version: 2,
             width: u32::from(cols),
             height: u32::from(rows),
@@ -240,7 +240,7 @@ impl RecordingBuilder {
         let mut t_ms: u64 = 0;
         for step in &self.steps {
             if !step.output.is_empty() {
-                events.push(CastEvent {
+                events.push(TraceEvent {
                     time_s: ms_to_seconds(t_ms),
                     kind: EventKind::Output,
                     data: String::from_utf8_lossy(&step.output).into_owned(),
@@ -250,33 +250,33 @@ impl RecordingBuilder {
         }
 
         Recording {
-            cast: Cast { header, events },
+            cast: Trace { header, events },
             markers: self.markers,
         }
     }
 }
 
-/// Finished recording artifact. Wraps a [`Cast`] plus optional
+/// Finished recording artifact. Wraps a [`Trace`] plus optional
 /// presentation markers.
 #[derive(Debug, Clone)]
 pub struct Recording {
-    cast: Cast,
-    markers: Vec<RecordingMarker>,
+    cast: Trace,
+    markers: Vec<TraceMarker>,
 }
 
 impl Recording {
     #[must_use]
-    pub const fn cast(&self) -> &Cast {
+    pub const fn cast(&self) -> &Trace {
         &self.cast
     }
 
     #[must_use]
-    pub fn markers(&self) -> &[RecordingMarker] {
+    pub fn markers(&self) -> &[TraceMarker] {
         &self.markers
     }
 
     #[must_use]
-    pub fn into_cast(self) -> Cast {
+    pub fn into_cast(self) -> Trace {
         self.cast
     }
 }
@@ -293,7 +293,7 @@ mod tests {
 
     #[test]
     fn record_step_appends_event() {
-        let mut b = RecordingBuilder::new();
+        let mut b = TraceBuilder::new();
         b.record_step(b"a".to_vec(), b"A".to_vec(), DwellMs::new(10))
             .unwrap();
         let rec = b.finish_synthetic(80, 24).unwrap();
@@ -303,7 +303,7 @@ mod tests {
 
     #[test]
     fn record_beat_extends_previous_dwell() {
-        let mut b = RecordingBuilder::new();
+        let mut b = TraceBuilder::new();
         b.record_step(b"a".to_vec(), b"A".to_vec(), DwellMs::new(10))
             .unwrap();
         b.record_beat(DwellMs::new(5)).unwrap();
@@ -316,7 +316,7 @@ mod tests {
 
     #[test]
     fn predicate_failure_returns_error() {
-        let mut b = RecordingBuilder::new();
+        let mut b = TraceBuilder::new();
         let err = b
             .record_step_matching(
                 Vec::new(),
@@ -332,7 +332,7 @@ mod tests {
 
     #[test]
     fn predicate_pass_records_step() {
-        let mut b = RecordingBuilder::new();
+        let mut b = TraceBuilder::new();
         b.record_step_matching(
             Vec::new(),
             b"hello world".to_vec(),
@@ -348,7 +348,7 @@ mod tests {
 
     #[test]
     fn empty_output_with_dwell_extends_previous() {
-        let mut b = RecordingBuilder::new();
+        let mut b = TraceBuilder::new();
         b.record_step(b"a".to_vec(), b"A".to_vec(), DwellMs::new(10))
             .unwrap();
         b.record_step(Vec::new(), Vec::new(), DwellMs::new(7))
@@ -359,7 +359,7 @@ mod tests {
 
     #[test]
     fn presentation_output_emitted_in_cast() {
-        let mut b = RecordingBuilder::new();
+        let mut b = TraceBuilder::new();
         b.record_presentation_output(b"# note".to_vec(), DwellMs::new(10))
             .unwrap();
         let rec = b.finish_synthetic(80, 24).unwrap();
@@ -368,7 +368,7 @@ mod tests {
 
     #[test]
     fn markers_attached() {
-        let mut b = RecordingBuilder::new();
+        let mut b = TraceBuilder::new();
         b.push_marker("start", Duration::from_millis(100));
         b.push_marker("end", Duration::from_millis(500));
         let rec = b.finish_synthetic(80, 24).unwrap();

@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use term_recorder::receipt::{Receipt, VerifyOutcome};
+use tracer::witness::{VerifyOutcome, Witness};
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -14,7 +14,7 @@ pub struct Args {
     #[arg(long)]
     cast: PathBuf,
     /// Optional spec file. Required when the receipt carries a
-    /// `spec_sha256` claim — the spec hash must match and every
+    /// `contract_sha256` claim — the spec hash must match and every
     /// predicate must pass.
     #[arg(long)]
     spec: Option<PathBuf>,
@@ -22,7 +22,7 @@ pub struct Args {
 
 /// Returns true when the receipt's claims are all confirmed.
 pub fn run(args: &Args) -> anyhow::Result<bool> {
-    let receipt = Receipt::read(&args.receipt)?;
+    let receipt = Witness::read(&args.receipt)?;
     let outcome = match &args.spec {
         Some(spec_path) => receipt.verify_with_spec(&args.cast, spec_path)?,
         None => receipt.verify(&args.cast)?,

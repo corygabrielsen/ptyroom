@@ -7,7 +7,7 @@
 //!     canned replies back through the master — the recorder is the
 //!     terminal emulator from the child's perspective.
 //!  3. Notify registered watches when their byte pattern appears in the
-//!     stream (used by `Recorder::arm_watch` to replace fixed
+//!     stream (used by `Tracer::arm_watch` to replace fixed
 //!     real-time padding with content-aware sync).
 //!
 //! Drained bytes accumulate in a thread-safe buffer; the parent atomically
@@ -62,7 +62,7 @@ impl WatchHandle {
     /// Block until the pattern fires or `timeout` elapses. Returns the
     /// wall-time from arming to the pattern firing, or `None` on timeout.
     ///
-    /// When `TERM_RECORDER_PROFILE=1` is set, every wait (regardless
+    /// When `TRACER_PROFILE=1` is set, every wait (regardless
     /// of outcome) logs `pattern` + elapsed time to stderr, so a single
     /// run produces a tunable trace of every content-aware sync point.
     ///
@@ -80,7 +80,7 @@ impl WatchHandle {
         let outcome = guard
             .as_ref()
             .map(|fired_at| fired_at.duration_since(self.started_at));
-        if std::env::var_os("TERM_RECORDER_PROFILE").is_some() {
+        if std::env::var_os("TRACER_PROFILE").is_some() {
             let elapsed_str = match outcome {
                 Some(d) => format!("{}us", d.as_micros()),
                 None => format!(">{}us TIMED OUT", timeout.as_micros()),
@@ -134,7 +134,7 @@ impl Drainer {
         let buf = Arc::clone(&inner);
         let stop_flag = Arc::clone(&stop);
         let thread = std::thread::Builder::new()
-            .name("term-recorder-drainer".into())
+            .name("tracer-drainer".into())
             .spawn(move || drain_loop(master_fd, stubs, buf, stop_flag))
             .expect("drainer thread spawn");
         Self {
@@ -238,7 +238,7 @@ fn drain_loop(fd: RawFd, mut stubs: StubColors, state: Arc<Mutex<State>>, stop: 
     while !stop.load(Ordering::SeqCst) {
         let mut set = FdSet::new();
         // Safety: `fd` is the master end of a PTY whose lifetime exceeds
-        // this thread (the parent `Recorder` joins us in `Drop` before
+        // this thread (the parent `Tracer` joins us in `Drop` before
         // dropping the OwnedFd).
         let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
         set.insert(borrowed);

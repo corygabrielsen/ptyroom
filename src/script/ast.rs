@@ -1,4 +1,4 @@
-//! Scene AST — the parsed, expanded form of a `.scene` file.
+//! Script AST — the parsed, expanded form of a `.scene` file.
 //!
 //! `Run` and `WaitForPrompt` macros are expanded by the parser before
 //! reaching the AST, so executors only see primitive verbs.
@@ -7,11 +7,11 @@ use std::time::Duration;
 
 use regex::bytes::Regex;
 
-use crate::recorder::Key;
+use crate::tracer::Key;
 
 /// A parsed scene file, ready for execution.
 #[derive(Debug)]
-pub struct Scene {
+pub struct Script {
     pub version: u32,
     pub config: Config,
     pub body: Vec<Located<Action>>,
@@ -86,7 +86,7 @@ pub enum Action {
         /// Optional playback dwell on the resulting cast event (the
         /// one carrying the captured-bytes-up-to-pattern). When set,
         /// virtual time advances by this much after the match event,
-        /// matching `Recorder::send_raw_wait_for(bytes, dwell, ...)`.
+        /// matching `Tracer::send_raw_wait_for(bytes, dwell, ...)`.
         /// Default is `0`.
         dwell: Option<Duration>,
     },

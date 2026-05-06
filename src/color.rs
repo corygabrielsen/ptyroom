@@ -1,4 +1,4 @@
-//! Color types for term-recorder.
+//! Color types for tracer.
 //!
 //! [`HexColor`] is a 24-bit RGB color stored as a packed `u32` (`0x00RRGGBB`).
 //! Total parsers and total constructors — every public function returns either

@@ -29,12 +29,12 @@ use nix::sys::termios::{SetArg, Termios, cfmakeraw, tcgetattr, tcsetattr};
 use nix::unistd::{read, write};
 
 use super::pty;
-use crate::cast::Cast;
-use crate::recording::{DwellMs, RecordingBuilder};
+use crate::recording::{DwellMs, TraceBuilder};
+use crate::trace::Trace;
 
-/// Options for [`record_interactive`].
+/// Options for [`capture`].
 #[derive(Debug, Clone)]
-pub struct LiveOpts {
+pub struct CaptureOpts {
     /// argv for the shell to spawn. Empty → use `$SHELL`, falling back
     /// to `bash`.
     pub argv: Vec<String>,
@@ -46,7 +46,7 @@ pub struct LiveOpts {
     pub max_runtime: Duration,
 }
 
-impl Default for LiveOpts {
+impl Default for CaptureOpts {
     fn default() -> Self {
         Self {
             argv: Vec::new(),
@@ -83,7 +83,7 @@ impl Default for LiveOpts {
 /// # Panics
 /// Never under normal use. The internal `100u16` timeout literal is
 /// fed to a const conversion that cannot fail.
-pub fn record_interactive(opts: LiveOpts) -> Result<Cast> {
+pub fn capture(opts: CaptureOpts) -> Result<Trace> {
     let argv = resolve_argv(opts.argv);
     let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
     let (cols, rows) = resolve_geometry(opts.cols, opts.rows);
@@ -99,7 +99,7 @@ pub fn record_interactive(opts: LiveOpts) -> Result<Cast> {
     // host terminal stuck in raw mode.
     let _raw = RawModeGuard::enter(stdin_fd)?;
 
-    let mut builder = RecordingBuilder::new();
+    let mut builder = TraceBuilder::new();
     let started = Instant::now();
     let mut last_event = started;
     let mut buf = [0u8; 4096];

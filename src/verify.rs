@@ -8,10 +8,10 @@
 use std::path::Path;
 
 use crate::color::HexColor;
-use crate::snapshot::Snapshot;
+use crate::frame::Frame;
 
 /// A check function: takes the loaded snapshots, returns pass/fail with detail.
-pub type CheckFn = Box<dyn Fn(&[Snapshot]) -> CheckResult + Send + Sync>;
+pub type CheckFn = Box<dyn Fn(&[Frame]) -> CheckResult + Send + Sync>;
 
 /// A single named check, evaluated against the loaded snapshots.
 pub struct Check {
@@ -53,7 +53,7 @@ impl Contract {
     /// Evaluate every check against `snaps` (pure; no IO, no mutation of
     /// `self`) and aggregate the outcomes into a [`ContractReport`].
     #[must_use]
-    pub fn run(&self, snaps: &[Snapshot]) -> ContractReport {
+    pub fn run(&self, snaps: &[Frame]) -> ContractReport {
         let results: Vec<(String, CheckResult)> = self
             .checks
             .iter()
@@ -160,7 +160,7 @@ pub fn no_row_contains(label: &'static str, needle: &'static str) -> Check {
     }
 }
 
-fn find_first_bg(snaps: &[Snapshot], color: HexColor) -> Option<usize> {
+fn find_first_bg(snaps: &[Frame], color: HexColor) -> Option<usize> {
     snaps.iter().position(|s| s.bg == color).map(|i| i + 1)
 }
 
@@ -171,7 +171,7 @@ fn leak_str(s: String) -> &'static str {
     Box::leak(s.into_boxed_str())
 }
 
-// ─────────────── Snapshot loading ───────────────
+// ─────────────── Frame loading ───────────────
 
 /// List numbered `*.json` snapshot paths in `dir`, sorted ascending.
 /// Filters to entries whose stem is all ASCII digits (`0001.json`, etc.).
@@ -200,10 +200,10 @@ pub fn list_numbered_snapshots(dir: &Path) -> anyhow::Result<Vec<std::path::Path
 ///
 /// # Errors
 /// Any error from [`list_numbered_snapshots`] or per-snapshot load.
-pub fn load_snapshots_dir(dir: &Path) -> anyhow::Result<Vec<Snapshot>> {
+pub fn load_snapshots_dir(dir: &Path) -> anyhow::Result<Vec<Frame>> {
     list_numbered_snapshots(dir)?
         .iter()
-        .map(Snapshot::load)
+        .map(Frame::load)
         .collect()
 }
 
@@ -211,10 +211,10 @@ pub fn load_snapshots_dir(dir: &Path) -> anyhow::Result<Vec<Snapshot>> {
 mod tests {
     use super::*;
     use crate::color::{CellColor, PaletteOverrides};
-    use crate::snapshot::{Cell, Grid};
+    use crate::frame::{Cell, Grid};
 
-    fn snap_with_bg(bg: HexColor, ch: char) -> Snapshot {
-        Snapshot {
+    fn snap_with_bg(bg: HexColor, ch: char) -> Frame {
+        Frame {
             bg,
             fg: HexColor::from_rgb(0xff, 0xff, 0xff),
             palette: PaletteOverrides::new(),
@@ -231,7 +231,7 @@ mod tests {
         }
     }
 
-    fn snap_with_text(text: &str) -> Snapshot {
+    fn snap_with_text(text: &str) -> Frame {
         let row = text
             .chars()
             .map(|ch| {
@@ -247,7 +247,7 @@ mod tests {
                 })
             })
             .collect();
-        Snapshot {
+        Frame {
             bg: HexColor::from_rgb(0, 0, 0),
             fg: HexColor::from_rgb(255, 255, 255),
             palette: PaletteOverrides::new(),
