@@ -26,8 +26,7 @@ use nix::unistd::write;
 use tempfile::NamedTempFile;
 
 use crate::cast::Cast;
-use crate::proof::DwellMs;
-use crate::recording::RecordingBuilder;
+use crate::recording::{DwellMs, RecordingBuilder};
 use drainer::Drainer;
 use pty::{PtyMaster, spawn as spawn_pty};
 

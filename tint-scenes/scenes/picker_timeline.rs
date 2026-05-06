@@ -7,9 +7,8 @@ use std::time::{Duration, Instant};
 use anyhow::Context;
 use clap::Parser;
 use term_recorder::observer::Predicate;
-use term_recorder::proof::DwellMs;
 use term_recorder::recorder::{Key, Recorder};
-use term_recorder::recording::RecordingBuilder;
+use term_recorder::recording::{DwellMs, RecordingBuilder};
 use term_recorder::timeline::{PresentationBeat, TimelinePolicy};
 use tint_scenes::scenes::{
     ALT_SCREEN_ENTER, ALT_SCREEN_EXIT, BASH_SETTLE_WALL, PICKER_COMMIT_TIMEOUT,
@@ -26,8 +25,6 @@ struct Args {
     tint_path: PathBuf,
     #[arg(long, default_value = "assets/picker_timeline.cast")]
     cast: PathBuf,
-    #[arg(long, default_value = "assets/picker_timeline.trace.json")]
-    trace: PathBuf,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -119,14 +116,14 @@ fn main() -> anyhow::Result<()> {
         &policy,
     )?;
 
-    let verified = recording.finish_synthetic(recorder.cols(), recorder.rows())?;
+    let recording = recording.finish_synthetic(recorder.cols(), recorder.rows())?;
     let _legacy_cast = recorder.stop()?;
-    verified.write_json(&args.trace)?;
-    verified.cast().write_with_summary(&args.cast)?;
+    let event_count = recording.cast().events.len();
+    recording.cast().write_with_summary(&args.cast)?;
     println!(
-        "wrote {} ({} trace events)",
-        args.trace.display(),
-        verified.trace().len()
+        "wrote {} ({} cast events)",
+        args.cast.display(),
+        event_count,
     );
     Ok(())
 }

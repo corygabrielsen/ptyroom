@@ -14,9 +14,10 @@
 //! - [`recorder`] — spawn any interactive argv under a PTY and script it.
 //! - [`verify`] — load + diff snapshot directories.
 //!
-//! Internal-only modules (`proof_timeline`, `raw_log`, `verified_trace`)
-//! support the verified-replay machinery and are reached only via the
-//! public `recorder` and `recording` APIs.
+//! Determinism is exposed externally via [`receipt`] (reproducibility
+//! receipts that re-render and compare hashes). The previous internal
+//! `Verified<T>` type-state machinery has been removed; predicate
+//! checks now run inline at record time.
 
 pub mod cast;
 pub mod color;
@@ -24,9 +25,6 @@ pub mod encode;
 pub mod inspect;
 pub mod observer;
 pub mod paint;
-pub mod proof;
-pub(crate) mod proof_timeline;
-pub(crate) mod raw_log;
 pub mod receipt;
 pub mod recorder;
 pub mod recording;
@@ -34,7 +32,6 @@ mod render;
 pub mod snapshot;
 pub mod snapshot_replay;
 pub mod timeline;
-pub(crate) mod verified_trace;
 pub mod verify;
 
 pub use render::{Render, render};
