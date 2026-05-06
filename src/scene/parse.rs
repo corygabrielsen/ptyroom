@@ -247,32 +247,42 @@ fn parse_body_line(
             out.push(Located::new(lineno, Action::Send(bytes)));
         }
         "Press" => {
-            let (key, repeat, dwell) = parse_press_args(line)?;
-            out.push(Located::new(lineno, Action::Press { key, repeat, dwell }));
+            let (key, repeat, dwell, settle) = parse_press_args(line)?;
+            out.push(Located::new(
+                lineno,
+                Action::Press {
+                    key,
+                    repeat,
+                    dwell,
+                    settle,
+                },
+            ));
         }
         "Type" => {
             let (text, per_char) = parse_type_args(line)?;
             out.push(Located::new(lineno, Action::Type { text, per_char }));
         }
         "WaitFor" => {
-            let (pattern, timeout, label) = parse_waitfor_args(line)?;
+            let args = parse_waitfor_args(line)?;
             out.push(Located::new(
                 lineno,
                 Action::WaitFor {
-                    pattern,
-                    timeout,
-                    label,
+                    pattern: args.pattern,
+                    timeout: args.timeout,
+                    label: args.label,
+                    dwell: args.dwell,
                 },
             ));
         }
         "WaitForPrompt" => {
-            let timeout = parse_waitforprompt_args(line)?;
+            let (timeout, dwell) = parse_waitforprompt_args(line)?;
             out.push(Located::new(
                 lineno,
                 Action::WaitFor {
                     pattern: config.prompt.clone(),
                     timeout,
                     label: Some("prompt".into()),
+                    dwell,
                 },
             ));
         }
@@ -311,6 +321,7 @@ fn parse_body_line(
                     key: Key::Enter,
                     repeat: 1,
                     dwell: None,
+                    settle: None,
                 },
             ));
             out.push(Located::new(
@@ -319,6 +330,7 @@ fn parse_body_line(
                     pattern: config.prompt.clone(),
                     timeout: None,
                     label: Some("Run prompt".into()),
+                    dwell: None,
                 },
             ));
         }
@@ -354,7 +366,7 @@ fn parse_sleep_args(line: &Line) -> anyhow::Result<(Duration, Duration)> {
     Ok((*dwell, settle))
 }
 
-fn parse_press_args(line: &Line) -> anyhow::Result<(Key, u32, Option<Duration>)> {
+fn parse_press_args(line: &Line) -> anyhow::Result<(Key, u32, Option<Duration>, Option<Duration>)> {
     let lineno = line.lineno;
     let mut iter = line.args.iter();
     let key_tok = iter
@@ -368,6 +380,7 @@ fn parse_press_args(line: &Line) -> anyhow::Result<(Key, u32, Option<Duration>)>
         .ok_or_else(|| anyhow!("scene:{lineno}: unknown key `{key_name}`"))?;
     let mut repeat = 1u32;
     let mut dwell = None;
+    let mut settle = None;
     while let Some(tok) = iter.next() {
         match tok {
             Token::Integer(n) => {
@@ -383,10 +396,19 @@ fn parse_press_args(line: &Line) -> anyhow::Result<(Key, u32, Option<Duration>)>
                 };
                 dwell = Some(*d);
             }
+            Token::Ident(name) if name == "Settle" => {
+                let v = iter
+                    .next()
+                    .ok_or_else(|| anyhow!("scene:{lineno}: Press Settle needs a duration"))?;
+                let Token::Duration(d) = v else {
+                    bail!("scene:{lineno}: Press Settle expects a duration");
+                };
+                settle = Some(*d);
+            }
             other => bail!("scene:{lineno}: unexpected Press arg {other:?}"),
         }
     }
-    Ok((key, repeat, dwell))
+    Ok((key, repeat, dwell, settle))
 }
 
 fn parse_type_args(line: &Line) -> anyhow::Result<(Vec<u8>, Option<Duration>)> {
@@ -414,7 +436,14 @@ fn parse_type_args(line: &Line) -> anyhow::Result<(Vec<u8>, Option<Duration>)> {
     Ok((text, per_char))
 }
 
-fn parse_waitfor_args(line: &Line) -> anyhow::Result<(Regex, Option<Duration>, Option<String>)> {
+struct WaitForArgs {
+    pattern: Regex,
+    timeout: Option<Duration>,
+    label: Option<String>,
+    dwell: Option<Duration>,
+}
+
+fn parse_waitfor_args(line: &Line) -> anyhow::Result<WaitForArgs> {
     let lineno = line.lineno;
     let mut iter = line.args.iter();
     let re_tok = iter
@@ -423,6 +452,7 @@ fn parse_waitfor_args(line: &Line) -> anyhow::Result<(Regex, Option<Duration>, O
     let pattern = compile_regex(re_tok, lineno, "WaitFor")?;
     let mut timeout = None;
     let mut label = None;
+    let mut dwell = None;
     while let Some(tok) = iter.next() {
         match tok {
             Token::Ident(name) if name == "Timeout" => {
@@ -443,16 +473,31 @@ fn parse_waitfor_args(line: &Line) -> anyhow::Result<(Regex, Option<Duration>, O
                 };
                 label = Some(String::from_utf8_lossy(s).into_owned());
             }
+            Token::Ident(name) if name == "Dwell" => {
+                let v = iter
+                    .next()
+                    .ok_or_else(|| anyhow!("scene:{lineno}: WaitFor Dwell needs a duration"))?;
+                let Token::Duration(d) = v else {
+                    bail!("scene:{lineno}: WaitFor Dwell expects a duration");
+                };
+                dwell = Some(*d);
+            }
             other => bail!("scene:{lineno}: unexpected WaitFor arg {other:?}"),
         }
     }
-    Ok((pattern, timeout, label))
+    Ok(WaitForArgs {
+        pattern,
+        timeout,
+        label,
+        dwell,
+    })
 }
 
-fn parse_waitforprompt_args(line: &Line) -> anyhow::Result<Option<Duration>> {
+fn parse_waitforprompt_args(line: &Line) -> anyhow::Result<(Option<Duration>, Option<Duration>)> {
     let lineno = line.lineno;
     let mut iter = line.args.iter();
     let mut timeout = None;
+    let mut dwell = None;
     while let Some(tok) = iter.next() {
         match tok {
             Token::Ident(name) if name == "Timeout" => {
@@ -464,10 +509,19 @@ fn parse_waitforprompt_args(line: &Line) -> anyhow::Result<Option<Duration>> {
                 };
                 timeout = Some(*d);
             }
+            Token::Ident(name) if name == "Dwell" => {
+                let v = iter.next().ok_or_else(|| {
+                    anyhow!("scene:{lineno}: WaitForPrompt Dwell needs a duration")
+                })?;
+                let Token::Duration(d) = v else {
+                    bail!("scene:{lineno}: WaitForPrompt Dwell expects a duration");
+                };
+                dwell = Some(*d);
+            }
             other => bail!("scene:{lineno}: unexpected WaitForPrompt arg {other:?}"),
         }
     }
-    Ok(timeout)
+    Ok((timeout, dwell))
 }
 
 // --- helpers ---------------------------------------------------------
@@ -667,12 +721,37 @@ mod tests {
     #[test]
     fn press_repeat_and_dwell() {
         let scene = p("Version 1\nSetSpawn \"bash\"\nPress Down 3 Dwell 50ms\n");
-        let Action::Press { key, repeat, dwell } = &scene.body[0].value else {
+        let Action::Press {
+            key,
+            repeat,
+            dwell,
+            settle,
+        } = &scene.body[0].value
+        else {
             panic!();
         };
         assert!(matches!(key, Key::Down));
         assert_eq!(*repeat, 3);
         assert_eq!(*dwell, Some(Duration::from_millis(50)));
+        assert!(settle.is_none());
+    }
+
+    #[test]
+    fn press_with_settle_captures_both() {
+        let scene = p("Version 1\nSetSpawn \"bash\"\nPress PickerDown 5 Dwell 50ms Settle 20ms\n");
+        let Action::Press {
+            key,
+            repeat,
+            dwell,
+            settle,
+        } = &scene.body[0].value
+        else {
+            panic!();
+        };
+        assert!(matches!(key, Key::PickerDown));
+        assert_eq!(*repeat, 5);
+        assert_eq!(*dwell, Some(Duration::from_millis(50)));
+        assert_eq!(*settle, Some(Duration::from_millis(20)));
     }
 
     #[test]

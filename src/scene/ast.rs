@@ -66,6 +66,12 @@ pub enum Action {
         key: Key,
         repeat: u32,
         dwell: Option<Duration>,
+        /// Optional wall-clock settle window to capture incoming PTY
+        /// bytes for each repeat (TUI scenes need this so the response
+        /// to each keystroke lands in the cast — picker draws after
+        /// each j/k press, etc.). When `None`, falls back to the
+        /// recorder's default settle of microseconds.
+        settle: Option<Duration>,
     },
     Type {
         text: Vec<u8>,
@@ -77,6 +83,12 @@ pub enum Action {
         pattern: Regex,
         timeout: Option<Duration>,
         label: Option<String>,
+        /// Optional playback dwell on the resulting cast event (the
+        /// one carrying the captured-bytes-up-to-pattern). When set,
+        /// virtual time advances by this much after the match event,
+        /// matching `Recorder::send_raw_wait_for(bytes, dwell, ...)`.
+        /// Default is `0`.
+        dwell: Option<Duration>,
     },
     /// Advance virtual playback time, optionally with a wall-clock
     /// settle window during which incoming PTY bytes are captured into

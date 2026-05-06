@@ -604,6 +604,59 @@ impl Recorder {
         Ok(captured)
     }
 
+    /// Block until `pattern` matches in PTY output. Captured bytes up
+    /// to and including the pattern's match-end become a single cast
+    /// event with the given `dwell`. Trailing bytes (after the pattern)
+    /// are pushed back to the drainer for the next operation.
+    ///
+    /// This is the regex parallel to the literal-pattern flow used
+    /// internally by [`Self::send_raw_wait_for`]. The same `pattern_end`
+    /// cutoff matters for partition determinism: without it, a slow
+    /// poll wake can scoop up post-pattern bytes that on a fast wake
+    /// would belong to the next event, manifesting as event-count
+    /// drift downstream.
+    ///
+    /// # Errors
+    /// `timeout` elapsed without the pattern matching, or
+    /// `max_runtime` exceeded.
+    pub fn wait_for_regex(
+        &mut self,
+        pattern: &regex::bytes::Regex,
+        dwell: Duration,
+        timeout: Duration,
+        label: &str,
+    ) -> anyhow::Result<()> {
+        let started = Instant::now();
+        let poll_interval = Duration::from_millis(20);
+        let mut accumulated: Vec<u8> = Vec::new();
+        loop {
+            self.check_runtime()?;
+            std::thread::sleep(poll_interval);
+            accumulated.extend_from_slice(&self.drainer.consume());
+            if let Some(m) = pattern.find(&accumulated) {
+                let pattern_end = m.end();
+                let (this_event, leftover) = accumulated.split_at(pattern_end);
+                let this_event = this_event.to_vec();
+                if !leftover.is_empty() {
+                    self.drainer.unconsume(leftover.to_vec());
+                }
+                if this_event.is_empty() && dwell.is_zero() {
+                    return Ok(());
+                }
+                self.recording
+                    .record_output(this_event, DwellMs::from_duration(dwell))?;
+                return Ok(());
+            }
+            if started.elapsed() >= timeout {
+                anyhow::bail!(
+                    "wait_for_regex /{}/ ({label}) timed out after {}ms",
+                    pattern.as_str(),
+                    timeout.as_millis(),
+                );
+            }
+        }
+    }
+
     fn send_and_capture(
         &mut self,
         bytes: &[u8],

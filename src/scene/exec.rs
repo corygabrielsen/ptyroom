@@ -7,7 +7,6 @@
 use std::time::Duration;
 
 use anyhow::{Context, anyhow};
-use regex::bytes::Regex;
 
 use crate::cast::Cast;
 use crate::recorder::{Recorder, RecorderConfig, ShellProfile};
@@ -90,10 +89,19 @@ fn execute_action(
         Action::Send(bytes) => {
             rec.write_bytes(bytes)?;
         }
-        Action::Press { key, repeat, dwell } => {
+        Action::Press {
+            key,
+            repeat,
+            dwell,
+            settle,
+        } => {
             let dwell = dwell.unwrap_or(scene_config.per_key_dwell);
             for _ in 0..*repeat {
-                rec.key(*key, dwell)?;
+                if let Some(s) = settle {
+                    rec.key_settle(*key, dwell, *s)?;
+                } else {
+                    rec.key(*key, dwell)?;
+                }
             }
         }
         Action::Type { text, per_char } => {
@@ -107,10 +115,12 @@ fn execute_action(
             pattern,
             timeout,
             label,
+            dwell,
         } => {
             let timeout = timeout.unwrap_or(DEFAULT_WAITFOR_TIMEOUT);
             let label_ref = label.as_deref().unwrap_or("WaitFor");
-            wait_for_regex(rec, pattern, timeout, label_ref)?;
+            let dwell = dwell.unwrap_or(Duration::ZERO);
+            rec.wait_for_regex(pattern, dwell, timeout, label_ref)?;
         }
         Action::Sleep { dwell, settle } => {
             // Sleep advances playback by `dwell`. Optional `settle` is
@@ -142,39 +152,4 @@ fn execute_action(
         }
     }
     Ok(())
-}
-
-/// Block until `pattern` matches in PTY output, then return.
-///
-/// The recorder's existing `arm_watch` API takes a literal byte
-/// pattern. To support regex matching we have to drain bytes,
-/// scan with the regex, and either match-and-record or keep waiting.
-/// For v1 this is implemented as a polling loop with a small budget.
-fn wait_for_regex(
-    rec: &mut Recorder,
-    pattern: &Regex,
-    timeout: Duration,
-    label: &str,
-) -> anyhow::Result<()> {
-    let started = std::time::Instant::now();
-    let poll_interval = Duration::from_millis(20);
-    let mut accumulated: Vec<u8> = Vec::new();
-    loop {
-        let chunk = rec.capture_after(poll_interval)?;
-        accumulated.extend_from_slice(&chunk);
-        if pattern.is_match(&accumulated) {
-            // Pattern matched. The captured bytes are already recorded
-            // by the recorder's capture_after path; we don't need to
-            // re-emit. Match found; return success.
-            return Ok(());
-        }
-        if started.elapsed() >= timeout {
-            anyhow::bail!(
-                "WaitFor /{}/ ({}) timed out after {}ms",
-                pattern.as_str(),
-                label,
-                timeout.as_millis(),
-            );
-        }
-    }
 }
