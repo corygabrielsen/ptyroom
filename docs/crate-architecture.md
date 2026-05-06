@@ -1,6 +1,6 @@
 # Crate Architecture
 
-`term-recorder` is a reusable deterministic terminal recorder. Its
+`tracer` is a reusable deterministic terminal tracer. Its
 primitives are designed to compose into scripted recordings of any
 interactive CLI; consumer-specific scenes live above this library, not
 inside it.
@@ -13,7 +13,7 @@ Record scripted terminal sessions as reproducible artifacts:
 - keep playback time independent from wall-clock capture time;
 - allow presentation-only bytes, but mark them as synthetic;
 - verify the rendered terminal state before treating a recording as good;
-- render the same cast into MP4, GIF, snapshots, or test fixtures.
+- render the same trace into MP4, GIF, snapshots, or test fixtures.
 
 The core should be useful for any CLI tool. Product-specific scenes should
 live above it.
@@ -24,11 +24,11 @@ live above it.
 app scenes
   Domain story: commands, labels, timing taste, expected states.
 
-scene helpers
+script helpers
   Small reusable beats: type a line, press Enter, wait for a prompt,
   hold a frame, add presentation-only text.
 
-recorder core
+tracer core
   PTY spawn, typed input, raw byte capture, content-aware waits,
   virtual presentation time, asciicast output.
 
@@ -45,7 +45,7 @@ rendering
 
 ## Core Contract
 
-The recorder core owns terminal mechanics:
+The tracer core owns terminal mechanics:
 
 - process spawning under a PTY;
 - terminal rows and columns;
@@ -53,14 +53,14 @@ The recorder core owns terminal mechanics:
 - byte capture;
 - content-aware waits;
 - virtual dwell;
-- cast construction.
+- trace construction.
 
-The recorder core must not own product semantics:
+The tracer core must not own product semantics:
 
 - no consumer-specific identifiers (theme names, command names, etc.);
 - no consumer-specific UI conventions;
 - no consumer-specific file names;
-- no app-specific shortcuts hidden below the scene layer.
+- no app-specific shortcuts hidden below the script layer.
 
 ## Time Model
 
@@ -72,7 +72,7 @@ Wall-clock time is diagnostic and synchronization-only. It answers:
 - has the alternate screen appeared?
 - did a command hang?
 
-Presentation time is the cast timeline. It answers:
+Presentation time is the trace timeline. It answers:
 
 - how long should this frame remain visible?
 - how quickly should typed text appear?
@@ -88,10 +88,10 @@ Visible bytes have source identity:
 ```text
 input                bytes written to the child PTY
 output               bytes captured from the child PTY
-presentation_output  bytes inserted by the scene for visual structure
+presentation_output  bytes inserted by the script for visual structure
 ```
 
-Both `output` and `presentation_output` render into the final cast.
+Both `output` and `presentation_output` render into the final trace.
 Only `output` came from the child process.
 
 This distinction is non-negotiable. It lets scenes use labels and visual
@@ -103,23 +103,23 @@ demonstrated.
 The generic API should stay small:
 
 ```rust
-let mut r = Recorder::spawn(config, &["bash", "-i"])?;
+let mut r = Tracer::spawn(config, &["bash", "-i"])?;
 r.type_text("echo hello", char_dwell)?;
 r.send_raw_wait_for(b"\n", enter_dwell, b"$ ", timeout, "prompt")?;
 r.push_presentation_output("# heading", heading_dwell)?;
-let cast = r.stop()?;
+let trace = r.stop()?;
 ```
 
 The Docker convenience path is an adapter:
 
 ```rust
-let mut r = Recorder::start(RecorderConfig {
+let mut r = Tracer::start(TracerConfig {
     shell: ShellProfile::simple(),
-    ..RecorderConfig::default()
+    ..TracerConfig::default()
 })?;
 ```
 
-Consumer-specific scene helpers should remain outside the recorder core.
+Consumer-specific script helpers should remain outside the tracer core.
 
 ## Verification Model
 
@@ -128,7 +128,7 @@ A recording is not "good" because encoding succeeded. It is good when:
 - raw IO is closed;
 - expected transitions are replay-verified;
 - presentation timestamps are monotonic;
-- rendered snapshots satisfy the scene contract.
+- rendered snapshots satisfy the script contract.
 
 The verification layer should be reusable. A consumer should be able to assert
 that text appeared, that text never appeared, that a color was reached, or that
@@ -138,11 +138,11 @@ the final frame matches a desired loop state.
 
 Before publishing, this project should have:
 
-- a crate name and README that describe the generic recorder;
+- a crate name and README that describe the generic tracer;
 - examples that record a tiny CLI session without Docker;
 - examples that record a Docker-backed shell session;
 - documented guarantees for time virtualization and output source identity;
 - a clean separation between reusable modules and consumer scenes;
-- stable public names for `Recorder`, `RecorderConfig`, `ShellProfile`,
-  `PresentationOutput`, `Key`, `StubColors`, `Cast`, and snapshot/verification
+- stable public names for `Tracer`, `TracerConfig`, `ShellProfile`,
+  `PresentationOutput`, `Key`, `StubColors`, `Trace`, and frame/verification
   primitives.

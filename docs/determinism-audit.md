@@ -1,54 +1,54 @@
 # Determinism audit
 
 The render pipeline must produce byte-identical output bytes given
-identical inputs. This is the property `Receipt::verify` proves
+identical inputs. This is the property `Witness::verify` proves
 empirically on every check; this document records the per-layer
 inspection that justifies the claim.
 
-Audit scope: `cast → output` (the right arrow). The `scene → cast`
+Audit scope: `trace → output` (the right arrow). The `script → trace`
 arrow (recording) is wall-clock dependent by design; see
-`docs/scene-grammar.md` for why scene_sha256 is provenance only.
+`docs/script-grammar.md` for why script_sha256 is provenance only.
 
 ## Layer-by-layer
 
-### Cast parser (`src/cast.rs`)
+### Trace parser (`src/trace.rs`)
 
 - Pure JSON parse via `serde_json`.
-- `Cast.events: Vec<CastEvent>` — order-preserving collection.
-- `CastHeader.env: BTreeMap<String, String>` — sorted key
+- `Trace.events: Vec<TraceEvent>` — order-preserving collection.
+- `TraceHeader.env: BTreeMap<String, String>` — sorted key
   serialization (not HashMap).
 - Output: deterministic given input bytes.
 
-### Snapshot replay (`src/snapshot_replay/`)
+### Frame replay (`src/frame_replay/`)
 
 - `vt100::Parser` is a state machine over input bytes; no time, no
   randomness.
 - `OscTracker.palette: BTreeMap<u8, HexColor>` — sorted iteration
   for `palette_overrides()`.
-- `replay()` iterates `cast.events` by index in order; one snapshot
+- `replay()` iterates `trace.events` by index in order; one frame
   per `Output` event in that order.
-- Snapshot frame names use the cast event index (`format!("{:04}",
+- Frame frame names use the trace event index (`format!("{:04}",
 i + 1)`) — preserves a stable lexicographic ordering for
   downstream concat.
 - `dwell_ms` rounding clamps to `[1, u32::MAX]`; deterministic given
   input timestamps.
 - No HashMap usage anywhere in the module.
-- Output: deterministic given cast bytes + `StubColors`.
+- Output: deterministic given trace bytes + `StubColors`.
 
 ### Paint (`src/paint.rs`)
 
-- `Painter::paint(snapshot) -> RgbImage` — pure given font bytes +
+- `Painter::paint(frame) -> RgbImage` — pure given font bytes +
   paint config.
 - `paint_is_byte_stable` test asserts: two paints of the same
-  snapshot produce identical pixel buffers. Live regression gate.
+  frame produce identical pixel buffers. Live regression gate.
 - Parallelism (`par_iter` in `src/render.rs:execute` and
-  `src/bin/term-recorder/paint.rs`): each thread paints one
-  snapshot to one PNG file. Snapshots are independent; PNG file
+  `src/bin/tracer/paint.rs`): each thread paints one
+  frame to one PNG file. Snapshots are independent; PNG file
   paths derive from `entry.frame` (deterministic). No shared
   mutable state.
 - PNG encoding via `image` crate uses zlib with default level —
   deterministic given identical input pixel buffer.
-- Output: deterministic given snapshot + font bytes.
+- Output: deterministic given frame + font bytes.
 
 ### Encode (`src/encode.rs`)
 
@@ -91,45 +91,45 @@ The `Mp4Encoder::H264Nvenc` variant is **explicitly non-deterministic**:
 > bit reproducible across driver versions.**
 > — `src/encode.rs:34-38`
 
-The receipt's `RenderOptions.mp4_encoder` field captures which
+The witness's `RenderOptions.mp4_encoder` field captures which
 encoder was used, so a verifier sees the choice. **For blockchain
 provenance, NVENC-encoded artifacts are NOT byte-reproducible
 across machines** and should not be attested.
 
-Gap: `Receipt::verify` does not refuse NVENC receipts. It will
+Gap: `Witness::verify` does not refuse NVENC receipts. It will
 re-render with NVENC and then output_sha256 won't match — so the
 verify call returns `OutputDiffers`, but the failure mode looks
-like "the receipt is broken" rather than "this encoder isn't
+like "the witness is broken" rather than "this encoder isn't
 verifiable." Worth a future doc clarification or refusal.
 
 ### Concat file (`src/encode.rs:build_concat`)
 
-- Iterates `timing` in order (input order from snapshot stage).
+- Iterates `timing` in order (input order from frame stage).
 - Writes absolute paths via `frames_dir.canonicalize()`.
 - Last frame repeated (ffmpeg concat demuxer quirk).
 - Per-call tempfile path (no concurrent-encode race on shared concat).
 - Deterministic given timing list.
 
-### Cast file write (`src/cast.rs`)
+### Trace file write (`src/trace.rs`)
 
-- `Cast.to_string()` writes header line + events line by line.
+- `Trace.to_string()` writes header line + events line by line.
 - Each event serialized via `serde_json::to_string` — stable for
   sequence types.
 - Header's `env: BTreeMap` ensures sorted key order.
-- Output: deterministic given Cast struct.
+- Output: deterministic given Trace struct.
 
 ## Tool identity
 
-The receipt's `tool` field captures the dependencies that, if
+The witness's `tool` field captures the dependencies that, if
 changed, can produce different output bytes:
 
 ```rust
 pub struct ToolIdentity {
-    pub name: String,                    // "term-recorder"
+    pub name: String,                    // "tracer"
     pub version: String,                 // CARGO_PKG_VERSION
     pub ffmpeg_version: String,          // first line of `ffmpeg -version`
     pub font_sha256: String,             // hash of bundled DejaVu Sans Mono
-    pub recorder_sha256: Option<String>, // SHA-256 of the recorder binary itself
+    pub recorder_sha256: Option<String>, // SHA-256 of the tracer binary itself
     pub ffmpeg_sha256:   Option<String>, // SHA-256 of the ffmpeg binary on PATH
 }
 ```
@@ -156,15 +156,15 @@ Both binary hashes are `Option<String>` for two reasons:
    existed continue to parse via `#[serde(default)]`.
 2. **Best-effort population:** if `std::env::current_exe()` fails,
    or PATH is unset / `ffmpeg` is not on it / the resolved file
-   is unreadable, the recorder still emits a receipt — just
+   is unreadable, the tracer still emits a witness — just
    without that field. The verifier symmetrically skips comparison
    when either side lacks the hash (Scott-flat: `None` matches
    anything).
 
-When both sides have a given hash and they disagree, `Receipt::verify`
+When both sides have a given hash and they disagree, `Witness::verify`
 returns `EnvironmentDiffers { field: "tool.<name>_sha256", ... }`
 before the re-render even runs. For strict blockchain attestation,
-two nodes with different binary hashes (recorder OR ffmpeg) are
+two nodes with different binary hashes (tracer OR ffmpeg) are
 rejected up front instead of failing on `OutputDiffers` later.
 
 ## Empirical confirmation
@@ -175,35 +175,35 @@ These layer-level claims are continuously verified by:
 - `make verify-goldens` (45 layer hashes across 5 scenes)
 - `make bless-goldens` (N=10 agreement gate; refuses to commit a
   golden if any layer disagrees across 10 runs)
-- `Receipt::verify` (re-renders the cast and compares output hash;
-  runs on every receipt check)
+- `Witness::verify` (re-renders the trace and compares output hash;
+  runs on every witness check)
 
-A scene authored two ways — once as a Rust binary driving the
-`Recorder` API directly, once as a `.scene` file consumed by
-`term-recorder record` — produces byte-identical casts (same
+A script authored two ways — once as a Rust binary driving the
+`Tracer` API directly, once as a `.script` file consumed by
+`tracer run` — produces byte-identical casts (same
 SHA-256 across N=10), confirming that determinism survives the
-`.rs` → `.scene` boundary.
+`.rs` → `.script` boundary.
 
 ## Summary
 
 | Layer            | Determinism source                                               | Verified      |
 | ---------------- | ---------------------------------------------------------------- | ------------- |
-| Cast parse       | `serde_json` + `Vec`/`BTreeMap`                                  | yes           |
-| Snapshot replay  | vt100 state machine + `BTreeMap`                                 | yes           |
+| Trace parse       | `serde_json` + `Vec`/`BTreeMap`                                  | yes           |
+| Frame replay  | vt100 state machine + `BTreeMap`                                 | yes           |
 | Paint            | pure rasterization, byte-stability test                          | yes (test)    |
 | Encode (libx264) | pinned ffmpeg flags incl. `-threads 1`                           | yes           |
 | Encode (NVENC)   | non-deterministic by design; refused in verify                   | yes (2f802a8) |
 | Encode (GIF)     | pinned palettegen + Bayer dither                                 | yes           |
 | Concat file      | deterministic input ordering                                     | yes           |
-| Cast write       | sorted env, ordered events                                       | yes           |
+| Trace write       | sorted env, ordered events                                       | yes           |
 | Tool identity    | name + version + ffmpeg + font + recorder_sha256 + ffmpeg_sha256 | yes           |
 
 Every layer has a strong determinism story. The libx264 path, GIF
-path, snapshot replay, paint, and cast serialization are all byte-
+path, frame replay, paint, and trace serialization are all byte-
 stable by construction or by test. NVENC is opt-in, explicitly
-flagged non-portable, and **`Receipt::verify` now refuses NVENC
+flagged non-portable, and **`Witness::verify` now refuses NVENC
 receipts for `.mp4` outputs up front with the
 `EncoderNotVerifiable { encoder }` outcome (commit 2f802a8)** —
 no wasted re-render, clear failure mode. Tool identity captures
-every variance source including the recorder binary's own SHA-256
+every variance source including the tracer binary's own SHA-256
 and the resolved ffmpeg binary's SHA-256.

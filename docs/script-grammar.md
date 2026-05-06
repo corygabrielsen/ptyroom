@@ -1,11 +1,11 @@
-# Scene DSL — v1 Grammar
+# Script DSL — v1 Grammar
 
 A line-oriented domain-specific language for declaring scripted terminal
 recordings. Compiles deterministically to an asciinema cast.
 
-The DSL is the binary/file interface to the recorder library. It removes
-the need to write Rust to author a recording: scenes are `.scene` files
-that `term-recorder record` consumes.
+The DSL is the binary/file interface to the tracer library. It removes
+the need to write Rust to author a recording: scenes are `.script` files
+that `tracer run` consumes.
 
 ## Design rationale
 
@@ -14,25 +14,25 @@ one thing — there is no atomic "send-and-wait" macro at the primitive
 level. This is deliberate:
 
 - **Composability.** Sequential primitives form a free monoid — any
-  scene is a concatenation of primitives, and concatenation is
+  script is a concatenation of primitives, and concatenation is
   associative. Atomic verbs introduce a denormalization (some
   statements are primitives, some are macros that expand into many).
 - **Test surface.** Fewer verb types means fewer code paths to test
-  and fewer ways for the recorder library to grow internal complexity.
-- **AI-editability.** When an LLM helps a user author a scene,
+  and fewer ways for the tracer library to grow internal complexity.
+- **AI-editability.** When an LLM helps a user author a script,
   inserting a step between two primitives is a one-line edit.
   Splitting an atomic verb to insert is more error-prone.
 
 The contract is **visual equivalence**, not byte-exact event
 partitioning. Two scenes that produce the same vt100 screen sequence
 at the same playback timestamps are considered equivalent even if
-their cast event counts differ. The regression gate's
-snapshot-sequence hash is the load-bearing invariant; cast event
+their trace event counts differ. The regression gate's
+frame-sequence hash is the load-bearing invariant; trace event
 count is implementation detail.
 
 ## File header
 
-Every scene must begin (after any leading comments or blank lines)
+Every script must begin (after any leading comments or blank lines)
 with a version line:
 
 ```
@@ -73,7 +73,7 @@ within the header is insignificant.
 
 ### Choosing a target
 
-Every scene picks exactly one of three process targets:
+Every script picks exactly one of three process targets:
 
 | Target          | Verb               | When to use                                            | Requires |
 | --------------- | ------------------ | ------------------------------------------------------ | -------- |
@@ -83,9 +83,9 @@ Every scene picks exactly one of three process targets:
 
 Reach for `SetSpawn` first. The Docker targets exist for hermetic
 recording — the cold-container path pins the entire shell environment
-to a chosen image so the cast captures only what the script does, not
+to a chosen image so the trace captures only what the script does, not
 what your `~/.bashrc` decides to print. That guarantee is load-bearing
-when the cast is the input to a CI golden gate; for a one-off README
+when the trace is the input to a CI golden gate; for a one-off README
 GIF, local-PTY mode is fine.
 
 | Verb                                 | Purpose                                      | Default                           |
@@ -116,11 +116,11 @@ Constraints:
 
 ## Body verbs
 
-Body verbs are split into two classes by what they do to the cast:
+Body verbs are split into two classes by what they do to the trace:
 
 ### Class A — PTY side-effects
 
-These verbs write bytes to the PTY. They do not emit cast events on
+These verbs write bytes to the PTY. They do not emit trace events on
 their own. Bytes become events when a Class B verb captures them.
 
 | Verb    | Form                                                     | Semantics                                                                                                                                                                                                                                                         |
@@ -133,15 +133,15 @@ their own. Bytes become events when a Class B verb captures them.
 
 | Verb            | Form                                                                      | Semantics                                                                                                                                                                                                                                                                                                                              |
 | --------------- | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `WaitFor`       | `WaitFor /pattern/ [Timeout <duration>] [Label "..."] [Dwell <duration>]` | Block until `pattern` matches in PTY output (default timeout `2s`). Captured bytes (up to and including pattern end) become a cast event with the given `Dwell` (default `0`). Trailing bytes return to the drainer for the next event. Use `Dwell` when the matched event should advance virtual time before the next operation runs. |
+| `WaitFor`       | `WaitFor /pattern/ [Timeout <duration>] [Label "..."] [Dwell <duration>]` | Block until `pattern` matches in PTY output (default timeout `2s`). Captured bytes (up to and including pattern end) become a trace event with the given `Dwell` (default `0`). Trailing bytes return to the drainer for the next event. Use `Dwell` when the matched event should advance virtual time before the next operation runs. |
 | `WaitForPrompt` | `WaitForPrompt [Timeout <duration>] [Dwell <duration>]`                   | Sugar for `WaitFor <SetPrompt regex>`. Same `Dwell` semantics.                                                                                                                                                                                                                                                                         |
-| `Sleep`         | `Sleep <duration> [Settle <duration>]`                                    | Advance virtual playback time by the first duration. Optional `Settle` is wall-clock time during which incoming PTY bytes are captured into the cast — needed for TUI scenes where the child draws frames asynchronously after a key press. Default settle is `0`.                                                                     |
-| `Mark`          | `Mark "label"`                                                            | Insert a named marker at current presentation time. Trace metadata; not in the cast.                                                                                                                                                                                                                                                   |
-| `Present`       | `Present <string-or-heredoc>`                                             | Synthetic output written into the cast as if from the child. One cast event with `Sleep`-extendable dwell.                                                                                                                                                                                                                             |
-| `PresentTyped`  | `PresentTyped <string-or-heredoc> [PerChar <duration>]`                   | Synthetic typed text — one cast event per UTF-8 char with `per_char` dwell between events. Like `Type` but bytes never reach the PTY. Used for explanatory comment lines that need the typed-animation feel without bash actually executing them. Default `PerChar` is `SetPerCharDwell`.                                              |
+| `Sleep`         | `Sleep <duration> [Settle <duration>]`                                    | Advance virtual playback time by the first duration. Optional `Settle` is wall-clock time during which incoming PTY bytes are captured into the trace — needed for TUI scenes where the child draws frames asynchronously after a key press. Default settle is `0`.                                                                     |
+| `Mark`          | `Mark "label"`                                                            | Insert a named marker at current presentation time. Trace metadata; not in the trace.                                                                                                                                                                                                                                                   |
+| `Present`       | `Present <string-or-heredoc>`                                             | Synthetic output written into the trace as if from the child. One trace event with `Sleep`-extendable dwell.                                                                                                                                                                                                                             |
+| `PresentTyped`  | `PresentTyped <string-or-heredoc> [PerChar <duration>]`                   | Synthetic typed text — one trace event per UTF-8 char with `per_char` dwell between events. Like `Type` but bytes never reach the PTY. Used for explanatory comment lines that need the typed-animation feel without bash actually executing them. Default `PerChar` is `SetPerCharDwell`.                                              |
 
 Class A vs Class B is enforced by execution order semantics, not by
-the parser. A scene of all Class A verbs produces an empty cast
+the parser. A script of all Class A verbs produces an empty trace
 (no events) — legal but useless.
 
 ## Macros
@@ -157,13 +157,13 @@ New macros are additive — they never become primitives.
 
 ## Determinism and failure semantics
 
-- **Same scene → same cast bytes**, given the same pipeline identity
+- **Same script → same trace bytes**, given the same pipeline identity
   (binary version, ffmpeg version, bundled font hash). Receipts
   capture the identity for external verification.
 - **`Sleep` is virtual time** — added to a step's dwell, never
   observed via wall-clock.
 - **`WaitFor` failure (timeout)** halts recording with
-  `scene.scene:LINE: WaitFor /pattern/ timed out after Nms`. Optional
+  `script.script:LINE: WaitFor /pattern/ timed out after Nms`. Optional
   `Label` is appended.
 - **No source of nondeterminism** in the runner — no random, no
   system-time reads, no host environment unless explicit via
@@ -245,26 +245,26 @@ Sleep 800ms
 ## Library and CLI integration
 
 ```rust
-let cast = term_recorder::scene::Scene::read("demo.scene")?.run()?;
-cast.write("demo.cast")?;
+let trace = tracer::script::Script::read("demo.script")?.run()?;
+trace.write("demo.trace")?;
 ```
 
 ```bash
-term-recorder record demo.scene --out demo.cast
-term-recorder record demo.scene --out demo.gif         # chains through render
-term-recorder record demo.scene \
+tracer run demo.script --out demo.trace
+tracer run demo.script --out demo.gif         # chains through render
+tracer run demo.script \
     --out demo.gif \
-    --receipt demo.gif.receipt.json \
-    --spec demo.spec.json
+    --witness demo.gif.witness.json \
+    --contract demo.contract.json
 ```
 
-When `--receipt` is set, the receipt's `scene_sha256` field records the
-hash of the source scene file — `output` is `g(f(scene))` for
-`f = scene.run` and `g = render`, and the receipt now pins all three
-hashes (cast, output, scene) plus optional `spec_sha256`. The field is
-provenance only: verification does not re-run the scene (scene
+When `--witness` is set, the witness's `script_sha256` field records the
+hash of the source script file — `output` is `g(f(script))` for
+`f = script.run` and `g = render`, and the witness now pins all three
+hashes (trace, output, script) plus optional `contract_sha256`. The field is
+provenance only: verification does not re-run the script (script
 execution depends on shells, docker images, and external state that
-the recorder does not pin).
+the tracer does not pin).
 
 ## Out of scope for v1
 
@@ -274,10 +274,10 @@ case.
 
 | Feature                                     | Why deferred                                                     |
 | ------------------------------------------- | ---------------------------------------------------------------- |
-| `Source "common.scene"` includes            | Scenes are self-contained; revisit if codegen demands it         |
-| `Hide` / `Show` (suppress events from cast) | Not load-bearing for current use cases                           |
+| `Source "common.script"` includes            | Scripts are self-contained; revisit if codegen demands it         |
+| `Hide` / `Show` (suppress events from trace) | Not load-bearing for current use cases                           |
 | Loops, conditionals                         | Use external codegen if you need procedural scenes               |
 | `OnTimeout: continue` recovery              | Halt-on-failure is the correct default                           |
-| Mid-scene `Set*` verbs                      | Strict header/body separation; revisit only with a real use case |
+| Mid-script `Set*` verbs                      | Strict header/body separation; revisit only with a real use case |
 | Auto-detect cols/rows                       | Would introduce nondeterminism                                   |
 | `<<-EOF` indented heredoc variant           | One heredoc form is enough for v1                                |
