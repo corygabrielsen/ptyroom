@@ -1,5 +1,6 @@
 //! Unified pipeline CLI: `term-recorder <subcommand> ...`.
 
+mod check;
 mod compare_snapshots;
 mod encode;
 mod inspect;
@@ -26,6 +27,8 @@ enum Cmd {
     Render(render::Args),
     /// Verify a previously-issued reproducibility receipt by re-rendering.
     Verify(verify::Args),
+    /// Replay a cast and check it against a behavioral spec.
+    Check(check::Args),
     /// PNG sequence + timing.json → GIF/MP4.
     Encode(encode::Args),
     /// Snapshots directory → painted PNGs.
@@ -45,6 +48,13 @@ fn main() -> ExitCode {
     let result: anyhow::Result<ExitCode> = match cli.cmd {
         Cmd::Render(args) => render::run(&args).map(|()| ExitCode::SUCCESS),
         Cmd::Verify(args) => verify::run(&args).map(|ok| {
+            if ok {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            }
+        }),
+        Cmd::Check(args) => check::run(&args).map(|ok| {
             if ok {
                 ExitCode::SUCCESS
             } else {
