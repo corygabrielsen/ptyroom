@@ -167,10 +167,11 @@ These layer-level claims are continuously verified by:
 - `Receipt::verify` (re-renders the cast and compares output hash;
   runs on every receipt check)
 
-The cli scene migration (`9c1a98d` in tint-scenes) is a worked
-example: a DSL-driven cast and an .rs-driven cast of the same
-scene produce byte-identical output (same SHA-256 across N=10),
-confirming that determinism survives the .rs → .scene boundary.
+A scene authored two ways — once as a Rust binary driving the
+`Recorder` API directly, once as a `.scene` file consumed by
+`term-recorder record` — produces byte-identical casts (same
+SHA-256 across N=10), confirming that determinism survives the
+`.rs` → `.scene` boundary.
 
 ## Summary
 

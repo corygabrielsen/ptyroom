@@ -4,14 +4,12 @@
 //! against a synthetic host child (`target/debug/stress-child` or the
 //! release equivalent, built from `src/bin/stress_child.rs`) and
 //! assert library-level correctness contracts directly — not through
-//! any marketing scene.
+//! any application-layer scene.
 //!
 //! Architectural rule: this file imports `term_recorder::*` only —
-//! it must not depend on any consumer crate (e.g. `tint-scenes`).
-//! The recorder library is meant to be domain-generic, and these
-//! tests guard that seam. Consumer-layer integration coverage lives
-//! in the corresponding consumer crate (e.g. `make verify-goldens`
-//! drives `tint-scenes` end-to-end).
+//! it must not depend on any consumer crate. The recorder library is
+//! meant to be domain-generic, and these tests guard that seam.
+//! Consumer-layer integration coverage belongs in the consumer crate.
 
 use std::collections::HashSet;
 use std::sync::Arc;

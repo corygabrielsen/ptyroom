@@ -1,7 +1,9 @@
 # Crate Architecture
 
-This project is being shaped as a reusable deterministic terminal recorder.
-The tint demo is the first serious consumer, not the abstraction boundary.
+`term-recorder` is a reusable deterministic terminal recorder. Its
+primitives are designed to compose into scripted recordings of any
+interactive CLI; consumer-specific scenes live above this library, not
+inside it.
 
 ## Design Goal
 
@@ -55,9 +57,9 @@ The recorder core owns terminal mechanics:
 
 The recorder core must not own product semantics:
 
-- no theme names;
-- no picker targets;
-- no product-specific file names;
+- no consumer-specific identifiers (theme names, command names, etc.);
+- no consumer-specific UI conventions;
+- no consumer-specific file names;
 - no app-specific shortcuts hidden below the scene layer.
 
 ## Time Model
@@ -117,7 +119,7 @@ let mut r = Recorder::start(RecorderConfig {
 })?;
 ```
 
-Tint-specific scene helpers should remain outside the recorder core.
+Consumer-specific scene helpers should remain outside the recorder core.
 
 ## Verification Model
 
@@ -136,13 +138,11 @@ the final frame matches a desired loop state.
 
 Before publishing, this project should have:
 
-- a crate name and README that describe the generic recorder, not only tint;
-- examples that record a tiny generic CLI session without Docker;
+- a crate name and README that describe the generic recorder;
+- examples that record a tiny CLI session without Docker;
 - examples that record a Docker-backed shell session;
 - documented guarantees for time virtualization and output source identity;
-- a clean separation between reusable modules and tint demo scenes;
+- a clean separation between reusable modules and consumer scenes;
 - stable public names for `Recorder`, `RecorderConfig`, `ShellProfile`,
   `PresentationOutput`, `Key`, `StubColors`, `Cast`, and snapshot/verification
   primitives.
-
-Until then, tint remains the proving ground.

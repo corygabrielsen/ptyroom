@@ -42,8 +42,8 @@ rec.stop()?.write("hello.cast")?;
 ```
 
 A working version is at `examples/generic_shell.rs`. The recorder
-library is process-agnostic; the example consumer in this workspace
-targets [tint](https://github.com/corygabrielsen/tint).
+library is process-agnostic — it works with any interactive CLI you
+can spawn under a PTY.
 
 ## Verifiable artifacts
 
@@ -75,7 +75,7 @@ cast must satisfy. The verifier replays the cast and re-evaluates:
 {
   "version": 1,
   "predicates": [
-    { "kind": "contains_text", "text": "$ tint dracula" },
+    { "kind": "contains_text", "text": "$ echo hello" },
     { "kind": "does_not_contain_text", "text": "error" }
   ]
 }
@@ -149,12 +149,6 @@ cargo test
 Requires `cargo` (and `ffmpeg` for encode-stage tests). Recording into a
 sandboxed shell additionally needs `docker`.
 
-A consumer crate that drives `term-recorder` against the [tint](https://github.com/corygabrielsen/tint)
-CLI lives at `../tint-scenes/` (sibling repo). It is the reference example
-of: scripted scene binaries, the contract registry, the pipeline-test
-orchestrator, and the docker-based recording image. Depends on this crate
-via `term-recorder = { path = "../term-recorder" }`.
-
 ## Regression gate
 
 The pipeline pins nine layer hashes per scene under `goldens/<scene>.json`
@@ -182,6 +176,11 @@ and CPU contention. **Architectural rule:** these tests import
 library is meant to be domain-generic; the seam is enforced by
 where tests draw their dependencies.
 
+The `goldens/` directory and `make verify-goldens` / `make
+bless-goldens` targets ship in the consumer crate that drives this
+library, not here — `term-recorder` itself ships only the recorder
+primitives, the scene runner, and the render pipeline.
+
 ## Determinism
 
 - Recording shell runs in a pinned `debian:12-slim` image with a fresh `$HOME`. No host `$PATH` leakage.
@@ -205,9 +204,7 @@ for syncing on a known byte pattern. Use presentation helpers only for
 output that does not affect shell state (comments, blank prompt lines,
 clear boundaries).
 
-Working examples live in `examples/`. A worked-out consumer with
-scripted scenes, contract verification, and a docker-based recording
-image lives in the sibling `tint-scenes/` repo.
+Working examples live in `examples/`.
 
 ## License
 

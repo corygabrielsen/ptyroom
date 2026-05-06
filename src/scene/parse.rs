@@ -756,15 +756,14 @@ mod tests {
 
     #[test]
     fn set_warm_command_captures_argv() {
-        let scene = p(
-            "Version 1\nSetWarm \"warm-c\"\nSetWarmCommand \"term-recorder-shell\" \"-l\"\nRun \"ls\"\n",
-        );
+        let scene =
+            p("Version 1\nSetWarm \"warm-c\"\nSetWarmCommand \"my-shell\" \"-l\"\nRun \"ls\"\n");
         let argv = scene
             .config
             .warm_command
             .as_ref()
             .expect("warm_command should be set");
-        assert_eq!(argv, &vec!["term-recorder-shell".to_string(), "-l".into()]);
+        assert_eq!(argv, &vec!["my-shell".to_string(), "-l".into()]);
     }
 
     #[test]

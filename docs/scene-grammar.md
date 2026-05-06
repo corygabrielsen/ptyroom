@@ -167,21 +167,21 @@ Run "echo hello"
 Run "ls /tmp"
 ```
 
-### Tint scene (warm container, regex prompt)
+### Warm container with regex prompt
 
 ```
 Version 1
 SetCols 100
 SetRows 24
-SetWarm "term-recorder-warm"
-SetPrompt /\[\d+m\] \$ /
+SetWarm "my-shell-container"
+SetPrompt /\$ /
 
 WaitForPrompt
-Run "tint dracula"
+Run "git --version"
 Sleep 1s
-Mark "applied_dracula"
+Mark "version_shown"
 
-Type "tint reset"
+Type "git status"
 Press Enter
 WaitForPrompt
 Sleep 500ms
@@ -199,7 +199,7 @@ SetEnv "TERM" "xterm-256color"
 SetPrompt /\$ /
 
 SetShellRcfile <<BASH
-PS1='\[\e[31m\]t\[\e[33m\]i\[\e[32m\]n\[\e[36m\]t\[\e[0m\] $ '
+PS1='\[\e[36m\]demo\[\e[0m\] $ '
 cd "$HOME"
 clear
 BASH
@@ -208,20 +208,20 @@ WaitForPrompt
 Sleep 800ms
 
 Present <<EOF
-# tint changes terminal color from your CLI
+# A scripted shell session
 
 EOF
 Sleep 1500ms
 
-Run "tint dracula"
+Run "echo hello"
 Sleep 1s
-Mark "beat_1_dracula"
+Mark "beat_1_hello"
 
-Run "tint solarized-light"
+Run "ls /etc | head -3"
 Sleep 1s
-Mark "beat_2_solarized"
+Mark "beat_2_ls"
 
-Run "tint reset"
+Run "uname -a"
 Sleep 800ms
 ```
 

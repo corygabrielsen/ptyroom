@@ -9,10 +9,9 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
-      # No `no-commit-to-branch` here: term-recorder doesn't gate on
-      # PRs (sibling tint and tint-website repos do — see their
-      # configs for the typed-branch regex if/when this repo adopts
-      # the same workflow).
+      # No `no-commit-to-branch` here: this repo doesn't gate on PRs.
+      # Add the hook with a typed-branch regex if/when a PR workflow
+      # is adopted.
       - id: check-added-large-files
       - id: check-case-conflict
       - id: check-executables-have-shebangs

@@ -18,6 +18,7 @@ pub use keys::Key;
 pub use osc::StubColors;
 
 use std::os::fd::BorrowedFd;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -154,6 +155,13 @@ pub struct RecorderConfig {
     /// Warm containers cannot receive a host-mounted rcfile per recording, so
     /// this command is responsible for applying the desired shell profile.
     pub warm_command: Vec<String>,
+    /// Parent directory under which each warm-container recording gets a
+    /// fresh `$HOME` (`<warm_home_root>/.term-recorder-home-<pid>-<seq>`).
+    /// The wrapper named in [`RecorderConfig::warm_command`] is responsible
+    /// for `mkdir`-ing this path inside the container before exec-ing the
+    /// shell. Default is `/tmp` (universally writable on POSIX); override
+    /// to point at any path the in-container user can `mkdir` under.
+    pub warm_home_root: PathBuf,
     /// Bash startup profile for cold `docker run` recordings.
     pub shell: ShellProfile,
     /// Stubbed terminal color query responses.
@@ -172,6 +180,7 @@ impl Default for RecorderConfig {
                 .ok()
                 .filter(|value| !value.is_empty()),
             warm_command: vec!["bash".into(), "-i".into()],
+            warm_home_root: PathBuf::from("/tmp"),
             shell: ShellProfile::simple(),
             stubs: StubColors::default(),
             max_runtime: Duration::from_mins(4),
@@ -246,10 +255,11 @@ impl Recorder {
         let mount;
         let argv: Vec<String> = if let Some(container) = &cfg.container {
             let seq = CONTAINER_HOME_SEQ.fetch_add(1, Ordering::Relaxed);
-            let home = format!(
-                "/home/demo/.term-recorder-home-{}-{seq}",
-                std::process::id(),
-            );
+            let home = cfg
+                .warm_home_root
+                .join(format!(".term-recorder-home-{}-{seq}", std::process::id()))
+                .to_string_lossy()
+                .into_owned();
             home_env = format!("HOME={home}");
             let mut argv = vec![
                 "docker".into(),
