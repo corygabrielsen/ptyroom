@@ -231,10 +231,16 @@ fn hex(bytes: &[u8]) -> String {
     s
 }
 
+/// 64 KiB stream buffer for sha256 file hashing. Heap-allocated so
+/// clippy's stack-size lint doesn't complain about a large fixed-size
+/// stack array; the allocation happens once per call and is amortized
+/// across many `read` syscalls.
+const HASH_BUF_LEN: usize = 64 * 1024;
+
 fn sha256_file(path: &Path) -> anyhow::Result<String> {
     let mut h = Sha256::new();
     let mut f = fs::File::open(path)?;
-    let mut buf = [0u8; 64 * 1024];
+    let mut buf = vec![0u8; HASH_BUF_LEN];
     loop {
         let n = f.read(&mut buf)?;
         if n == 0 {
@@ -247,9 +253,9 @@ fn sha256_file(path: &Path) -> anyhow::Result<String> {
 
 fn sha256_files_concat(paths: &[PathBuf]) -> anyhow::Result<String> {
     let mut h = Sha256::new();
+    let mut buf = vec![0u8; HASH_BUF_LEN];
     for p in paths {
         let mut f = fs::File::open(p)?;
-        let mut buf = [0u8; 64 * 1024];
         loop {
             let n = f.read(&mut buf)?;
             if n == 0 {
@@ -263,7 +269,7 @@ fn sha256_files_concat(paths: &[PathBuf]) -> anyhow::Result<String> {
 
 fn sorted_numbered<P: AsRef<Path>>(dir: P, ext: &str) -> anyhow::Result<Vec<PathBuf>> {
     let mut entries: Vec<_> = fs::read_dir(dir)?
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .map(|e| e.path())
         .filter(|p| {
             p.extension().and_then(|s| s.to_str()) == Some(ext)
@@ -280,6 +286,11 @@ fn sorted_numbered<P: AsRef<Path>>(dir: P, ext: &str) -> anyhow::Result<Vec<Path
 ///
 /// # Errors
 /// Filesystem or parse error reading any artifact.
+///
+/// # Panics
+/// Panics if the snapshots directory exists but is empty after the
+/// non-empty check passes (impossible by construction; the `expect`
+/// is a defense-in-depth assertion).
 pub fn hash_pipeline(scene: &str) -> anyhow::Result<PipelineHashes> {
     validate_scene(scene)?;
     let cast = cast_path(scene);
@@ -294,13 +305,13 @@ pub fn hash_pipeline(scene: &str) -> anyhow::Result<PipelineHashes> {
     for line in events_iter {
         event_count += 1;
         let ev: serde_json::Value = serde_json::from_str(line)?;
-        let arr = ev.as_array().ok_or_else(|| {
-            anyhow::anyhow!("cast event not array: {line}")
-        })?;
-        if arr.get(1).and_then(|v| v.as_str()) == Some("o") {
-            if let Some(data) = arr.get(2).and_then(|v| v.as_str()) {
-                concat_h.update(data.as_bytes());
-            }
+        let arr = ev
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("cast event not array: {line}"))?;
+        if arr.get(1).and_then(|v| v.as_str()) == Some("o")
+            && let Some(data) = arr.get(2).and_then(|v| v.as_str())
+        {
+            concat_h.update(data.as_bytes());
         }
     }
 

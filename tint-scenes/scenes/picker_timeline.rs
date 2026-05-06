@@ -10,11 +10,11 @@ use term_recorder::observer::Predicate;
 use term_recorder::proof::DwellMs;
 use term_recorder::recorder::{Key, Recorder};
 use term_recorder::recording::RecordingBuilder;
+use term_recorder::timeline::{PresentationBeat, TimelinePolicy};
 use tint_scenes::scenes::{
     ALT_SCREEN_ENTER, ALT_SCREEN_EXIT, BASH_SETTLE_WALL, PICKER_COMMIT_TIMEOUT,
     PICKER_STARTUP_TIMEOUT, lookup_picker_idx, ms,
 };
-use term_recorder::timeline::{PresentationBeat, TimelinePolicy};
 
 const PICKER_TARGET: &str = "dark-azure";
 const CAPTURE_SETTLE: Duration = ms(20);

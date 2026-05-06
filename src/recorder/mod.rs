@@ -622,9 +622,8 @@ impl Recorder {
         // a faster wake would belong to the next event — a partition
         // race that surfaces as event-count drift in downstream
         // artifacts.
-        let pattern_end = find_subslice(&captured, pattern)
-            .map(|i| i + pattern.len())
-            .unwrap_or(captured.len());
+        let pattern_end =
+            find_subslice(&captured, pattern).map_or(captured.len(), |i| i + pattern.len());
         let (this_event, leftover) = captured.split_at(pattern_end);
         let this_event = this_event.to_vec();
         if !leftover.is_empty() {

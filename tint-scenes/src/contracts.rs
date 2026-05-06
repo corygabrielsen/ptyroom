@@ -4,7 +4,9 @@
 //! lib test `every_scene_has_a_contract` keeps them in sync.
 
 use term_recorder::color::HexColor;
-use term_recorder::verify::{Check, CheckResult, Contract, bg_reaches, final_bg_is, no_row_contains};
+use term_recorder::verify::{
+    Check, CheckResult, Contract, bg_reaches, final_bg_is, no_row_contains,
+};
 
 /// Tint-specific check: passes iff some snapshot has a row containing
 /// both `↓` and `more` (the picker's "↓ N more" overflow indicator).

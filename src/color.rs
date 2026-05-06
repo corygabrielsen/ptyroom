@@ -150,7 +150,10 @@ pub enum CellColor {
     #[default]
     Default,
     Rgb(HexColor),
-    Palette { idx: u8, fallback: Option<HexColor> },
+    Palette {
+        idx: u8,
+        fallback: Option<HexColor>,
+    },
 }
 
 impl CellColor {

@@ -22,7 +22,7 @@ use crate::color::{CellColor, HexColor, PaletteOverrides};
 /// position is the shorter `null`.
 ///
 /// The struct field order is the canonical JSON field order
-/// (serde_json honors derive order). Do not reorder fields without
+/// (`serde_json` honors derive order). Do not reorder fields without
 /// re-blessing goldens.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Cell {
@@ -56,6 +56,7 @@ fn is_default_ch(s: &str) -> bool {
     s == " "
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde skip predicate signature is `fn(&T) -> bool`.
 fn is_zero_u8(n: &u8) -> bool {
     *n == 0
 }

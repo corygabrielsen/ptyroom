@@ -17,7 +17,7 @@
 
 use std::fs;
 use std::io::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
@@ -81,18 +81,15 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let opts = PipelineOptions::default();
     let result = match cli.cmd {
-        Cmd::Characterize { scenes, runs } => {
-            characterize(scenes_or_default(scenes), runs, &opts)
-        }
+        Cmd::Characterize { scenes, runs } => characterize(&scenes_or_default(scenes), runs, &opts),
         Cmd::Bless {
             scenes,
             runs,
             golden_dir,
-        } => bless(scenes_or_default(scenes), runs, &golden_dir, &opts),
-        Cmd::Verify {
-            scenes,
-            golden_dir,
-        } => verify(scenes_or_default(scenes), &golden_dir, &opts),
+        } => bless(&scenes_or_default(scenes), runs, &golden_dir, &opts),
+        Cmd::Verify { scenes, golden_dir } => {
+            verify(&scenes_or_default(scenes), &golden_dir, &opts)
+        }
         Cmd::Render { scene } => render_one(&scene, &opts),
     };
     match result {
@@ -118,9 +115,7 @@ fn render_one(scene: &str, opts: &PipelineOptions) -> anyhow::Result<bool> {
     println!("=== render {scene} ===");
     run_pipeline(scene, opts)?;
     run_verify(scene)?;
-    println!(
-        "wrote assets/{scene}.mp4 + assets/{scene}.gif"
-    );
+    println!("wrote assets/{scene}.mp4 + assets/{scene}.gif");
     Ok(true)
 }
 
@@ -134,9 +129,18 @@ fn iso_now_utc() -> String {
     format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
 }
 
+// Civil-from-days algorithm (Howard Hinnant). Pure-Rust UTC formatter
+// without a chrono/time dependency. The single-char names and integer
+// casts mirror the published algorithm; pedantic clippy lints are
+// allowed locally because deviating from the canonical form would make
+// the algorithm harder to verify against the reference.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::many_single_char_names
+)]
 fn epoch_to_ymdhms(secs: u64) -> (i32, u32, u32, u32, u32, u32) {
-    // Civil-from-days algorithm by Howard Hinnant. Pure-Rust UTC
-    // formatter with no chrono/time crate dependency.
     let days = (secs / 86_400) as i64;
     let rem = secs % 86_400;
     let h = (rem / 3_600) as u32;
@@ -144,7 +148,7 @@ fn epoch_to_ymdhms(secs: u64) -> (i32, u32, u32, u32, u32, u32) {
     let s = (rem % 60) as u32;
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as i64;
+    let doe = z - era * 146_097;
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
     let y = (yoe + era * 400) as i32;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
@@ -155,21 +159,19 @@ fn epoch_to_ymdhms(secs: u64) -> (i32, u32, u32, u32, u32, u32) {
     (y, mo, d, h, mi, s)
 }
 
-fn characterize(
-    scenes: Vec<String>,
-    runs: usize,
-    opts: &PipelineOptions,
-) -> anyhow::Result<bool> {
+fn characterize(scenes: &[String], runs: usize, opts: &PipelineOptions) -> anyhow::Result<bool> {
+    use std::fmt::Write as _;
+
     let out_dir = PathBuf::from("target/characterize");
     fs::create_dir_all(&out_dir)?;
     let report_path = out_dir.join("report.md");
     let mut report = String::new();
     report.push_str("# Determinism characterization\n\n");
-    report.push_str(&format!("- Generated: {}\n", iso_now_utc()));
-    report.push_str(&format!("- Scenes:    {}\n", scenes.join(" ")));
-    report.push_str(&format!("- Runs:      {runs}\n\n"));
+    writeln!(report, "- Generated: {}", iso_now_utc())?;
+    writeln!(report, "- Scenes:    {}", scenes.join(" "))?;
+    writeln!(report, "- Runs:      {runs}\n")?;
 
-    for scene in &scenes {
+    for scene in scenes {
         validate_scene(scene)?;
         eprintln!("=== characterizing {scene} (runs={runs}) ===");
         let jsonl_path = out_dir.join(format!("{scene}.jsonl"));
@@ -183,11 +185,20 @@ fn characterize(
             runs_hashes.push(h);
         }
 
-        report.push_str(&format!("## {scene}\n\n"));
+        writeln!(report, "## {scene}\n")?;
         report.push_str("| layer | status | distinct | sample |\n");
         report.push_str("|---|---|---|---|\n");
-        let layers = ["concat_o", "cast_event_count", "final_snapshot", "all_snapshots",
-                      "snapshot_count", "all_pngs", "png_count", "mp4", "gif"];
+        let layers = [
+            "concat_o",
+            "cast_event_count",
+            "final_snapshot",
+            "all_snapshots",
+            "snapshot_count",
+            "all_pngs",
+            "png_count",
+            "mp4",
+            "gif",
+        ];
         for layer in layers {
             let values: Vec<String> = runs_hashes
                 .iter()
@@ -196,17 +207,22 @@ fn characterize(
             let mut distinct = values.clone();
             distinct.sort();
             distinct.dedup();
-            let status = if distinct.len() == 1 { "STABLE" } else { "VARIES" };
-            let sample = values.first().map(String::as_str).unwrap_or("");
+            let status = if distinct.len() == 1 {
+                "STABLE"
+            } else {
+                "VARIES"
+            };
+            let sample = values.first().map_or("", String::as_str);
             let sample = if sample.len() > 16 {
                 format!("{}…", &sample[..12])
             } else {
                 sample.to_string()
             };
-            report.push_str(&format!(
-                "| {layer} | {status} | {} | {sample} |\n",
+            writeln!(
+                report,
+                "| {layer} | {status} | {} | {sample} |",
                 distinct.len()
-            ));
+            )?;
         }
         report.push('\n');
     }
@@ -218,9 +234,9 @@ fn characterize(
 }
 
 fn bless(
-    scenes: Vec<String>,
+    scenes: &[String],
     runs: usize,
-    golden_dir: &PathBuf,
+    golden_dir: &Path,
     opts: &PipelineOptions,
 ) -> anyhow::Result<bool> {
     if runs < 2 {
@@ -228,7 +244,7 @@ fn bless(
     }
     fs::create_dir_all(golden_dir)?;
     let mut all_ok = true;
-    for scene in &scenes {
+    for scene in scenes {
         validate_scene(scene)?;
         eprintln!("=== blessing {scene} (runs={runs}) ===");
         let mut history: Vec<PipelineHashes> = Vec::with_capacity(runs);
@@ -240,9 +256,7 @@ fn bless(
         let first = history.first().expect("history non-empty");
         let agree = history.iter().all(|h| h == first);
         if !agree {
-            eprintln!(
-                "REFUSE bless {scene}: layers disagreed across {runs} runs"
-            );
+            eprintln!("REFUSE bless {scene}: layers disagreed across {runs} runs");
             for (i, h) in history.iter().enumerate() {
                 eprintln!("  run {i}: {}", serde_json::to_string(h)?);
             }
@@ -262,22 +276,15 @@ fn bless(
     Ok(all_ok)
 }
 
-fn verify(
-    scenes: Vec<String>,
-    golden_dir: &PathBuf,
-    opts: &PipelineOptions,
-) -> anyhow::Result<bool> {
+fn verify(scenes: &[String], golden_dir: &Path, opts: &PipelineOptions) -> anyhow::Result<bool> {
     let mut all_ok = true;
-    for scene in &scenes {
+    for scene in scenes {
         validate_scene(scene)?;
         let golden_path = golden_dir.join(format!("{scene}.json"));
-        let golden_text = match fs::read_to_string(&golden_path) {
-            Ok(t) => t,
-            Err(_) => {
-                println!("FAIL  {scene}: no golden at {}", golden_path.display());
-                all_ok = false;
-                continue;
-            }
+        let Ok(golden_text) = fs::read_to_string(&golden_path) else {
+            println!("FAIL  {scene}: no golden at {}", golden_path.display());
+            all_ok = false;
+            continue;
         };
         let golden: Golden = serde_json::from_str(&golden_text)?;
 

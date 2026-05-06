@@ -4,7 +4,7 @@
 //! shape: pass a cast file and an output directory; receive
 //! `<outdir>/0001.json … NNNN.json` (one per `"o"` event, 1-indexed
 //! by event index in the cast) plus `<outdir>/timing.json`. Backed
-//! by the `term_recorder::snapshot_replay` module (vt100 + OscTracker).
+//! by the `term_recorder::snapshot_replay` module (vt100 + `OscTracker`).
 
 use std::fs;
 use std::path::PathBuf;

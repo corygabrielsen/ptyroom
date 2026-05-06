@@ -69,8 +69,20 @@ pub fn replay(
         let next_t = cast.events.get(i + 1).map(|e| e.time_s);
         let dwell_ms = match next_t {
             Some(t) => {
+                // Round + clamp to [1, u32::MAX]. Negative deltas can't
+                // happen for in-order cast events; saturate to 1 ms
+                // anyway in case of clock drift in malformed casts.
                 let delta = ((t - event.time_s) * 1000.0).round();
-                if delta < 1.0 { 1 } else { delta as u32 }
+                if delta < 1.0 {
+                    1
+                } else if delta >= f64::from(u32::MAX) {
+                    u32::MAX
+                } else {
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    {
+                        delta as u32
+                    }
+                }
             }
             None => TAIL_DWELL_MS,
         };
@@ -106,7 +118,11 @@ fn cell_from_vt100(cell: Option<&vt100::Cell>, osc: &OscTracker) -> Option<Cell>
     let cell = cell?;
     let ch = {
         let s = cell.contents();
-        if s.is_empty() { " ".to_string() } else { s.to_string() }
+        if s.is_empty() {
+            " ".to_string()
+        } else {
+            s.to_string()
+        }
     };
     let candidate = Cell {
         ch,

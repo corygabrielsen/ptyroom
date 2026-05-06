@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
-use tint_scenes::contracts::{SCENES, registry};
 use term_recorder::verify::load_snapshots_dir;
+use tint_scenes::contracts::{SCENES, registry};
 
 #[derive(Parser)]
 struct Args {

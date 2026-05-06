@@ -152,7 +152,7 @@ impl Drainer {
     /// Push bytes back onto the front of the buffer so the next
     /// `consume` returns them first. Used by `send_raw_wait_for` to
     /// retain post-pattern bytes for the next event instead of folding
-    /// them into the wait_for event.
+    /// them into the `wait_for` event.
     pub fn unconsume(&self, bytes: Vec<u8>) {
         if bytes.is_empty() {
             return;

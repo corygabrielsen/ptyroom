@@ -76,8 +76,8 @@ fn distinct_count(runs: &[String]) -> usize {
 fn fail_with_variants(label: &str, total: usize, runs: &[String]) -> ! {
     let set: HashSet<&String> = runs.iter().collect();
     let mut iter = set.into_iter();
-    let first = iter.next().map(|s| s.as_str()).unwrap_or("");
-    let second = iter.next().map(|s| s.as_str()).unwrap_or(first);
+    let first = iter.next().map_or("", std::string::String::as_str);
+    let second = iter.next().map_or(first, std::string::String::as_str);
     panic!(
         "{label}: {} distinct casts across {} runs.\n\
          \n--- variant A ---\n{}\n\
@@ -97,7 +97,7 @@ fn fail_with_variants(label: &str, total: usize, runs: &[String]) -> ! {
 /// the time `consume()` runs the drainer buffer is guaranteed to hold
 /// both. A primitive that returns "everything in buffer" deterministically
 /// puts trailing bytes in this event (the bug). A primitive that splits
-/// at pattern_end deterministically puts them in the next event.
+/// at `pattern_end` deterministically puts them in the next event.
 #[test]
 fn wait_for_event_contains_only_up_to_pattern() {
     let cast = run_scene().expect("run scene");
@@ -123,7 +123,7 @@ fn wait_for_event_contains_only_up_to_pattern() {
 /// Stability under parallel load: same fixture, same scene, run across
 /// multiple threads. Asserts the cast is byte-identical across all runs.
 /// Primarily a regression net for future races, not the load-bearing
-/// demonstration of the wait_for cutoff bug (the contract test above
+/// demonstration of the `wait_for` cutoff bug (the contract test above
 /// is that).
 #[test]
 fn wait_for_byte_stable_under_parallel_load() {

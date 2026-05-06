@@ -5,9 +5,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use term_recorder::recorder::{Recorder, RecorderConfig};
-use tint_scenes::scenes::{
-    ms, run_custom_theme, run_standalone_feature_subloop, wait_for_prompt,
-};
+use tint_scenes::scenes::{ms, run_custom_theme, run_standalone_feature_subloop, wait_for_prompt};
 
 #[derive(Parser)]
 struct Args {

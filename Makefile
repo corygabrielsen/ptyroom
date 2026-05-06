@@ -2,7 +2,8 @@
         all demo-walkthrough demo-features \
         smoke picker picker-timeline-prototype cli cd-hook custom-theme \
         recorder-perf bench-tiny bench-churn bench-subloops bench-subloops-parallel bench \
-        all-scenes verify verify-all bless-goldens verify-goldens characterize clean
+        all-scenes verify verify-all bless-goldens verify-goldens characterize \
+        lint lint-fix clean
 
 .DEFAULT_GOAL := all
 
@@ -27,12 +28,16 @@ FEATURE_SCENES := cli picker cd_hook custom_theme
 FONT_SIZE ?= 14
 
 # Host requirements: cargo (build everything), docker (recording),
-# and ffmpeg (encoding). Snapshot replay runs in-process via the
-# vt100 crate — no Node/npm involvement.
+# ffmpeg (encoding), and pre-commit + cargo-sort + cargo-machete (lint).
+# Snapshot replay runs in-process via the vt100 crate — no Node/npm.
 setup:
-	@command -v cargo  >/dev/null && echo "cargo:  $$(cargo --version)"  || (echo "missing cargo"  && exit 1)
-	@command -v docker >/dev/null && echo "docker: $$(docker --version)" || (echo "missing docker" && exit 1)
-	@command -v ffmpeg >/dev/null && echo "ffmpeg: $$(ffmpeg -version | head -1)" || (echo "missing ffmpeg" && exit 1)
+	@command -v cargo         >/dev/null && echo "cargo:         $$(cargo --version)"         || (echo "missing cargo"         && exit 1)
+	@command -v docker        >/dev/null && echo "docker:        $$(docker --version)"        || (echo "missing docker"        && exit 1)
+	@command -v ffmpeg        >/dev/null && echo "ffmpeg:        $$(ffmpeg -version | head -1)" || (echo "missing ffmpeg"        && exit 1)
+	@command -v pre-commit    >/dev/null && echo "pre-commit:    $$(pre-commit --version)"    || (echo "missing pre-commit (pip install pre-commit)" && exit 1)
+	@command -v cargo-sort    >/dev/null && echo "cargo-sort:    $$(cargo-sort --version)"    || (echo "missing cargo-sort (cargo install cargo-sort)"       && exit 1)
+	@command -v cargo-machete >/dev/null && echo "cargo-machete: $$(cargo-machete --version)" || (echo "missing cargo-machete (cargo install cargo-machete)" && exit 1)
+	@pre-commit install
 
 # Compile every host-side binary across both workspace crates:
 # - tint-recorder: generic encode/paint/stitch/inspect/compare_snapshots
@@ -258,6 +263,19 @@ verify-goldens: build recorder-warm
 # per layer into a STABLE/VARIES report at target/characterize/report.md.
 characterize: build recorder-warm
 	./target/release/pipeline-test characterize $(if $(RUNS),--runs $(RUNS),) $(PIPELINE_TEST_FLAGS)
+
+# Run every pre-commit hook against every file. Identical to what
+# `git commit` triggers, so a green `make lint` is sufficient to
+# pass the hook on the next commit.
+lint:
+	pre-commit run --all-files
+
+# Apply auto-fixable lint mutations. cargo-machete has no auto-fix
+# (unused deps must be removed manually after review).
+lint-fix:
+	cargo fmt --all
+	cargo sort --workspace
+	cargo clippy --workspace --all-targets --fix --allow-dirty --allow-staged
 
 clean:
 	rm -rf assets/snapshots assets/frames assets/*_snapshots assets/*_frames

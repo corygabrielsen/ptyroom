@@ -1,5 +1,3 @@
-[workspace]
-members = ["tint-scenes"]
 
 [package]
 name = "term-recorder"
@@ -12,39 +10,40 @@ repository = "https://github.com/corygabrielsen/tint-recorder"
 readme = "README.md"
 keywords = ["terminal", "pty", "asciinema", "recording", "cli"]
 categories = ["command-line-utilities", "development-tools"]
-
-[lints.clippy]
-pedantic = { level = "deny", priority = -1 }
+[workspace]
+members = ["tint-scenes"]
 
 [lib]
 name = "term_recorder"
 path = "src/lib.rs"
 
 # Generic pipeline binaries:
-# - encode, paint, stitch, compare_snapshots, inspect — auto-discovered
-#   from src/bin/<name>.rs.
+# - encode, paint, snapshot, stitch, compare_snapshots, inspect —
+#   auto-discovered from src/bin/<name>.rs.
 # - stress-child — explicit because the test integration uses the
 #   hyphenated form via env!("CARGO_BIN_EXE_stress-child").
-# Tint-coupled scene + verify + pipeline-test + recorder_perf binaries
-# live in the sibling `tint-recorder-scenes` crate.
+# Consumer-coupled scene + verify + pipeline-test + recorder_perf
+# binaries live in the sibling `tint-scenes` crate.
 
 [[bin]]
 name = "stress-child"
 path = "src/bin/stress_child.rs"
 
 [dependencies]
+ab_glyph = "0.2"
 anyhow = "1"
-clap = { version = "4", features = ["derive", "env"] }
+clap = { version = "4", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+nix = { version = "0.31", features = ["fs", "ioctl", "poll", "process", "signal", "term"] }
 rayon = "1"
+regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-regex = "1"
-image = { version = "0.25", default-features = false, features = ["png"] }
-ab_glyph = "0.2"
-nix = { version = "0.31", features = ["fs", "ioctl", "poll", "process", "signal", "term"] }
 tempfile = "3"
-sha2 = "0.10"
 vt100 = "0.16.2"
+
+[lints.clippy]
+pedantic = { level = "deny", priority = -1 }
 
 [profile.release]
 opt-level = 3

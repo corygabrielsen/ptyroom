@@ -1,0 +1,64 @@
+# Pre-commit hooks configuration
+# See https://pre-commit.com for more information
+#
+# Install hooks: pre-commit install
+# Run manually:  pre-commit run --all-files
+# Skip hooks:    git commit --no-verify
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      # Block commits to branches that don't follow the
+      # Conventional Commits pattern documented in the sibling tint
+      # repos' CONTRIBUTING.md. `master` and detached HEAD are exempt
+      # — `master` matches the regex's escape clause; detached HEAD
+      # makes the hook's `git symbolic-ref` call fail and the hook
+      # treats that as "not on a branch" and silently passes.
+      - id: no-commit-to-branch
+        args:
+          - "--pattern=^(?!(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)/[a-z0-9-]+$|master$).*$"
+      - id: check-added-large-files
+      - id: check-case-conflict
+      - id: check-executables-have-shebangs
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: detect-private-key
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: trailing-whitespace
+
+  # Local hooks: Rust workspace lints. Mirror `make lint` exactly so a
+  # green pre-commit and a green CI agree by construction.
+  # Tools required (one-time install):
+  #   cargo install cargo-sort cargo-machete
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt --check
+        entry: cargo fmt --all -- --check
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy --workspace --all-targets -- -D warnings
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: cargo-sort
+        name: cargo sort --check
+        entry: cargo sort --workspace --check
+        language: system
+        files: ^(.*/)?Cargo\.toml$
+        pass_filenames: false
+
+      - id: cargo-machete
+        name: cargo machete
+        entry: cargo machete
+        language: system
+        files: ^(.*/)?Cargo\.toml$
+        pass_filenames: false
