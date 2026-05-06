@@ -226,10 +226,25 @@ fn encode_mp4(req: &EncodeRequest, concat_path: &Path) -> anyhow::Result<()> {
 }
 
 fn run_ffmpeg(cmd: &mut Command) -> anyhow::Result<()> {
-    eprintln!("$ {cmd:?}");
-    let status = cmd.status()?;
-    if !status.success() {
-        anyhow::bail!("ffmpeg exited with status {status}");
+    // Silence ffmpeg's banner + per-frame chatter unless the user
+    // opted into verbose mode. Pass `-loglevel error` so real errors
+    // still reach stderr; if anything goes wrong we re-emit the
+    // captured output below.
+    let verbose = std::env::var_os("TRACER_VERBOSE").is_some_and(|v| !v.is_empty());
+    if verbose {
+        eprintln!("$ {cmd:?}");
+    } else {
+        cmd.arg("-loglevel").arg("error");
+    }
+    let output = cmd.output()?;
+    if !output.status.success() {
+        // Surface ffmpeg's own diagnostics on failure even in quiet mode.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "ffmpeg exited with status {}: {}",
+            output.status,
+            stderr.trim()
+        );
     }
     Ok(())
 }

@@ -1,5 +1,5 @@
-//! `verify` subcommand: re-render a cast and check it matches a receipt,
-//! optionally also re-checking a behavioral spec the receipt attests.
+//! `verify` subcommand: re-render a trace and check it matches a witness,
+//! optionally also re-checking a behavioral contract the witness attests.
 
 use std::path::PathBuf;
 
@@ -7,25 +7,25 @@ use tracer::witness::{VerifyOutcome, Witness};
 
 #[derive(clap::Args)]
 pub struct Args {
-    /// Path to the receipt JSON.
+    /// Path to the witness JSON.
     #[arg(long)]
-    receipt: PathBuf,
-    /// Path to the input cast file the receipt claims to describe.
+    witness: PathBuf,
+    /// Path to the input trace file the witness claims to describe.
     #[arg(long)]
-    cast: PathBuf,
-    /// Optional spec file. Required when the receipt carries a
-    /// `contract_sha256` claim — the spec hash must match and every
+    trace: PathBuf,
+    /// Optional contract file. Required when the witness carries a
+    /// `contract_sha256` claim — the contract hash must match and every
     /// predicate must pass.
     #[arg(long)]
-    spec: Option<PathBuf>,
+    contract: Option<PathBuf>,
 }
 
-/// Returns true when the receipt's claims are all confirmed.
+/// Returns true when the witness's claims are all confirmed.
 pub fn run(args: &Args) -> anyhow::Result<bool> {
-    let receipt = Witness::read(&args.receipt)?;
-    let outcome = match &args.spec {
-        Some(spec_path) => receipt.verify_with_spec(&args.cast, spec_path)?,
-        None => receipt.verify(&args.cast)?,
+    let witness = Witness::read(&args.witness)?;
+    let outcome = match &args.contract {
+        Some(contract_path) => witness.verify_with_spec(&args.trace, contract_path)?,
+        None => witness.verify(&args.trace)?,
     };
     println!("{outcome}");
     Ok(matches!(outcome, VerifyOutcome::Match))

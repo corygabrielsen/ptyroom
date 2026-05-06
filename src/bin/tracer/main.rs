@@ -8,6 +8,7 @@
 mod capture;
 mod check;
 mod compare_frames;
+mod demo;
 mod encode;
 mod inspect;
 mod paint;
@@ -22,10 +23,18 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(version, about = "tracer pipeline tools")]
+#[command(
+    version,
+    about = "tracer — deterministic terminal-session recorder",
+    long_about = "Run with no subcommand for the full demo flow: capture a live\n\
+                  terminal session, render it to a GIF, produce a witness, open\n\
+                  the GIF. Subcommands expose individual stages."
+)]
 struct Cli {
+    /// Subcommand to run. Omit for the bare `tracer` demo flow:
+    /// capture → render → witness → open the GIF.
     #[command(subcommand)]
-    cmd: Cmd,
+    cmd: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
@@ -68,13 +77,14 @@ enum DebugCmd {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result: anyhow::Result<ExitCode> = match cli.cmd {
-        Cmd::Capture(args) => capture::run(args).map(|()| ExitCode::SUCCESS),
-        Cmd::Run(args) => run::run(&args).map(|()| ExitCode::SUCCESS),
-        Cmd::Render(args) => render::run(&args).map(|()| ExitCode::SUCCESS),
-        Cmd::Stitch(args) => stitch::run(&args).map(|()| ExitCode::SUCCESS),
-        Cmd::Verify(args) => verify::run(&args).map(bool_to_exit),
-        Cmd::Check(args) => check::run(&args).map(bool_to_exit),
-        Cmd::Debug(sub) => match sub {
+        None => demo::run().map(|()| ExitCode::SUCCESS),
+        Some(Cmd::Capture(args)) => capture::run(args).map(|()| ExitCode::SUCCESS),
+        Some(Cmd::Run(args)) => run::run(&args).map(|()| ExitCode::SUCCESS),
+        Some(Cmd::Render(args)) => render::run(&args).map(|()| ExitCode::SUCCESS),
+        Some(Cmd::Stitch(args)) => stitch::run(&args).map(|()| ExitCode::SUCCESS),
+        Some(Cmd::Verify(args)) => verify::run(&args).map(bool_to_exit),
+        Some(Cmd::Check(args)) => check::run(&args).map(bool_to_exit),
+        Some(Cmd::Debug(sub)) => match sub {
             DebugCmd::Replay(args) => replay::run(&args).map(|()| ExitCode::SUCCESS),
             DebugCmd::Paint(args) => paint::run(&args).map(|()| ExitCode::SUCCESS),
             DebugCmd::Encode(args) => encode::run(args).map(|()| ExitCode::SUCCESS),
