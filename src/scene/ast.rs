@@ -78,7 +78,16 @@ pub enum Action {
         timeout: Option<Duration>,
         label: Option<String>,
     },
-    Sleep(Duration),
+    /// Advance virtual playback time, optionally with a wall-clock
+    /// settle window during which incoming PTY bytes are captured into
+    /// the cast. `Sleep 800ms` is playback-only (zero settle); `Sleep
+    /// 800ms Settle 100ms` advances 800ms of playback AND captures
+    /// bytes for 100ms of real time — needed for TUI scenes where the
+    /// child draws frames asynchronously after a key press.
+    Sleep {
+        dwell: Duration,
+        settle: Duration,
+    },
     Mark(String),
     Present(Vec<u8>),
 }

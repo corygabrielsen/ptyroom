@@ -112,11 +112,11 @@ fn execute_action(
             let label_ref = label.as_deref().unwrap_or("WaitFor");
             wait_for_regex(rec, pattern, timeout, label_ref)?;
         }
-        Action::Sleep(dur) => {
-            // Sleep extends the most recent event's dwell. The
-            // recorder's `dwell` method handles both record-time and
-            // beat semantics correctly.
-            rec.dwell(*dur, Duration::ZERO)?;
+        Action::Sleep { dwell, settle } => {
+            // Sleep advances playback by `dwell`. Optional `settle` is
+            // wall-clock time to capture incoming PTY bytes (TUI scenes
+            // need this so picker/menu draws land in the cast).
+            rec.dwell(*dwell, *settle)?;
         }
         Action::Mark(label) => {
             // Markers are diagnostic-only; record at the current

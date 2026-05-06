@@ -277,8 +277,8 @@ fn parse_body_line(
             ));
         }
         "Sleep" => {
-            let dur = expect_one_duration(line)?;
-            out.push(Located::new(lineno, Action::Sleep(dur)));
+            let (dwell, settle) = parse_sleep_args(line)?;
+            out.push(Located::new(lineno, Action::Sleep { dwell, settle }));
         }
         "Mark" => {
             let label = expect_one_string_text(line)?;
@@ -318,6 +318,33 @@ fn parse_body_line(
         other => bail!("scene:{lineno}: unknown verb `{other}`"),
     }
     Ok(())
+}
+
+fn parse_sleep_args(line: &Line) -> anyhow::Result<(Duration, Duration)> {
+    let lineno = line.lineno;
+    let mut iter = line.args.iter();
+    let dwell_tok = iter
+        .next()
+        .ok_or_else(|| anyhow!("scene:{lineno}: Sleep expects a duration"))?;
+    let Token::Duration(dwell) = dwell_tok else {
+        bail!("scene:{lineno}: Sleep's first arg must be a duration");
+    };
+    let mut settle = Duration::ZERO;
+    while let Some(tok) = iter.next() {
+        match tok {
+            Token::Ident(name) if name == "Settle" => {
+                let v = iter
+                    .next()
+                    .ok_or_else(|| anyhow!("scene:{lineno}: Sleep Settle needs a duration"))?;
+                let Token::Duration(d) = v else {
+                    bail!("scene:{lineno}: Sleep Settle expects a duration");
+                };
+                settle = *d;
+            }
+            other => bail!("scene:{lineno}: unexpected Sleep arg {other:?}"),
+        }
+    }
+    Ok((*dwell, settle))
 }
 
 fn parse_press_args(line: &Line) -> anyhow::Result<(Key, u32, Option<Duration>)> {
@@ -661,5 +688,25 @@ mod tests {
             err.to_string().contains("at least one argv element"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn sleep_without_settle_defaults_to_zero() {
+        let scene = p("Version 1\nSetSpawn \"bash\"\nSleep 500ms\n");
+        let Action::Sleep { dwell, settle } = &scene.body[0].value else {
+            panic!();
+        };
+        assert_eq!(*dwell, Duration::from_millis(500));
+        assert_eq!(*settle, Duration::ZERO);
+    }
+
+    #[test]
+    fn sleep_with_settle_captures_both() {
+        let scene = p("Version 1\nSetSpawn \"bash\"\nSleep 800ms Settle 600ms\n");
+        let Action::Sleep { dwell, settle } = &scene.body[0].value else {
+            panic!();
+        };
+        assert_eq!(*dwell, Duration::from_millis(800));
+        assert_eq!(*settle, Duration::from_millis(600));
     }
 }
