@@ -133,40 +133,27 @@ verifiers (provenance and behavior).
 ## Pipeline
 
 ```
-scenes/<scene>.rs       → cast    PTY driver + scripted input + OSC responder
-src/snapshot_replay     → JSON    vt100 + OSC tracker → per-frame snapshots
-src/paint.rs            → PNGs    JSON + bundled font → image
-src/encode.rs           → GIF/MP4 ffmpeg concat-demuxer
-src/verify.rs                     per-scene contract on rendered frames
+Recorder API           → cast    PTY driver + scripted input + OSC responder
+src/snapshot_replay    → JSON    vt100 + OSC tracker → per-frame snapshots
+src/paint.rs           → PNGs    JSON + bundled font → image
+src/encode.rs          → GIF/MP4 ffmpeg concat-demuxer
 ```
-
-## Workspace layout
-
-Two crates:
-
-- `term-recorder` (this directory) — generic recorder library + unified CLI binary. No domain coupling.
-- `tint-scenes/` — tint-specific scene helpers, contract registry, pipeline orchestration. Scene binaries (`cli`, `picker`, `cd_hook`, `custom_theme`, `demo_full`, …), `verify`, `pipeline-test`, `recorder_perf`. Depends on `term-recorder`.
-
-The crate boundary is the architectural seam: nothing in `term-recorder/src/` imports anything domain-specific. Reusing the recorder against another interactive process is a `term-recorder = { path = ... }` dependency away.
 
 ## Setup
 
 ```bash
-make setup
+cargo build --release
+cargo test
 ```
 
-Requires `cargo`, `docker`, and `ffmpeg`.
+Requires `cargo` (and `ffmpeg` for encode-stage tests). Recording into a
+sandboxed shell additionally needs `docker`.
 
-## Run
-
-```bash
-make all                # render every demo
-make demo-walkthrough   # composite walkthrough (cli + cd_hook + picker + custom_theme)
-make demo-features      # per-feature demos (one each, recorded in parallel)
-make verify             # re-run contract against existing snapshots
-```
-
-See `Makefile` for the full target list.
+A consumer crate that drives `term-recorder` against the [tint](https://github.com/corygabrielsen/tint)
+CLI lives at `../tint-scenes/` (sibling repo). It is the reference example
+of: scripted scene binaries, the contract registry, the pipeline-test
+orchestrator, and the docker-based recording image. Depends on this crate
+via `term-recorder = { path = "../term-recorder" }`.
 
 ## Regression gate
 
@@ -218,8 +205,9 @@ for syncing on a known byte pattern. Use presentation helpers only for
 output that does not affect shell state (comments, blank prompt lines,
 clear boundaries).
 
-Working examples live in `examples/` and the `tint-scenes/scenes/`
-consumer crate.
+Working examples live in `examples/`. A worked-out consumer with
+scripted scenes, contract verification, and a docker-based recording
+image lives in the sibling `tint-scenes/` repo.
 
 ## License
 
