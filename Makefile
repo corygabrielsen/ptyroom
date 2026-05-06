@@ -26,13 +26,12 @@ FEATURE_SCENES := cli picker cd_hook custom_theme
 # and demo-features targets pin FONT_SIZE=40 internally for crisp output.
 FONT_SIZE ?= 14
 
-# Host requirements: cargo (build scene/render binaries), docker (recording),
-# node/npm (xterm snapshot replay), and ffmpeg (encoding).
+# Host requirements: cargo (build everything), docker (recording),
+# and ffmpeg (encoding). Snapshot replay runs in-process via the
+# vt100 crate — no Node/npm involvement.
 setup:
 	@command -v cargo  >/dev/null && echo "cargo:  $$(cargo --version)"  || (echo "missing cargo"  && exit 1)
 	@command -v docker >/dev/null && echo "docker: $$(docker --version)" || (echo "missing docker" && exit 1)
-	@command -v node   >/dev/null && echo "node:   $$(node --version)"   || (echo "missing node"   && exit 1)
-	@command -v npm    >/dev/null && echo "npm:    $$(npm --version)"    || (echo "missing npm"    && exit 1)
 	@command -v ffmpeg >/dev/null && echo "ffmpeg: $$(ffmpeg -version | head -1)" || (echo "missing ffmpeg" && exit 1)
 
 # Compile every host-side binary across both workspace crates:
@@ -76,7 +75,7 @@ demo-walkthrough: build recorder-warm
 	TERM_RECORDER_CONTAINER=$(WARM_CONTAINER) ./target/release/demo_full --cast assets/demo_full.cast
 	@echo "=== paint at FONT_SIZE=40 ==="
 	rm -rf assets/snapshots assets/frames
-	./node_modules/.bin/tsx ./renderer/snapshot.ts assets/demo_full.cast assets/snapshots
+	./target/release/snapshot assets/demo_full.cast assets/snapshots
 	./target/release/paint --font-size 40 assets/snapshots assets/frames
 	@echo "=== parallel encode: mp4 native + scaled gif ==="
 	./target/release/encode assets/frames assets/snapshots/timing.json assets/demo_full.mp4 & \
@@ -111,7 +110,7 @@ picker-timeline-prototype: build build-image
 	    --trace assets/picker_timeline.trace.json
 	@echo "=== snapshot + paint ==="
 	rm -rf assets/picker_timeline_snapshots assets/picker_timeline_frames
-	./node_modules/.bin/tsx ./renderer/snapshot.ts assets/picker_timeline.cast assets/picker_timeline_snapshots
+	./target/release/snapshot assets/picker_timeline.cast assets/picker_timeline_snapshots
 	./target/release/paint --font-size 28 assets/picker_timeline_snapshots assets/picker_timeline_frames
 	@echo "=== encode: CPU paint + libx264, CPU paint + NVENC, GIF ==="
 	./target/release/encode assets/picker_timeline_frames assets/picker_timeline_snapshots/timing.json assets/picker_timeline_libx264.mp4 --mp4-encoder libx264
@@ -139,7 +138,7 @@ recorder-perf: build recorder-warm
 # default FONT_SIZE so timings reflect the dev-loop render path.
 #
 # - bench-tiny: ~3s of cast time, isolates fixed pipeline overhead
-#   (tsx startup, paint init, ffmpeg cold-start, docker run setup).
+#   (snapshot replay init, paint init, ffmpeg cold-start, docker run setup).
 # - bench-churn: ~12s of rapid theme cycling, stresses per-frame work
 #   (palette diversity for GIF, inter-frame deltas for MP4).
 # - bench-subloops: 4 uniform subloops sequentially. Sequential
@@ -186,7 +185,7 @@ bench-subloops-parallel: build build-image
 	    assets/bench_subloops_3.cast
 	@echo "=== render ==="
 	rm -rf assets/snapshots assets/frames
-	./node_modules/.bin/tsx ./renderer/snapshot.ts assets/bench_subloops.cast assets/snapshots
+	./target/release/snapshot assets/bench_subloops.cast assets/snapshots
 	./target/release/paint --font-size $(FONT_SIZE) assets/snapshots assets/frames
 	./target/release/encode assets/frames assets/snapshots/timing.json assets/bench_subloops.gif
 	./target/release/verify bench_subloops --snapshots-dir assets/snapshots
@@ -205,13 +204,12 @@ all-scenes: build build-image
 # Two phases. Recording stage runs the scene binary on the host, which
 # drives docker for the bash session and writes the cast to assets/.
 # Post-recording (snapshot replay → paint → encode → verify) runs
-# entirely on the host: tsx + target/release/ binaries + ffmpeg are
-# all available without docker, so eliminating the second container
-# saves the docker run startup overhead per render.
+# entirely on the host as Rust binaries + ffmpeg, so eliminating the
+# second container saves the docker run startup overhead per render.
 render:
 	./target/release/$(SCENE) --cast $(CAST)
 	rm -rf assets/snapshots assets/frames
-	./node_modules/.bin/tsx ./renderer/snapshot.ts $(CAST) assets/snapshots
+	./target/release/snapshot $(CAST) assets/snapshots
 	./target/release/paint --font-size $(FONT_SIZE) assets/snapshots assets/frames
 	./target/release/encode assets/frames assets/snapshots/timing.json $(OUT)
 	./target/release/verify $(SCENE) --snapshots-dir assets/snapshots

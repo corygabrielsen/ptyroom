@@ -11,7 +11,7 @@
 //! files; nothing here knows or cares about themes or pickers.
 //!
 //! Working directory must be the project root (where `Makefile`,
-//! `assets/`, `node_modules/`, and `target/` live).
+//! `assets/` and `target/` live).
 
 use std::fs;
 use std::io::Read;
@@ -152,11 +152,10 @@ pub fn run_pipeline(scene: &str, opts: &PipelineOptions) -> anyhow::Result<()> {
             .env("TERM_RECORDER_CONTAINER", &opts.warm_container),
     )?;
 
-    // 2. Snapshot. The TS replay driver consumes the cast and emits
+    // 2. Snapshot. vt100 + OscTracker consume the cast and emit
     //    per-frame JSON + timing.json.
     run_quiet(
-        Command::new("./node_modules/.bin/tsx")
-            .arg("./renderer/snapshot.ts")
+        Command::new("./target/release/snapshot")
             .arg(&cast)
             .arg(&snaps),
     )?;

@@ -16,11 +16,11 @@ The crate boundary is the architectural seam: nothing in `term-recorder/src/` im
 ## Pipeline
 
 ```
-scenes/<scene>.rs   → cast    PTY driver + scripted input + OSC responder
-renderer/snapshot.ts → frames  @xterm/headless replay → per-frame JSON
-src/paint.rs        → PNGs    JSON + bundled font → image
-src/encode.rs       → GIF/MP4 ffmpeg concat-demuxer
-src/verify.rs                 per-scene contract on rendered frames
+scenes/<scene>.rs       → cast    PTY driver + scripted input + OSC responder
+src/snapshot_replay     → JSON    vt100 + OSC tracker → per-frame snapshots
+src/paint.rs            → PNGs    JSON + bundled font → image
+src/encode.rs           → GIF/MP4 ffmpeg concat-demuxer
+src/verify.rs                     per-scene contract on rendered frames
 ```
 
 ## Setup
@@ -29,7 +29,7 @@ src/verify.rs                 per-scene contract on rendered frames
 make setup
 ```
 
-Requires `cargo`, `docker`, Node/npm, and `ffmpeg`.
+Requires `cargo`, `docker`, and `ffmpeg`.
 
 ## Run
 
@@ -85,10 +85,6 @@ where tests draw their dependencies.
 Scenes are small Rust binaries (in a consumer crate) that drive a `Recorder`. Use `Recorder::spawn` for an arbitrary local process; use `Recorder::start` for a Docker-backed shell session. Prefer content-aware gates (`send_raw_wait_for`, plus consumer-defined helpers like `wait_for_prompt`, `ps2_enter`) over fixed sleeps and bare `Key::Enter` — the recorder's default settle is microseconds and not a substitute for syncing on a known byte pattern. Use presentation helpers only for output that does not affect shell state (comments, blank prompt lines, clear boundaries).
 
 Working examples live in `examples/` and the `tint-scenes/scenes/` consumer crate.
-
-## Why a TypeScript shim
-
-`@xterm/headless` is the only mature terminal emulator with proper OSC 11 support. Everything else is Rust.
 
 ## License
 

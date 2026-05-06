@@ -30,6 +30,7 @@ pub mod raw_log;
 pub mod recorder;
 pub mod recording;
 pub mod snapshot;
+pub mod snapshot_replay;
 pub mod timeline;
 pub mod verified_trace;
 pub mod verify;

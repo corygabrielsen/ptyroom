@@ -145,14 +145,22 @@ impl<'de> Deserialize<'de> for HexColor {
 /// - `null`                        → [`CellColor::Default`]
 /// - `"#rrggbb"`                   → [`CellColor::Rgb`]
 /// - `{ "palette": N, "fallback": "#rrggbb" | null }` → [`CellColor::Palette`]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum CellColor {
+    #[default]
     Default,
     Rgb(HexColor),
     Palette { idx: u8, fallback: Option<HexColor> },
 }
 
 impl CellColor {
+    /// True if this color is [`CellColor::Default`]. Used by serde
+    /// `skip_serializing_if` on per-cell fg/bg fields.
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        matches!(self, CellColor::Default)
+    }
+
     /// Resolve this color to a concrete RGB value, given the snapshot's
     /// terminal default and OSC 4 palette overrides. Falls back to the
     /// xterm default 16-color palette for indices 0-15 if no override is

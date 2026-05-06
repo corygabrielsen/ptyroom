@@ -8,11 +8,11 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-/// One entry of the `timing.json` written by `snapshot.ts` (and its Rust
-/// successor).
-#[derive(Debug, Clone, Deserialize)]
+/// One entry of the `timing.json` produced by the snapshot stage and
+/// consumed by the encode stage.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimingEntry {
     pub frame: String,
     pub dwell_ms: u32,

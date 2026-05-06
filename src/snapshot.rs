@@ -15,28 +15,75 @@ use serde::{Deserialize, Serialize};
 
 use crate::color::{CellColor, HexColor, PaletteOverrides};
 
-/// A single terminal cell.
+/// A single terminal cell. Sparsely serialized: any field equal to its
+/// default is elided from the JSON output, so the wire form for a
+/// fully-default cell is `{}`. Producers must collapse fully-default
+/// cells to `None` (see [`Grid`]) so the wire form for an untouched
+/// position is the shorter `null`.
+///
+/// The struct field order is the canonical JSON field order
+/// (serde_json honors derive order). Do not reorder fields without
+/// re-blessing goldens.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Cell {
     /// The grapheme. Usually one codepoint; combining marks land here too.
+    /// Default is a single space — equivalent to "blank cell."
+    #[serde(default = "default_ch", skip_serializing_if = "is_default_ch")]
     pub ch: String,
+    #[serde(default, skip_serializing_if = "CellColor::is_default")]
     pub fg: CellColor,
+    #[serde(default, skip_serializing_if = "CellColor::is_default")]
     pub bg: CellColor,
     /// Boolean attribute flags, encoded as 0/1 to mirror the JSON wire format.
     /// Use the `is_*` accessors for typed access.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
     pub bold: u8,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
     pub dim: u8,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
     pub italic: u8,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
     pub underline: u8,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
     pub inverse: u8,
 }
 
+fn default_ch() -> String {
+    " ".into()
+}
+
+fn is_default_ch(s: &str) -> bool {
+    s == " "
+}
+
+fn is_zero_u8(n: &u8) -> bool {
+    *n == 0
+}
+
+impl Default for Cell {
+    fn default() -> Self {
+        Self {
+            ch: default_ch(),
+            fg: CellColor::Default,
+            bg: CellColor::Default,
+            bold: 0,
+            dim: 0,
+            italic: 0,
+            underline: 0,
+            inverse: 0,
+        }
+    }
+}
+
 impl Cell {
+    /// True if every field equals [`Cell::default`]. Producers should
+    /// collapse such cells to [`None`] in the grid so the JSON wire
+    /// form is the shorter `null` rather than `{}`.
+    #[must_use]
+    pub fn is_fully_default(&self) -> bool {
+        self == &Cell::default()
+    }
+
     #[must_use]
     pub fn is_bold(&self) -> bool {
         self.bold != 0
@@ -130,9 +177,11 @@ impl Snapshot {
     }
 }
 
-/// Rectangular grid of optional cells. `None` is rare — empty cells where
-/// the terminal emulator has no content. Snapshots from `@xterm/headless`
-/// usually fill all cells with at least a space, but we accept absence.
+/// Rectangular grid of optional cells. `None` is the canonical
+/// representation of a cell carrying no state at all — no character,
+/// no fg/bg, no SGR attrs. Producers must collapse fully-default
+/// cells to `None` (see [`Cell::is_fully_default`]) so the JSON
+/// wire form stays compact and emulator-stable.
 ///
 /// The inner `Vec` is private — every `Grid` either came from the
 /// validating [`Grid::new`] constructor or from JSON deserialization that
@@ -294,6 +343,51 @@ mod tests {
             grid: g,
         };
         assert_eq!(s.row_text(0).unwrap(), "a b");
+    }
+
+    #[test]
+    fn cell_default_serializes_to_empty_object() {
+        let s = serde_json::to_string(&Cell::default()).unwrap();
+        assert_eq!(s, "{}");
+    }
+
+    #[test]
+    fn cell_default_round_trips_from_empty_object() {
+        let c: Cell = serde_json::from_str("{}").unwrap();
+        assert_eq!(c, Cell::default());
+    }
+
+    #[test]
+    fn cell_default_round_trips_from_legacy_dense_form() {
+        // Dense form is what older snapshot drivers produced. The new
+        // schema must continue to deserialize it identically so old
+        // goldens keep working if anyone re-runs against them.
+        let dense = r#"{"ch":" ","fg":null,"bg":null,"bold":0,"dim":0,"italic":0,"underline":0,"inverse":0}"#;
+        let c: Cell = serde_json::from_str(dense).unwrap();
+        assert_eq!(c, Cell::default());
+    }
+
+    #[test]
+    fn cell_with_only_bg_serializes_sparsely() {
+        let c = Cell {
+            ch: " ".into(),
+            bg: CellColor::Rgb(HexColor::from_rgb(0x12, 0x34, 0x56)),
+            ..Cell::default()
+        };
+        let s = serde_json::to_string(&c).unwrap();
+        assert_eq!(s, "{\"bg\":\"#123456\"}");
+    }
+
+    #[test]
+    fn fully_default_cell_is_fully_default() {
+        assert!(Cell::default().is_fully_default());
+        assert!(
+            !Cell {
+                ch: "a".into(),
+                ..Cell::default()
+            }
+            .is_fully_default()
+        );
     }
 
     #[test]
