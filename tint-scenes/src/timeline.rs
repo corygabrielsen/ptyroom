@@ -1,8 +1,9 @@
-//! Presentation timing policy.
+//! Tint-scene presentation timing policy.
 //!
-//! The proof-backed recorder owns raw evidence, semantic verification, and
-//! monotonic cast compilation. This module is intentionally smaller: it names
-//! viewer-facing beats and maps them to deterministic presentation dwell.
+//! Names viewer-facing beats specific to the tint demo set (mostly
+//! picker UI events) and maps them to deterministic presentation
+//! dwell. Lives in `tint-scenes` rather than the generic `term-recorder`
+//! library because the beat names are tint-specific.
 
 use std::time::Duration;
 

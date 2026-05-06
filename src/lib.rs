@@ -31,7 +31,6 @@ pub mod recording;
 mod render;
 pub mod snapshot;
 pub mod snapshot_replay;
-pub mod timeline;
 pub mod verify;
 
 pub use render::{Render, render};

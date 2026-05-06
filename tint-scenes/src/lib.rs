@@ -7,7 +7,9 @@
 //! - [`contracts`] — per-scene verify check registry.
 //! - [`pipeline_test`] — end-to-end pipeline orchestration (record →
 //!   snapshot → paint → encode → verify) for the tint scene set.
+//! - [`timeline`] — tint-scene presentation beats and dwell policy.
 
 pub mod contracts;
 pub mod pipeline_test;
 pub mod scenes;
+pub mod timeline;
