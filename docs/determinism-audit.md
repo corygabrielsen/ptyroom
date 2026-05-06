@@ -130,31 +130,42 @@ pub struct ToolIdentity {
     pub ffmpeg_version: String,          // first line of `ffmpeg -version`
     pub font_sha256: String,             // hash of bundled DejaVu Sans Mono
     pub recorder_sha256: Option<String>, // SHA-256 of the recorder binary itself
+    pub ffmpeg_sha256:   Option<String>, // SHA-256 of the ffmpeg binary on PATH
 }
 ```
 
-**Adequacy:** these five pin every variance source that affects
-output bytes. ffmpeg version captures libx264 + libfreetype +
-container muxer behavior; font hash captures glyph rasterization
-input; `recorder_sha256` pins the exact binary, closing the gap
-where two builds at the same `Cargo.toml` version with different
-`Cargo.lock` patch versions could in principle diverge.
+**Adequacy:** these six pin every variance source that affects
+output bytes. The `_version` fields are human-readable provenance;
+the `_sha256` fields close the gap where two builds with the same
+version string but different patches could diverge:
 
-`recorder_sha256` is `Option<String>` for two reasons:
+- `font_sha256` — bundled (`include_bytes!`); always known.
+- `recorder_sha256` — hash of `std::env::current_exe()`, populated
+  best-effort. Closes the gap where two builds at the same
+  `Cargo.toml` version with different `Cargo.lock` patch versions
+  could in principle diverge.
+- `ffmpeg_sha256` — hash of the `ffmpeg` binary resolved via PATH
+  (mirrors what `Command::new("ffmpeg")` invokes), populated
+  best-effort. Closes the symmetric gap where two ffmpeg builds
+  share a release tag but differ in patches (e.g., distro
+  backports, custom libx264 builds).
+
+Both binary hashes are `Option<String>` for two reasons:
 
 1. **Back-compat:** legacy receipts written before the field
    existed continue to parse via `#[serde(default)]`.
-2. **Best-effort population:** if `std::env::current_exe()` fails
-   (rare, but possible if the binary is unlinked under us), the
-   recorder still emits a receipt — just without the field. The
-   verifier symmetrically skips comparison when either side lacks
-   the hash.
+2. **Best-effort population:** if `std::env::current_exe()` fails,
+   or PATH is unset / `ffmpeg` is not on it / the resolved file
+   is unreadable, the recorder still emits a receipt — just
+   without that field. The verifier symmetrically skips comparison
+   when either side lacks the hash (Scott-flat: `None` matches
+   anything).
 
-When both sides have a hash and they disagree, `Receipt::verify`
-returns `EnvironmentDiffers { field: "tool.recorder_sha256", ... }`
+When both sides have a given hash and they disagree, `Receipt::verify`
+returns `EnvironmentDiffers { field: "tool.<name>_sha256", ... }`
 before the re-render even runs. For strict blockchain attestation,
-two nodes with different binary hashes are rejected up front
-instead of failing on `OutputDiffers` later.
+two nodes with different binary hashes (recorder OR ffmpeg) are
+rejected up front instead of failing on `OutputDiffers` later.
 
 ## Empirical confirmation
 
@@ -175,17 +186,17 @@ SHA-256 across N=10), confirming that determinism survives the
 
 ## Summary
 
-| Layer            | Determinism source                               | Verified      |
-| ---------------- | ------------------------------------------------ | ------------- |
-| Cast parse       | `serde_json` + `Vec`/`BTreeMap`                  | yes           |
-| Snapshot replay  | vt100 state machine + `BTreeMap`                 | yes           |
-| Paint            | pure rasterization, byte-stability test          | yes (test)    |
-| Encode (libx264) | pinned ffmpeg flags incl. `-threads 1`           | yes           |
-| Encode (NVENC)   | non-deterministic by design; refused in verify   | yes (2f802a8) |
-| Encode (GIF)     | pinned palettegen + Bayer dither                 | yes           |
-| Concat file      | deterministic input ordering                     | yes           |
-| Cast write       | sorted env, ordered events                       | yes           |
-| Tool identity    | name + version + ffmpeg + font + recorder_sha256 | yes (e3d5a8a) |
+| Layer            | Determinism source                                               | Verified      |
+| ---------------- | ---------------------------------------------------------------- | ------------- |
+| Cast parse       | `serde_json` + `Vec`/`BTreeMap`                                  | yes           |
+| Snapshot replay  | vt100 state machine + `BTreeMap`                                 | yes           |
+| Paint            | pure rasterization, byte-stability test                          | yes (test)    |
+| Encode (libx264) | pinned ffmpeg flags incl. `-threads 1`                           | yes           |
+| Encode (NVENC)   | non-deterministic by design; refused in verify                   | yes (2f802a8) |
+| Encode (GIF)     | pinned palettegen + Bayer dither                                 | yes           |
+| Concat file      | deterministic input ordering                                     | yes           |
+| Cast write       | sorted env, ordered events                                       | yes           |
+| Tool identity    | name + version + ffmpeg + font + recorder_sha256 + ffmpeg_sha256 | yes           |
 
 Every layer has a strong determinism story. The libx264 path, GIF
 path, snapshot replay, paint, and cast serialization are all byte-
@@ -194,4 +205,5 @@ flagged non-portable, and **`Receipt::verify` now refuses NVENC
 receipts for `.mp4` outputs up front with the
 `EncoderNotVerifiable { encoder }` outcome (commit 2f802a8)** —
 no wasted re-render, clear failure mode. Tool identity captures
-every variance source including the recorder binary's own SHA-256.
+every variance source including the recorder binary's own SHA-256
+and the resolved ffmpeg binary's SHA-256.
