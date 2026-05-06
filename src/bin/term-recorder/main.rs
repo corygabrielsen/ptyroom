@@ -5,6 +5,7 @@ mod compare_snapshots;
 mod encode;
 mod inspect;
 mod paint;
+mod record;
 mod render;
 mod snapshot;
 mod stitch;
@@ -23,6 +24,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Run a `.scene` file → cast (or chain through render to MP4/GIF).
+    Record(record::Args),
     /// Cast → MP4/GIF in one call (with optional reproducibility receipt).
     Render(render::Args),
     /// Verify a previously-issued reproducibility receipt by re-rendering.
@@ -46,6 +49,7 @@ enum Cmd {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result: anyhow::Result<ExitCode> = match cli.cmd {
+        Cmd::Record(args) => record::run(&args).map(|()| ExitCode::SUCCESS),
         Cmd::Render(args) => render::run(&args).map(|()| ExitCode::SUCCESS),
         Cmd::Verify(args) => verify::run(&args).map(|ok| {
             if ok {
