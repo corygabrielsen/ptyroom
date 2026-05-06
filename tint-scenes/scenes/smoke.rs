@@ -2,8 +2,8 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use tint_recorder::recorder::{Key, Recorder, RecorderConfig};
-use tint_recorder_scenes::scenes::ms;
+use term_recorder::recorder::{Key, Recorder, RecorderConfig};
+use tint_scenes::scenes::ms;
 
 #[derive(Parser)]
 struct Args {
@@ -16,7 +16,7 @@ fn main() -> anyhow::Result<()> {
     let mut r = Recorder::start(RecorderConfig {
         cols: 100,
         rows: 30,
-        ..Default::default()
+        ..tint_scenes::scenes::tint_recorder_config()
     })?;
 
     r.dwell(ms(800), ms(600))?;

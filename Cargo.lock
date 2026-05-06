@@ -687,7 +687,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tint-recorder"
+name = "term-recorder"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
@@ -704,7 +704,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tint-recorder-scenes"
+name = "tint-scenes"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -712,7 +712,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "tint-recorder",
+ "term-recorder",
 ]
 
 [[package]]

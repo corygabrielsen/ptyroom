@@ -3,10 +3,36 @@
 //! Adding a scene? Add an entry to [`registry`] *and* to [`SCENES`]. The
 //! lib test `every_scene_has_a_contract` keeps them in sync.
 
-use tint_recorder::color::HexColor;
-use tint_recorder::verify::{
-    Check, Contract, bg_reaches, final_bg_is, no_row_contains, picker_scroll_indicator_visible,
-};
+use term_recorder::color::HexColor;
+use term_recorder::verify::{Check, CheckResult, Contract, bg_reaches, final_bg_is, no_row_contains};
+
+/// Tint-specific check: passes iff some snapshot has a row containing
+/// both `↓` and `more` (the picker's "↓ N more" overflow indicator).
+/// Lives here rather than in the recorder library because the marker
+/// shape is specific to the tint picker UI.
+#[must_use]
+pub fn picker_scroll_indicator_visible() -> Check {
+    Check {
+        name: "picker_scroll_indicator_visible",
+        eval: Box::new(|snaps| {
+            for (i, s) in snaps.iter().enumerate() {
+                for r in 0..s.rows() {
+                    if let Some(text) = s.row_text(r)
+                        && text.contains('↓')
+                        && text.contains("more")
+                    {
+                        return CheckResult::Pass(format!(
+                            "first seen at frame {:04} row {}",
+                            i + 1,
+                            r + 1
+                        ));
+                    }
+                }
+            }
+            CheckResult::Fail("picker scroll indicator (↓ N more) never visible".into())
+        }),
+    }
+}
 
 /// Every scene name the registry knows about. Source of truth for any
 /// "iterate over all scenes" workflow (Makefile `verify-all`, regression

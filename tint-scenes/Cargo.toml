@@ -1,10 +1,10 @@
 [package]
-name = "tint-recorder-scenes"
+name = "tint-scenes"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
-description = "Tint-specific scene helpers, contracts, and pipeline orchestration for tint-recorder."
+description = "Tint-specific scene helpers, contracts, and pipeline orchestration on top of term-recorder."
 repository = "https://github.com/corygabrielsen/tint-recorder"
 publish = false
 
@@ -12,11 +12,11 @@ publish = false
 pedantic = { level = "deny", priority = -1 }
 
 [lib]
-name = "tint_recorder_scenes"
+name = "tint_scenes"
 path = "src/lib.rs"
 
 # Scene binaries. Each one drives a recorded sequence using the
-# tint_recorder library. Custom path because they live under scenes/
+# term_recorder library. Custom path because they live under scenes/
 # rather than src/bin/ to make the scene set discoverable at a glance.
 [[bin]]
 name = "smoke"
@@ -76,7 +76,7 @@ name = "recorder_perf"
 path = "src/bin/recorder_perf.rs"
 
 [dependencies]
-tint-recorder = { path = ".." }
+term-recorder = { path = ".." }
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }

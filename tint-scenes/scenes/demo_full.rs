@@ -14,8 +14,8 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use tint_recorder::recorder::{Recorder, RecorderConfig};
-use tint_recorder_scenes::scenes::{
+use term_recorder::recorder::{Recorder, RecorderConfig};
+use tint_scenes::scenes::{
     lookup_picker_idx, ms, run_cd_hook, run_cli, run_custom_theme, run_feature_subloop, run_picker,
     wait_for_prompt,
 };
@@ -48,7 +48,7 @@ fn main() -> anyhow::Result<()> {
     // Bump if cd_hook clips.
     let mut r = Recorder::start(RecorderConfig {
         rows: 20,
-        ..RecorderConfig::default()
+        ..tint_scenes::scenes::tint_recorder_config()
     })?;
 
     // Initial prompt sync. Cast time stays at zero, but wall-clock capture

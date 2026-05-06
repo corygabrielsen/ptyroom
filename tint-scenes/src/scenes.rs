@@ -7,7 +7,32 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
-use tint_recorder::recorder::{Key, Recorder};
+use term_recorder::recorder::{Key, Recorder, RecorderConfig, ShellProfile};
+
+/// Tint demo PS1: red-yellow-green-cyan letters spelling `tint`.
+#[must_use]
+pub fn tint_shell_profile() -> ShellProfile {
+    ShellProfile {
+        setup_commands: vec!["cd \"$HOME\"".into()],
+        prompt: r"\[\e[31m\]t\[\e[33m\]i\[\e[32m\]n\[\e[36m\]t\[\e[0m\] $ ".into(),
+        clear_on_start: true,
+    }
+}
+
+/// `RecorderConfig` factory that overlays the tint Docker image, warm-
+/// container launcher, and PS1 onto the recorder library's generic
+/// defaults. Scene binaries spread `..tint_recorder_config()` instead
+/// of `..RecorderConfig::default()` so the recorder library doesn't
+/// have to know about tint.
+#[must_use]
+pub fn tint_recorder_config() -> RecorderConfig {
+    RecorderConfig {
+        image: "tint-recorder:demo".into(),
+        warm_command: vec!["tint-recorder-shell".into()],
+        shell: tint_shell_profile(),
+        ..RecorderConfig::default()
+    }
+}
 
 /// Custom palette emitted by `run_custom_theme`. 17 colors after the
 /// `name:bg:fg:` triple — bg/fg/16 ANSI slots. Authentic Matrix:

@@ -9,9 +9,9 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use rayon::prelude::*;
-use tint_recorder::paint::{FONT_BYTES, PaintConfig, Painter};
-use tint_recorder::snapshot::Snapshot;
-use tint_recorder::verify::list_numbered_snapshots;
+use term_recorder::paint::{FONT_BYTES, PaintConfig, Painter};
+use term_recorder::snapshot::Snapshot;
+use term_recorder::verify::list_numbered_snapshots;
 
 #[derive(Parser)]
 struct Args {

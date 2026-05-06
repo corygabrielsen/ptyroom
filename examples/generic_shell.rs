@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use tint_recorder::recorder::{Recorder, RecorderConfig};
+use term_recorder::recorder::{Recorder, RecorderConfig};
 
 fn ms(n: u64) -> Duration {
     Duration::from_millis(n)

@@ -2,7 +2,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
-use tint_recorder::encode::{EncodeRequest, Mp4Encoder, TimingEntry, encode};
+use term_recorder::encode::{EncodeRequest, Mp4Encoder, TimingEntry, encode};
 
 /// Encode a PNG sequence into a GIF or MP4.
 ///

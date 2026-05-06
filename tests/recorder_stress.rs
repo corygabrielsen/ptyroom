@@ -6,12 +6,12 @@
 //! assert library-level correctness contracts directly — not through
 //! any marketing scene.
 //!
-//! Architectural rule: this file imports `tint_recorder::recorder`
-//! and `tint_recorder::cast` only. **Never** `tint_recorder::scenes` —
-//! the recorder library is meant to be domain-generic, and these
-//! tests guard that seam. If a recorder-layer test starts importing
-//! `scenes`, that's a signal the test belongs at the scene layer
-//! (`scripts/characterize.sh`, `scripts/verify_goldens.sh`) instead.
+//! Architectural rule: this file imports `term_recorder::*` only —
+//! it must not depend on any consumer crate (e.g. `tint-scenes`).
+//! The recorder library is meant to be domain-generic, and these
+//! tests guard that seam. Consumer-layer integration coverage lives
+//! in the corresponding consumer crate (e.g. `make verify-goldens`
+//! drives `tint-scenes` end-to-end).
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -19,8 +19,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use tint_recorder::cast::{Cast, EventKind};
-use tint_recorder::recorder::{Recorder, RecorderConfig};
+use term_recorder::cast::{Cast, EventKind};
+use term_recorder::recorder::{Recorder, RecorderConfig};
 
 const PATTERN: &[u8] = b"PROMPT$ ";
 const TRAILING: &str = "payload-extra-bytes-here";

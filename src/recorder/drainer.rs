@@ -1,11 +1,11 @@
 //! Background reader for the PTY master fd.
 //!
 //! Three responsibilities:
-//!  1. Continuously drain the master fd so the slave (`bash` inside the
-//!     container) doesn't block on a full PTY buffer.
+//!  1. Continuously drain the master fd so the child process doesn't
+//!     block on a full PTY buffer.
 //!  2. Watch every drained chunk for OSC 11/10 queries and write the
 //!     canned replies back through the master — the recorder is the
-//!     terminal emulator from tint's POV.
+//!     terminal emulator from the child's perspective.
 //!  3. Notify registered watches when their byte pattern appears in the
 //!     stream (used by `Recorder::arm_watch` to replace fixed
 //!     real-time padding with content-aware sync).
@@ -62,7 +62,7 @@ impl WatchHandle {
     /// Block until the pattern fires or `timeout` elapses. Returns the
     /// wall-time from arming to the pattern firing, or `None` on timeout.
     ///
-    /// When `TINT_RECORDER_PROFILE=1` is set, every wait (regardless
+    /// When `TERM_RECORDER_PROFILE=1` is set, every wait (regardless
     /// of outcome) logs `pattern` + elapsed time to stderr, so a single
     /// run produces a tunable trace of every content-aware sync point.
     ///
@@ -80,7 +80,7 @@ impl WatchHandle {
         let outcome = guard
             .as_ref()
             .map(|fired_at| fired_at.duration_since(self.started_at));
-        if std::env::var_os("TINT_RECORDER_PROFILE").is_some() {
+        if std::env::var_os("TERM_RECORDER_PROFILE").is_some() {
             let elapsed_str = match outcome {
                 Some(d) => format!("{}us", d.as_micros()),
                 None => format!(">{}us TIMED OUT", timeout.as_micros()),
@@ -134,7 +134,7 @@ impl Drainer {
         let buf = Arc::clone(&inner);
         let stop_flag = Arc::clone(&stop);
         let thread = std::thread::Builder::new()
-            .name("tint-recorder-drainer".into())
+            .name("term-recorder-drainer".into())
             .spawn(move || drain_loop(master_fd, stubs, buf, stop_flag))
             .expect("drainer thread spawn");
         Self {
@@ -230,9 +230,8 @@ fn contains_pattern(haystack: &[u8], needle: &[u8]) -> bool {
 //
 // The `stubs` value is the *initial* state. The drainer updates it in place
 // as it observes OSC 10/11 setter writes from the child, so subsequent
-// query responses reflect the most recently set bg/fg — what tint expects
-// when it queries the terminal for the "original" color before opening the
-// picker.
+// query responses reflect the most recently set bg/fg. A child that sets
+// the terminal bg/fg and later queries it should observe its own write.
 #[allow(clippy::needless_pass_by_value)]
 fn drain_loop(fd: RawFd, mut stubs: StubColors, state: Arc<Mutex<State>>, stop: Arc<AtomicBool>) {
     let mut chunk = vec![0u8; 64 * 1024];
@@ -259,8 +258,8 @@ fn drain_loop(fd: RawFd, mut stubs: StubColors, state: Arc<Mutex<State>>, stop: 
         let read_slice = &chunk[..n];
 
         // Apply setter writes before answering queries — if a single chunk
-        // contains both, tint expects the query to reflect the just-set
-        // value.
+        // contains both, the child expects the query to reflect the
+        // just-set value.
         for (code, color) in setters_in_chunk(read_slice) {
             match code {
                 10 => stubs.fg = color,

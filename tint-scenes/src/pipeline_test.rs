@@ -142,14 +142,14 @@ pub fn run_pipeline(scene: &str, opts: &PipelineOptions) -> anyhow::Result<()> {
     let _ = fs::remove_dir_all(&snaps);
     let _ = fs::remove_dir_all(&frames);
 
-    // 1. Record. Scene binary reads TINT_PATH and TINT_RECORDER_CONTAINER
+    // 1. Record. Scene binary reads TINT_PATH and TERM_RECORDER_CONTAINER
     //    from env; output is the asciicast at `cast`.
     run_quiet(
         Command::new(format!("./target/release/{scene}"))
             .arg("--cast")
             .arg(&cast)
             .env("TINT_PATH", &opts.tint_path)
-            .env("TINT_RECORDER_CONTAINER", &opts.warm_container),
+            .env("TERM_RECORDER_CONTAINER", &opts.warm_container),
     )?;
 
     // 2. Snapshot. The TS replay driver consumes the cast and emits

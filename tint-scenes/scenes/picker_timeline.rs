@@ -6,15 +6,15 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use clap::Parser;
-use tint_recorder::observer::Predicate;
-use tint_recorder::proof::DwellMs;
-use tint_recorder::recorder::{Key, Recorder, RecorderConfig};
-use tint_recorder::recording::RecordingBuilder;
-use tint_recorder_scenes::scenes::{
+use term_recorder::observer::Predicate;
+use term_recorder::proof::DwellMs;
+use term_recorder::recorder::{Key, Recorder};
+use term_recorder::recording::RecordingBuilder;
+use tint_scenes::scenes::{
     ALT_SCREEN_ENTER, ALT_SCREEN_EXIT, BASH_SETTLE_WALL, PICKER_COMMIT_TIMEOUT,
     PICKER_STARTUP_TIMEOUT, lookup_picker_idx, ms,
 };
-use tint_recorder::timeline::{PresentationBeat, TimelinePolicy};
+use term_recorder::timeline::{PresentationBeat, TimelinePolicy};
 
 const PICKER_TARGET: &str = "dark-azure";
 const CAPTURE_SETTLE: Duration = ms(20);
@@ -34,7 +34,7 @@ fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let target_idx = lookup_picker_idx(&args.tint_path, PICKER_TARGET)?;
 
-    let mut recorder = Recorder::start(RecorderConfig::default())?;
+    let mut recorder = Recorder::start(tint_scenes::scenes::tint_recorder_config())?;
     let mut recording = RecordingBuilder::new();
     let policy = TimelinePolicy::default();
 
@@ -217,7 +217,7 @@ fn dwell_for(beat: Option<PresentationBeat>, policy: &TimelinePolicy) -> DwellMs
 
 fn push_marker(recording: &mut RecordingBuilder, label: &str, elapsed: Duration) {
     recording.push_marker(label, elapsed);
-    if std::env::var_os("TINT_RECORDER_PROFILE").is_some() {
+    if std::env::var_os("TERM_RECORDER_PROFILE").is_some() {
         eprintln!(
             "[profile] marker {label} fired in {}us",
             elapsed.as_micros()

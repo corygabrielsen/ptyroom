@@ -1,17 +1,17 @@
-# tint-recorder
+# term-recorder
 
-Deterministic GIF/MP4 recorder for scripted terminal demos. Spawns an interactive process under a PTY, captures raw IO, emits an asciinema cast whose timestamps come from virtual presentation time, then renders cast → PNG frames → GIF/MP4.
+Deterministic GIF/MP4 recorder for scripted terminal demos. Spawns any interactive process under a PTY, captures raw IO, emits an asciinema cast whose timestamps come from virtual presentation time, then renders cast → PNG frames → GIF/MP4.
 
-Current scenes target [tint](https://github.com/corygabrielsen/tint). The recorder core is process-agnostic.
+The recorder library is process-agnostic. The example consumer in this workspace targets [tint](https://github.com/corygabrielsen/tint).
 
 ## Workspace layout
 
 Two crates:
 
-- `tint-recorder` (this directory) — generic recorder library (PTY driver, drainer, OSC stub, cast/snapshot/paint/encode/verify primitives). No tint coupling. Generic CLI binaries: `encode`, `paint`, `stitch`, `compare_snapshots`, `inspect`, `stress-child`.
-- `tint-recorder-scenes/` — tint-specific scene helpers, contract registry, pipeline orchestration. Scene binaries (`cli`, `picker`, `cd_hook`, `custom_theme`, `demo_full`, `smoke`, `picker_timeline`, `bench_*`), `verify`, `pipeline-test`, `recorder_perf`. Depends on `tint-recorder`.
+- `term-recorder` (this directory) — generic recorder library (PTY driver, drainer, OSC stub, cast/snapshot/paint/encode/verify primitives). No domain coupling. Generic CLI binaries: `encode`, `paint`, `stitch`, `compare_snapshots`, `inspect`, `stress-child`.
+- `tint-scenes/` — tint-specific scene helpers, contract registry, pipeline orchestration. Scene binaries (`cli`, `picker`, `cd_hook`, `custom_theme`, `demo_full`, `smoke`, `picker_timeline`, `bench_*`), `verify`, `pipeline-test`, `recorder_perf`. Depends on `term-recorder`.
 
-The crate boundary is the architectural seam: nothing in `tint-recorder/src/` imports anything tint-specific. Reusing the recorder against another interactive process is a `tint-recorder = { path = ... }` away.
+The crate boundary is the architectural seam: nothing in `term-recorder/src/` imports anything domain-specific. Reusing the recorder against another interactive process is a `term-recorder = { path = ... }` dependency away.
 
 ## Pipeline
 
@@ -61,17 +61,17 @@ runs the bless aborts. Override `BLESS_RUNS=...` to tune the floor;
 pass `PIPELINE_TEST_FLAGS='--scenes=foo,bar'` for subset operation.
 
 Recorder library timing primitives are exercised in
-`tests/recorder_stress.rs` against a synthetic non-tint child
+`tests/recorder_stress.rs` against a synthetic generic child
 (`src/bin/stress_child.rs`). Tests assert the wait_for cutoff
 contract directly and verify byte-stability under parallel load
 and CPU contention. **Architectural rule:** these tests import
-`tint_recorder::recorder` and `cast` only — never `scenes`. The
-recorder library is meant to be domain-generic; the seam is enforced
-by where tests draw their dependencies.
+`term_recorder::*` only — never any consumer crate. The recorder
+library is meant to be domain-generic; the seam is enforced by
+where tests draw their dependencies.
 
 ## Determinism
 
-- Recording shell runs in a pinned `debian:12-slim` image with a fresh `$HOME`. No host `$PATH` / `.tint` leakage.
+- Recording shell runs in a pinned `debian:12-slim` image with a fresh `$HOME`. No host `$PATH` leakage.
 - PTY winsize is fixed before exec.
 - The driver answers OSC 10/11 color queries with canned RGB, so the recorded process runs unmodified.
 - Cast timestamps come from cumulative `dwell_ms`, never wall clock.
@@ -82,9 +82,9 @@ by where tests draw their dependencies.
 
 ## Authoring scenes
 
-Scenes are small Rust binaries under `scenes/` that drive a `Recorder`. Use `Recorder::spawn` for an arbitrary local process; use `Recorder::start` for the Docker-backed tint demo shell. Prefer content-aware gates (`wait_for_prompt`, `ps2_enter`, `send_raw_wait_for`) over fixed sleeps and bare `Key::Enter` — the recorder's default settle is microseconds and not a substitute for syncing on a known byte pattern. For heredoc body lines specifically, use `ps2_enter`, which waits on `\x1b[?2004h> ` (bracketed-paste-on + PS2). Use virtual presentation helpers only for output that does not affect shell state (comments, blank prompt lines, clear boundaries).
+Scenes are small Rust binaries (in a consumer crate) that drive a `Recorder`. Use `Recorder::spawn` for an arbitrary local process; use `Recorder::start` for a Docker-backed shell session. Prefer content-aware gates (`send_raw_wait_for`, plus consumer-defined helpers like `wait_for_prompt`, `ps2_enter`) over fixed sleeps and bare `Key::Enter` — the recorder's default settle is microseconds and not a substitute for syncing on a known byte pattern. Use presentation helpers only for output that does not affect shell state (comments, blank prompt lines, clear boundaries).
 
-Working examples live in `examples/` and `scenes/`.
+Working examples live in `examples/` and the `tint-scenes/scenes/` consumer crate.
 
 ## Why a TypeScript shim
 

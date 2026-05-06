@@ -73,7 +73,7 @@ all: demo-walkthrough demo-features
 # GIF scaled to width 824 in parallel via `& wait`.
 demo-walkthrough: build recorder-warm
 	@echo "=== record demo_full ==="
-	TINT_RECORDER_CONTAINER=$(WARM_CONTAINER) ./target/release/demo_full --cast assets/demo_full.cast
+	TERM_RECORDER_CONTAINER=$(WARM_CONTAINER) ./target/release/demo_full --cast assets/demo_full.cast
 	@echo "=== paint at FONT_SIZE=40 ==="
 	rm -rf assets/snapshots assets/frames
 	./node_modules/.bin/tsx ./renderer/snapshot.ts assets/demo_full.cast assets/snapshots
@@ -133,7 +133,7 @@ custom-theme: build build-image
 	$(MAKE) render SCENE=$(SCENE) FONT_SIZE=$(FONT_SIZE) OUT_EXT=$(OUT_EXT)
 
 recorder-perf: build recorder-warm
-	TINT_RECORDER_CONTAINER=$(WARM_CONTAINER) ./target/release/recorder_perf --iterations 5
+	TERM_RECORDER_CONTAINER=$(WARM_CONTAINER) ./target/release/recorder_perf --iterations 5
 
 # Benchmark scenes for measuring pipeline performance. All use the
 # default FONT_SIZE so timings reflect the dev-loop render path.

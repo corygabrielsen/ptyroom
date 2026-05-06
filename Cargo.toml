@@ -1,13 +1,13 @@
 [workspace]
-members = ["tint-recorder-scenes"]
+members = ["tint-scenes"]
 
 [package]
-name = "tint-recorder"
+name = "term-recorder"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
-description = "Deterministic terminal recorder with virtual time and verifiable CLI demo artifacts."
+description = "Deterministic terminal session recorder with virtual time and verifiable artifacts. Spawns any interactive process under a PTY and emits asciinema casts, painted PNG frames, and encoded GIF/MP4."
 repository = "https://github.com/corygabrielsen/tint-recorder"
 readme = "README.md"
 keywords = ["terminal", "pty", "asciinema", "recording", "cli"]
@@ -17,7 +17,7 @@ categories = ["command-line-utilities", "development-tools"]
 pedantic = { level = "deny", priority = -1 }
 
 [lib]
-name = "tint_recorder"
+name = "term_recorder"
 path = "src/lib.rs"
 
 # Generic pipeline binaries:

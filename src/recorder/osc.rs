@@ -1,9 +1,10 @@
 //! OSC 11/10 query interception.
 //!
-//! tint queries the terminal background and foreground colors via OSC 11
-//! and OSC 10 respectively. The recorder is the terminal: it watches every
-//! byte tint writes, recognizes the queries, and synthesizes the canned
-//! reply so the real `tint` binary runs unmodified.
+//! Many terminal-aware programs query the terminal background and
+//! foreground colors via OSC 11 and OSC 10 respectively. The recorder
+//! plays the role of the terminal: it watches every byte the child
+//! writes, recognizes the queries, and synthesizes the canned reply
+//! so the real child binary runs unmodified.
 //!
 //! Query format: `ESC ] 11 ; ? ESC \\` (or `\x07` BEL terminator).
 //! Reply format: `ESC ] 11 ; rgb:RR/GG/BB ESC \\`.
@@ -14,7 +15,7 @@ use regex::bytes::Regex;
 
 use crate::color::HexColor;
 
-/// Canned RGB replies for the layers tint queries (bg + fg).
+/// Canned RGB replies for the layers a child process can query (bg + fg).
 #[derive(Debug, Clone, Copy)]
 pub struct StubColors {
     pub bg: HexColor,
@@ -61,7 +62,7 @@ fn query_re() -> &'static Regex {
 }
 
 /// Matches `ESC ] 1[01] ; <color> ( ESC \\ | BEL )` where `<color>` is either
-/// `#RRGGBB` (tint's wire format) or `rgb:R/G/B` (xterm-spec form some
+/// `#RRGGBB` (compact wire format) or `rgb:R/G/B` (xterm-spec form some
 /// clients use). Accepts 1-4 hex digits per channel for the rgb: form.
 fn setter_re() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();

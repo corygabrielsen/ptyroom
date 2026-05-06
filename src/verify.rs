@@ -117,7 +117,7 @@ pub fn bg_reaches(label: &'static str, color: HexColor) -> Check {
 
 /// Check: passes iff the final snapshot has `bg == color`. Used to verify
 /// that a loop ends in a known state (typically the default snapshot bg
-/// after `tint reset`).
+/// after a reset command).
 #[must_use]
 pub fn final_bg_is(label: &'static str, color: HexColor) -> Check {
     Check {
@@ -130,32 +130,6 @@ pub fn final_bg_is(label: &'static str, color: HexColor) -> Check {
                 CheckResult::Fail(format!("final bg={}, expected {color} ({label})", last.bg))
             }
             None => CheckResult::Fail("no snapshots".into()),
-        }),
-    }
-}
-
-/// Check: passes iff some snapshot has a row containing both `↓` and
-/// `more` (the picker's "↓ N more" overflow indicator).
-#[must_use]
-pub fn picker_scroll_indicator_visible() -> Check {
-    Check {
-        name: "picker_scroll_indicator_visible",
-        eval: Box::new(|snaps| {
-            for (i, s) in snaps.iter().enumerate() {
-                for r in 0..s.rows() {
-                    if let Some(text) = s.row_text(r)
-                        && text.contains('↓')
-                        && text.contains("more")
-                    {
-                        return CheckResult::Pass(format!(
-                            "first seen at frame {:04} row {}",
-                            i + 1,
-                            r + 1
-                        ));
-                    }
-                }
-            }
-            CheckResult::Fail("picker scroll indicator (↓ N more) never visible".into())
         }),
     }
 }
@@ -311,42 +285,16 @@ mod tests {
     }
 
     #[test]
-    fn picker_indicator_finds_arrow_more() {
-        // Build a snapshot whose row 0 contains "↓ 5 more"
-        let mut grid = vec![vec![None; 12]];
-        let chars = ['↓', ' ', '5', ' ', 'm', 'o', 'r', 'e'];
-        for (i, ch) in chars.iter().enumerate() {
-            grid[0][i] = Some(Cell {
-                ch: ch.to_string(),
-                fg: CellColor::Default,
-                bg: CellColor::Default,
-                bold: 0,
-                dim: 0,
-                italic: 0,
-                underline: 0,
-                inverse: 0,
-            });
-        }
-        let snaps = vec![Snapshot {
-            bg: HexColor::from_rgb(0, 0, 0),
-            fg: HexColor::from_rgb(255, 255, 255),
-            palette: PaletteOverrides::new(),
-            grid: Grid::from_unchecked(grid),
-        }];
-        assert!((picker_scroll_indicator_visible().eval)(&snaps).passed());
-    }
-
-    #[test]
     fn no_row_contains_fails_on_matching_row() {
-        let snaps = vec![snap_with_text("dark-azuretint $")];
-        let r = (no_row_contains("joined_picker_prompt", "dark-azuretint $").eval)(&snaps);
+        let snaps = vec![snap_with_text("error: cannot create directory")];
+        let r = (no_row_contains("error_msg", "cannot create directory").eval)(&snaps);
         assert!(!r.passed());
     }
 
     #[test]
     fn no_row_contains_passes_when_absent() {
-        let snaps = vec![snap_with_text("dark-azure")];
-        let r = (no_row_contains("joined_picker_prompt", "dark-azuretint $").eval)(&snaps);
+        let snaps = vec![snap_with_text("ok")];
+        let r = (no_row_contains("error_msg", "cannot create directory").eval)(&snaps);
         assert!(r.passed(), "{}", r.detail());
     }
 }

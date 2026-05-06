@@ -24,8 +24,8 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use tint_recorder::recorder::{Recorder, RecorderConfig};
-use tint_recorder_scenes::scenes::{blank, line, ms};
+use term_recorder::recorder::{Recorder, RecorderConfig};
+use tint_scenes::scenes::{blank, line, ms};
 
 /// One synthetic subloop. Designed to take ~5 seconds of cast time:
 /// preamble + 3 short typed commands with brief settles + reset +
@@ -75,7 +75,7 @@ fn main() -> anyhow::Result<()> {
     let mut r = Recorder::start(RecorderConfig {
         cols: 80,
         rows: 20,
-        ..Default::default()
+        ..tint_scenes::scenes::tint_recorder_config()
     })?;
 
     // Initial bash-echo settle, invisible to the rendered output.

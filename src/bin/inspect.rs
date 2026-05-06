@@ -2,8 +2,8 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use tint_recorder::inspect::{InspectMode, RowRange, render};
-use tint_recorder::snapshot::Snapshot;
+use term_recorder::inspect::{InspectMode, RowRange, render};
+use term_recorder::snapshot::Snapshot;
 
 #[derive(Parser)]
 struct Args {

@@ -22,7 +22,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-use tint_recorder_scenes::pipeline_test::{
+use tint_scenes::pipeline_test::{
     Golden, PipelineHashes, PipelineOptions, default_scenes, hash_pipeline, run_pipeline,
     run_verify, validate_scene,
 };

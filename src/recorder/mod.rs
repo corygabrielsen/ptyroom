@@ -126,15 +126,6 @@ impl ShellProfile {
             clear_on_start: true,
         }
     }
-
-    #[must_use]
-    pub fn tint_demo() -> Self {
-        Self {
-            setup_commands: vec!["cd \"$HOME\"".into()],
-            prompt: r"\[\e[31m\]t\[\e[33m\]i\[\e[32m\]n\[\e[36m\]t\[\e[0m\] $ ".into(),
-            clear_on_start: true,
-        }
-    }
 }
 
 impl Default for ShellProfile {
@@ -171,12 +162,12 @@ impl Default for RecorderConfig {
         Self {
             cols: 80,
             rows: 30,
-            image: "tint-recorder:demo".into(),
-            container: std::env::var("TINT_RECORDER_CONTAINER")
+            image: "bash:latest".into(),
+            container: std::env::var("TERM_RECORDER_CONTAINER")
                 .ok()
                 .filter(|value| !value.is_empty()),
-            warm_command: vec!["tint-recorder-shell".into()],
-            shell: ShellProfile::tint_demo(),
+            warm_command: vec!["bash".into(), "-i".into()],
+            shell: ShellProfile::simple(),
             stubs: StubColors::default(),
             max_runtime: Duration::from_mins(4),
         }
@@ -236,7 +227,7 @@ impl Recorder {
         let argv: Vec<String> = if let Some(container) = &cfg.container {
             let seq = CONTAINER_HOME_SEQ.fetch_add(1, Ordering::Relaxed);
             let home = format!(
-                "/home/demo/.tint-recorder-home-{}-{seq}",
+                "/home/demo/.term-recorder-home-{}-{seq}",
                 std::process::id(),
             );
             home_env = format!("HOME={home}");
@@ -544,13 +535,13 @@ impl Recorder {
     ///
     /// ```ignore
     /// let alt_in = r.arm_watch(b"\x1b[?1049h");
-    /// r.type_text("tint", TYPE_COMMAND)?;
+    /// r.type_text("vim", per_char)?;
     /// r.key(Key::Enter, ms(0))?;
-    /// alt_in.wait(PICKER_STARTUP_TIMEOUT).expect("picker startup");
-    /// r.dwell(PICKER_STARTUP_VISIBLE, ms(0))?;   // small cast-time buffer
+    /// alt_in.wait(STARTUP_TIMEOUT).expect("alt-screen entry");
+    /// r.dwell(STARTUP_VISIBLE, ms(0))?;   // small cast-time buffer
     /// ```
     ///
-    /// When `TINT_RECORDER_PROFILE=1` is set in the environment,
+    /// When `TERM_RECORDER_PROFILE=1` is set in the environment,
     /// `WatchHandle::wait` logs the pattern + elapsed time to stderr.
     /// Use this to tune timeouts: run the demo once with the env var,
     /// observe actual wait times, then bump the timeout constants down
@@ -719,7 +710,7 @@ fn escape_bytes(bytes: &[u8]) -> String {
 fn build_rcfile(profile: &ShellProfile) -> std::io::Result<NamedTempFile> {
     use std::io::Write;
     let mut f = tempfile::Builder::new()
-        .prefix("tint-recorder-rc-")
+        .prefix("term-recorder-rc-")
         .suffix(".rc")
         .tempfile()?;
     for line in &profile.setup_commands {
@@ -755,18 +746,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn config_defaults_are_sane() {
+    fn config_defaults_are_generic() {
         let cfg = RecorderConfig::default();
         assert_eq!(cfg.cols, 80);
         assert_eq!(cfg.rows, 30);
-        assert_eq!(cfg.image, "tint-recorder:demo");
-        assert_eq!(cfg.warm_command, ["tint-recorder-shell"]);
-        assert_eq!(cfg.shell, ShellProfile::tint_demo());
+        assert_eq!(cfg.image, "bash:latest");
+        assert_eq!(cfg.warm_command, ["bash", "-i"]);
+        assert_eq!(cfg.shell, ShellProfile::simple());
     }
 
     #[test]
     fn rcfile_contains_cd_and_ps1_and_clear() {
-        let f = build_rcfile(&ShellProfile::tint_demo()).unwrap();
+        let f = build_rcfile(&ShellProfile::simple()).unwrap();
         let s = std::fs::read_to_string(f.path()).unwrap();
         assert!(s.contains("cd \"$HOME\""));
         assert!(s.contains("PS1="));
@@ -774,7 +765,7 @@ mod tests {
     }
 
     #[test]
-    fn rcfile_uses_generic_shell_profile() {
+    fn rcfile_uses_caller_supplied_shell_profile() {
         let f = build_rcfile(&ShellProfile {
             setup_commands: vec!["cd /work".into(), "export DEMO=1".into()],
             prompt: "demo's $ ".into(),
@@ -786,7 +777,6 @@ mod tests {
         assert!(s.contains("export DEMO=1\n"));
         assert!(s.contains("PS1='demo'\\''s $ '\n"));
         assert!(!s.contains("\\033[H"));
-        assert!(!s.contains("tint"));
     }
 
     #[test]

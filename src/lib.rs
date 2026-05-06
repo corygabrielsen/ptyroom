@@ -14,9 +14,9 @@
 //!
 //! Higher layers (paint / encode / inspect / verify / recorder) depend
 //! only on these lower layers. The recorder core can spawn any
-//! interactive argv; tint-specific scene helpers, contracts, and
-//! pipeline orchestration live in the sibling `tint-recorder-scenes`
-//! crate.
+//! interactive argv; consumer-specific scene helpers, contract
+//! registries, and pipeline orchestration live in sibling crates that
+//! depend on this one (e.g. the `tint-scenes` crate in this workspace).
 
 pub mod cast;
 pub mod color;

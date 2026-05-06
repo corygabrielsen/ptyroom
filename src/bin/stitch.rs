@@ -19,7 +19,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use tint_recorder::cast::{Cast, CastEvent};
+use term_recorder::cast::{Cast, CastEvent};
 
 #[derive(Parser)]
 struct Args {

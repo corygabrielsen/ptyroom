@@ -4,10 +4,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Parser;
-use tint_recorder::color::HexColor;
-use tint_recorder::encode::TimingEntry;
-use tint_recorder::snapshot::{Cell, Snapshot};
-use tint_recorder::verify::list_numbered_snapshots;
+use term_recorder::color::HexColor;
+use term_recorder::encode::TimingEntry;
+use term_recorder::snapshot::{Cell, Snapshot};
+use term_recorder::verify::list_numbered_snapshots;
 
 #[derive(Parser)]
 struct Args {

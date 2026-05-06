@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use clap::{Parser, ValueEnum};
-use tint_recorder::recorder::{Recorder, RecorderConfig};
-use tint_recorder_scenes::scenes::{
+use term_recorder::recorder::{Recorder, RecorderConfig};
+use tint_scenes::scenes::{
     TYPE_COMMAND, TYPE_LABEL, blank, lookup_picker_idx, ms, run_cli, run_picker, wait_for_prompt,
 };
 
@@ -67,7 +67,7 @@ fn run_case(case: Case, tint_path: &std::path::Path) -> anyhow::Result<(Duration
     let started = Instant::now();
     let mut recorder = Recorder::start(RecorderConfig {
         rows: 20,
-        ..RecorderConfig::default()
+        ..tint_scenes::scenes::tint_recorder_config()
     })?;
     wait_for_prompt(&mut recorder, ms(0), "startup prompt")?;
 
