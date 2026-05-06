@@ -4,6 +4,15 @@ Deterministic GIF/MP4 recorder for scripted terminal demos. Spawns an interactiv
 
 Current scenes target [tint](https://github.com/corygabrielsen/tint). The recorder core is process-agnostic.
 
+## Workspace layout
+
+Two crates:
+
+- `tint-recorder` (this directory) — generic recorder library (PTY driver, drainer, OSC stub, cast/snapshot/paint/encode/verify primitives). No tint coupling. Generic CLI binaries: `encode`, `paint`, `stitch`, `compare_snapshots`, `inspect`, `stress-child`.
+- `tint-recorder-scenes/` — tint-specific scene helpers, contract registry, pipeline orchestration. Scene binaries (`cli`, `picker`, `cd_hook`, `custom_theme`, `demo_full`, `smoke`, `picker_timeline`, `bench_*`), `verify`, `pipeline-test`, `recorder_perf`. Depends on `tint-recorder`.
+
+The crate boundary is the architectural seam: nothing in `tint-recorder/src/` imports anything tint-specific. Reusing the recorder against another interactive process is a `tint-recorder = { path = ... }` away.
+
 ## Pipeline
 
 ```

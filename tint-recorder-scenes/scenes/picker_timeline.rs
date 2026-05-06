@@ -10,7 +10,7 @@ use tint_recorder::observer::Predicate;
 use tint_recorder::proof::DwellMs;
 use tint_recorder::recorder::{Key, Recorder, RecorderConfig};
 use tint_recorder::recording::RecordingBuilder;
-use tint_recorder::scenes::{
+use tint_recorder_scenes::scenes::{
     ALT_SCREEN_ENTER, ALT_SCREEN_EXIT, BASH_SETTLE_WALL, PICKER_COMMIT_TIMEOUT,
     PICKER_STARTUP_TIMEOUT, lookup_picker_idx, ms,
 };

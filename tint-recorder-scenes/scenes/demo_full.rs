@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use tint_recorder::recorder::{Recorder, RecorderConfig};
-use tint_recorder::scenes::{
+use tint_recorder_scenes::scenes::{
     lookup_picker_idx, ms, run_cd_hook, run_cli, run_custom_theme, run_feature_subloop, run_picker,
     wait_for_prompt,
 };

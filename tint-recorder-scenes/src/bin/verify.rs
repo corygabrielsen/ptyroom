@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
-use tint_recorder::contracts::{SCENES, registry};
+use tint_recorder_scenes::contracts::{SCENES, registry};
 use tint_recorder::verify::load_snapshots_dir;
 
 #[derive(Parser)]

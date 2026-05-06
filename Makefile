@@ -35,15 +35,13 @@ setup:
 	@command -v npm    >/dev/null && echo "npm:    $$(npm --version)"    || (echo "missing npm"    && exit 1)
 	@command -v ffmpeg >/dev/null && echo "ffmpeg: $$(ffmpeg -version | head -1)" || (echo "missing ffmpeg" && exit 1)
 
-# Compile every host-side scene/render binary. Scene binaries drive the
-# container via PTY; snapshot, paint, encode, and verify run on the host.
+# Compile every host-side binary across both workspace crates:
+# - tint-recorder: generic encode/paint/stitch/inspect/compare_snapshots
+#   /stress-child binaries.
+# - tint-recorder-scenes: tint-coupled scene drivers + verify +
+#   pipeline-test + recorder_perf.
 build:
-	cargo build --release --bin smoke --bin demo_full \
-	            --bin picker --bin picker_timeline --bin cli --bin cd_hook --bin custom_theme \
-	            --bin bench_tiny --bin bench_churn --bin bench_subloops \
-	            --bin paint --bin encode --bin verify --bin stitch \
-	            --bin recorder_perf --bin compare_snapshots \
-	            --bin pipeline-test
+	cargo build --workspace --release
 
 # Build the recording-only image. Just Dockerfile + the tint script —
 # everything post-recording (snapshot replay, paint, encode, verify)

@@ -12,24 +12,23 @@
 //! - [`proof_timeline`] — verified transitions compiled to monotonic
 //!   presentation time.
 //!
-//! Higher layers (paint / encode / inspect / verify / recorder / scenes)
-//! depend only on these lower layers. The current scene set targets the
-//! `tint` CLI, but the recorder core can spawn any interactive argv.
+//! Higher layers (paint / encode / inspect / verify / recorder) depend
+//! only on these lower layers. The recorder core can spawn any
+//! interactive argv; tint-specific scene helpers, contracts, and
+//! pipeline orchestration live in the sibling `tint-recorder-scenes`
+//! crate.
 
 pub mod cast;
 pub mod color;
-pub mod contracts;
 pub mod encode;
 pub mod inspect;
 pub mod observer;
 pub mod paint;
-pub mod pipeline_test;
 pub mod proof;
 pub mod proof_timeline;
 pub mod raw_log;
 pub mod recorder;
 pub mod recording;
-pub mod scenes;
 pub mod snapshot;
 pub mod timeline;
 pub mod verified_trace;

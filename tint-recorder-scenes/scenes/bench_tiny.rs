@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use tint_recorder::recorder::{Recorder, RecorderConfig};
-use tint_recorder::scenes::{line, ms};
+use tint_recorder_scenes::scenes::{line, ms};
 
 #[derive(Parser)]
 struct Args {

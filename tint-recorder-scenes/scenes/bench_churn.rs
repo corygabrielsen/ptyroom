@@ -21,7 +21,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use tint_recorder::recorder::{Recorder, RecorderConfig};
-use tint_recorder::scenes::{line, ms};
+use tint_recorder_scenes::scenes::{line, ms};
 
 /// Themes spread across the curated palette so consecutive bgs are
 /// visually distinct. Mix of dark/light, warm/cool, and several

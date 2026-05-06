@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use clap::{Parser, ValueEnum};
 use tint_recorder::recorder::{Recorder, RecorderConfig};
-use tint_recorder::scenes::{
+use tint_recorder_scenes::scenes::{
     TYPE_COMMAND, TYPE_LABEL, blank, lookup_picker_idx, ms, run_cli, run_picker, wait_for_prompt,
 };
 

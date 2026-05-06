@@ -25,7 +25,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use tint_recorder::recorder::{Recorder, RecorderConfig};
-use tint_recorder::scenes::{blank, line, ms};
+use tint_recorder_scenes::scenes::{blank, line, ms};
 
 /// One synthetic subloop. Designed to take ~5 seconds of cast time:
 /// preamble + 3 short typed commands with brief settles + reset +

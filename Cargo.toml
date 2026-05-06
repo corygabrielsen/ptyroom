@@ -1,3 +1,6 @@
+[workspace]
+members = ["tint-recorder-scenes"]
+
 [package]
 name = "tint-recorder"
 version = "0.1.0"
@@ -17,72 +20,14 @@ pedantic = { level = "deny", priority = -1 }
 name = "tint_recorder"
 path = "src/lib.rs"
 
-# Pipeline binaries auto-discovered from src/bin/*.rs.
-# Scene binaries live under scenes/ for clarity.
+# Generic pipeline binaries:
+# - encode, paint, stitch, compare_snapshots, inspect — auto-discovered
+#   from src/bin/<name>.rs.
+# - stress-child — explicit because the test integration uses the
+#   hyphenated form via env!("CARGO_BIN_EXE_stress-child").
+# Tint-coupled scene + verify + pipeline-test + recorder_perf binaries
+# live in the sibling `tint-recorder-scenes` crate.
 
-[[bin]]
-name = "smoke"
-path = "scenes/smoke.rs"
-
-[[bin]]
-name = "demo_full"
-path = "scenes/demo_full.rs"
-
-[[bin]]
-name = "picker"
-path = "scenes/picker.rs"
-
-[[bin]]
-name = "picker_timeline"
-path = "scenes/picker_timeline.rs"
-
-[[bin]]
-name = "cli"
-path = "scenes/cli.rs"
-
-[[bin]]
-name = "cd_hook"
-path = "scenes/cd_hook.rs"
-
-[[bin]]
-name = "custom_theme"
-path = "scenes/custom_theme.rs"
-
-[[bin]]
-name = "bench_tiny"
-path = "scenes/bench_tiny.rs"
-
-[[bin]]
-name = "bench_churn"
-path = "scenes/bench_churn.rs"
-
-[[bin]]
-name = "bench_subloops"
-path = "scenes/bench_subloops.rs"
-
-[[bin]]
-name = "stitch"
-path = "src/bin/stitch.rs"
-
-[[bin]]
-name = "recorder_perf"
-path = "src/bin/recorder_perf.rs"
-
-[[bin]]
-name = "compare_snapshots"
-path = "src/bin/compare_snapshots.rs"
-
-# Pipeline test driver: characterize / bless / verify / render
-# subcommands. Replaces the bash scripts that previously orchestrated
-# the full record→snapshot→paint→encode→verify pipeline.
-[[bin]]
-name = "pipeline-test"
-path = "src/bin/pipeline_test.rs"
-
-# Synthetic child for the recorder stress tests
-# (tests/recorder_stress.rs). Emits pattern + trailing in one print!,
-# which is one write syscall, which exposes the wait_for cutoff
-# contract under deterministic conditions.
 [[bin]]
 name = "stress-child"
 path = "src/bin/stress_child.rs"

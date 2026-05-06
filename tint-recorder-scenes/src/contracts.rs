@@ -3,8 +3,8 @@
 //! Adding a scene? Add an entry to [`registry`] *and* to [`SCENES`]. The
 //! lib test `every_scene_has_a_contract` keeps them in sync.
 
-use crate::color::HexColor;
-use crate::verify::{
+use tint_recorder::color::HexColor;
+use tint_recorder::verify::{
     Check, Contract, bg_reaches, final_bg_is, no_row_contains, picker_scroll_indicator_visible,
 };
 

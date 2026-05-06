@@ -7,7 +7,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
-use crate::recorder::{Key, Recorder};
+use tint_recorder::recorder::{Key, Recorder};
 
 /// Custom palette emitted by `run_custom_theme`. 17 colors after the
 /// `name:bg:fg:` triple — bg/fg/16 ANSI slots. Authentic Matrix:
