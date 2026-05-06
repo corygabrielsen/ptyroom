@@ -648,14 +648,13 @@ impl Recorder {
     /// call `write_cast` afterwards via `into_cast`.
     ///
     /// # Errors
-    /// SIGKILL or waitpid failed (other than `ESRCH`, which is treated
-    /// as already-exited).
-    pub fn stop(self) -> anyhow::Result<Cast> {
+    /// `finish_synthetic` failed to assemble the recorded cast.
+    pub fn stop(mut self) -> anyhow::Result<Cast> {
         let cast = self
             .recording
             .finish_synthetic(self.cfg.cols, self.cfg.rows)?
             .into_cast();
-        self.pty.terminate_child()?;
+        self.pty.terminate_child();
         // Drop fields in order: drainer joins, _rcfile unlinks.
         Ok(cast)
     }

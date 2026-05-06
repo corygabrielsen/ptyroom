@@ -35,6 +35,7 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 nix = { version = "0.31", features = ["fs", "ioctl", "poll", "process", "signal", "term"] }
+portable-pty = "0.9.0"
 rayon = "1"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
