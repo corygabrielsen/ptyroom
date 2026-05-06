@@ -42,6 +42,11 @@ pub struct Config {
     pub prompt: Regex,
     pub per_char_dwell: Duration,
     pub per_key_dwell: Duration,
+    /// Optional command-line for the warm-container exec, set via
+    /// `SetWarmCommand`. Meaningful only with `SpawnTarget::Warm`;
+    /// with Spawn or Cold this is silently ignored. When `None`, the
+    /// recorder's default (`bash -i`) is used.
+    pub warm_command: Option<Vec<String>>,
 }
 
 /// Process target — exactly one of these is required in the header.

@@ -101,6 +101,7 @@ fn is_header_verb(verb: &str) -> bool {
             | "SetRows"
             | "SetSpawn"
             | "SetWarm"
+            | "SetWarmCommand"
             | "SetCold"
             | "SetEnv"
             | "SetShellRcfile"
@@ -122,6 +123,7 @@ struct HeaderBuilder {
     prompt: Option<Regex>,
     per_char_dwell: Option<Duration>,
     per_key_dwell: Option<Duration>,
+    warm_command: Option<Vec<String>>,
     /// Track which lines set the spawn target so we can report duplicates.
     spawn_set_at: Option<u32>,
 }
@@ -151,6 +153,7 @@ impl HeaderBuilder {
             prompt,
             per_char_dwell: self.per_char_dwell.unwrap_or(DEFAULT_PER_CHAR_DWELL),
             per_key_dwell: self.per_key_dwell.unwrap_or(DEFAULT_PER_KEY_DWELL),
+            warm_command: self.warm_command,
         })
     }
 }
@@ -181,6 +184,13 @@ fn apply_header(h: &mut HeaderBuilder, line: &Line) -> anyhow::Result<()> {
             let name = expect_one_string_text(line)?;
             h.spawn = Some(SpawnTarget::Warm(name));
             h.spawn_set_at = Some(lineno);
+        }
+        "SetWarmCommand" => {
+            let argv = expect_strings_to_text(&line.args, lineno)?;
+            if argv.is_empty() {
+                bail!("scene:{lineno}: SetWarmCommand requires at least one argv element");
+            }
+            h.warm_command = Some(argv);
         }
         "SetCold" => {
             check_spawn_unique(h, lineno, "SetCold")?;
@@ -629,5 +639,27 @@ mod tests {
         assert!(matches!(key, Key::Down));
         assert_eq!(*repeat, 3);
         assert_eq!(*dwell, Some(Duration::from_millis(50)));
+    }
+
+    #[test]
+    fn set_warm_command_captures_argv() {
+        let scene = p(
+            "Version 1\nSetWarm \"warm-c\"\nSetWarmCommand \"term-recorder-shell\" \"-l\"\nRun \"ls\"\n",
+        );
+        let argv = scene
+            .config
+            .warm_command
+            .as_ref()
+            .expect("warm_command should be set");
+        assert_eq!(argv, &vec!["term-recorder-shell".to_string(), "-l".into()]);
+    }
+
+    #[test]
+    fn set_warm_command_requires_at_least_one_arg() {
+        let err = parse("Version 1\nSetWarm \"warm-c\"\nSetWarmCommand\nRun \"ls\"\n").unwrap_err();
+        assert!(
+            err.to_string().contains("at least one argv element"),
+            "{err}"
+        );
     }
 }

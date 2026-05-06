@@ -59,6 +59,9 @@ fn build_recorder_config(scene_config: &Config) -> RecorderConfig {
         }
         SpawnTarget::Warm(name) => {
             cfg.container = Some(name.clone());
+            if let Some(cmd) = &scene_config.warm_command {
+                cfg.warm_command.clone_from(cmd);
+            }
         }
         SpawnTarget::Cold(image) => {
             cfg.image.clone_from(image);

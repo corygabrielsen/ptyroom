@@ -77,6 +77,7 @@ within the header is insignificant.
 | `SetRows N`                          | Terminal height                              | `24`                              |
 | `SetSpawn "argv0" "arg1" ...`        | Local process target                         | (one of Spawn/Warm/Cold required) |
 | `SetWarm "container_name"`           | Warm container target (`docker exec`)        |                                   |
+| `SetWarmCommand "cmd" "arg1" ...`    | Argv passed to `docker exec` (Warm only)     | `bash -i`                         |
 | `SetCold "image"`                    | Cold container target (`docker run --rm`)    |                                   |
 | `SetEnv "KEY" "value"`               | Environment variable; repeatable             | none                              |
 | `SetShellRcfile <string-or-heredoc>` | Bash rcfile content (Cold mode only)         | bash default                      |
@@ -91,6 +92,10 @@ Constraints:
 - `SetShellRcfile` is meaningful only with `SetCold`. Specifying it
   with Spawn or Warm emits a parse warning; the rcfile is ignored
   because the warm container's shell is already running.
+- `SetWarmCommand` is meaningful only with `SetWarm`. Specifying it
+  with Spawn or Cold is silently ignored. Default is `bash -i`; pin
+  this to a wrapper script (e.g. one that sets `PS1`) when the warm
+  container's default bash doesn't emit a recognizable prompt.
 
 ## Body verbs
 
