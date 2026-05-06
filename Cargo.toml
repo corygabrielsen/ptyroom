@@ -10,8 +10,6 @@ repository = "https://github.com/corygabrielsen/term-recorder"
 readme = "README.md"
 keywords = ["terminal", "pty", "asciinema", "recording", "cli"]
 categories = ["command-line-utilities", "development-tools"]
-[workspace]
-members = ["tint-scenes"]
 
 [lib]
 name = "term_recorder"
@@ -22,8 +20,6 @@ path = "src/lib.rs"
 #   auto-discovered from src/bin/<name>.rs.
 # - stress-child — explicit because the test integration uses the
 #   hyphenated form via env!("CARGO_BIN_EXE_stress-child").
-# Consumer-coupled scene + verify + pipeline-test + recorder_perf
-# binaries live in the sibling `tint-scenes` crate.
 
 [[bin]]
 name = "stress-child"
