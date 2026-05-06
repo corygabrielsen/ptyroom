@@ -9,15 +9,10 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
-      # Block commits to branches that don't follow the
-      # Conventional Commits pattern documented in the sibling tint
-      # repos' CONTRIBUTING.md. `master` and detached HEAD are exempt
-      # — `master` matches the regex's escape clause; detached HEAD
-      # makes the hook's `git symbolic-ref` call fail and the hook
-      # treats that as "not on a branch" and silently passes.
-      - id: no-commit-to-branch
-        args:
-          - "--pattern=^(?!(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)/[a-z0-9-]+$|master$).*$"
+      # No `no-commit-to-branch` here: tint-recorder doesn't gate on
+      # PRs (sibling tint and tint-website repos do — see their
+      # configs for the typed-branch regex if/when this repo adopts
+      # the same workflow).
       - id: check-added-large-files
       - id: check-case-conflict
       - id: check-executables-have-shebangs
