@@ -69,22 +69,42 @@ pub struct ToolIdentity {
     pub version: String,
     pub ffmpeg_version: String,
     pub font_sha256: String,
+    /// Optional SHA-256 of the recorder binary itself
+    /// (`std::env::current_exe()` bytes at receipt-emit time). Pins
+    /// the exact build that produced the receipt — closes the gap
+    /// where `version` is a `Cargo.toml` string but two builds with
+    /// different `Cargo.lock` patch versions could diverge. Best-
+    /// effort: `None` if the current binary is unreadable. When set
+    /// on both sides, [`Receipt::verify`] enforces equality.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recorder_sha256: Option<String>,
 }
 
 impl ToolIdentity {
     /// Capture the current environment's identity. Queries `ffmpeg
-    /// -version` and hashes the bundled font.
+    /// -version`, hashes the bundled font, and best-effort hashes the
+    /// running recorder binary itself.
     ///
     /// # Errors
-    /// `ffmpeg` not on PATH or returned non-zero.
+    /// `ffmpeg` not on PATH or returned non-zero. Failure to read the
+    /// current binary is non-fatal: `recorder_sha256` is left `None`.
     pub fn current() -> anyhow::Result<Self> {
         Ok(Self {
             name: "term-recorder".into(),
             version: env!("CARGO_PKG_VERSION").into(),
             ffmpeg_version: detect_ffmpeg_version()?,
             font_sha256: sha256_hex(FONT_BYTES),
+            recorder_sha256: current_exe_sha256(),
         })
     }
+}
+
+/// SHA-256 of the running binary's bytes, or `None` if it can't be
+/// read (e.g., binary deleted under us, or `current_exe` failed).
+fn current_exe_sha256() -> Option<String> {
+    let path = std::env::current_exe().ok()?;
+    let bytes = std::fs::read(path).ok()?;
+    Some(sha256_hex(&bytes))
 }
 
 /// Render knobs that affect output bytes.
@@ -371,6 +391,19 @@ fn first_env_diff(expected: &ToolIdentity, got: &ToolIdentity) -> Option<VerifyO
             });
         }
     }
+    // recorder_sha256 is optional. Compare only when expected has a
+    // claim — receipts written before the field existed (or by builds
+    // where current_exe couldn't be read) skip this check.
+    if let Some(expected_hash) = &expected.recorder_sha256
+        && let Some(got_hash) = &got.recorder_sha256
+        && expected_hash != got_hash
+    {
+        return Some(VerifyOutcome::EnvironmentDiffers {
+            field: "tool.recorder_sha256".into(),
+            expected: expected_hash.clone(),
+            got: got_hash.clone(),
+        });
+    }
     None
 }
 
@@ -414,6 +447,7 @@ mod tests {
                 version: "0.1.0".into(),
                 ffmpeg_version: "ffmpeg version 6.1.1".into(),
                 font_sha256: "f".repeat(64),
+                recorder_sha256: None,
             },
             cast_sha256: "c".repeat(64),
             render: RenderOptions {
@@ -432,8 +466,9 @@ mod tests {
 
     #[test]
     fn legacy_receipt_without_optional_hashes_parses() {
-        // No spec_sha256, no scene_sha256 → still valid (back-compat
-        // with receipts written before either field existed).
+        // Legacy receipts (pre-spec_sha256, pre-scene_sha256, pre-
+        // recorder_sha256) must continue to parse — those fields are
+        // additive Option<String> with serde defaults.
         let json = r#"{
             "version": 1,
             "tool": {
@@ -456,6 +491,55 @@ mod tests {
         let r: Receipt = serde_json::from_str(json).expect("legacy receipt parses");
         assert!(r.spec_sha256.is_none());
         assert!(r.scene_sha256.is_none());
+        assert!(r.tool.recorder_sha256.is_none());
+    }
+
+    #[test]
+    fn recorder_sha256_round_trips_and_skips_when_none() {
+        let mut r = fixture_receipt();
+        // Default fixture has None — must not appear in JSON.
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(
+            !json.contains("recorder_sha256"),
+            "None recorder_sha256 must skip serialization (back-compat)"
+        );
+        // With Some, must serialize and round-trip.
+        r.tool.recorder_sha256 = Some("d".repeat(64));
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(json.contains(r#""recorder_sha256":"#));
+        let parsed: Receipt = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.tool.recorder_sha256, r.tool.recorder_sha256);
+    }
+
+    #[test]
+    fn first_env_diff_skips_recorder_sha256_when_either_side_missing() {
+        // Symmetric: receipt without claim + verifier with hash → no diff.
+        // (Verifier has stronger info than receipt; receipt is silent.)
+        let mut expected = fixture_receipt().tool;
+        let mut got = expected.clone();
+        got.recorder_sha256 = Some("d".repeat(64));
+        assert!(
+            first_env_diff(&expected, &got).is_none(),
+            "missing claim on receipt side must not flag a diff"
+        );
+        // Receipt has claim, verifier doesn't read its own binary →
+        // no diff (best-effort verifier).
+        expected.recorder_sha256 = Some("d".repeat(64));
+        got.recorder_sha256 = None;
+        assert!(
+            first_env_diff(&expected, &got).is_none(),
+            "missing reading on verifier side must not flag a diff"
+        );
+        // Both present + disagree → flagged.
+        expected.recorder_sha256 = Some("d".repeat(64));
+        got.recorder_sha256 = Some("e".repeat(64));
+        let outcome = first_env_diff(&expected, &got).expect("expected diff");
+        match outcome {
+            VerifyOutcome::EnvironmentDiffers { field, .. } => {
+                assert_eq!(field, "tool.recorder_sha256");
+            }
+            other => panic!("expected EnvironmentDiffers, got {other:?}"),
+        }
     }
 
     #[test]
