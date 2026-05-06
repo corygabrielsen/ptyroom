@@ -192,6 +192,21 @@ impl Recorder {
     /// owns PTY IO, terminal geometry, OSC stubbing, and deterministic cast
     /// timestamps.
     ///
+    /// ```no_run
+    /// use std::time::Duration;
+    /// use term_recorder::recorder::{Recorder, RecorderConfig};
+    ///
+    /// let mut rec = Recorder::spawn(RecorderConfig::default(), &["bash"])?;
+    /// rec.send_raw_wait_for(
+    ///     &[], Duration::ZERO,
+    ///     b"$ ", Duration::from_secs(2),
+    ///     "prompt",
+    /// )?;
+    /// rec.type_text("echo hello", Duration::from_millis(35))?;
+    /// rec.stop()?.write("hello.cast")?;
+    /// # Ok::<(), anyhow::Error>(())
+    /// ```
+    ///
     /// # Errors
     /// Empty argv, or `forkpty` / `execvp(argv[0])` failure.
     pub fn spawn(cfg: RecorderConfig, argv: &[&str]) -> anyhow::Result<Self> {

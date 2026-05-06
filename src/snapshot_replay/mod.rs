@@ -29,6 +29,26 @@ pub const TAIL_DWELL_MS: u32 = 0;
 /// mirrors what the recorder serves to OSC 10/11 query replies and is
 /// the right choice for casts produced by this crate.
 ///
+/// ```
+/// use term_recorder::cast::{Cast, CastEvent, CastHeader, EventKind};
+/// use term_recorder::recorder::StubColors;
+/// use term_recorder::snapshot_replay::replay;
+///
+/// let cast = Cast {
+///     header: CastHeader { version: 2, width: 80, height: 24, env: Default::default() },
+///     events: vec![CastEvent {
+///         time_s: 0.0,
+///         kind: EventKind::Output,
+///         data: "hello".into(),
+///     }],
+/// };
+/// let (snaps, timing) = replay(&cast, StubColors::default())?;
+/// assert_eq!(snaps.len(), 1);
+/// assert_eq!(timing.len(), 1);
+/// assert_eq!(snaps[0].row_text(0).unwrap(), "hello");
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+///
 /// # Errors
 /// Cast header has zero width or height (otherwise vt100 panics).
 pub fn replay(

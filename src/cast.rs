@@ -84,6 +84,14 @@ pub struct Cast {
 impl Cast {
     /// Read a cast file from disk.
     ///
+    /// ```no_run
+    /// use term_recorder::cast::Cast;
+    ///
+    /// let cast = Cast::read("demo.cast")?;
+    /// println!("{}x{} cast with {} events", cast.header.width, cast.header.height, cast.events.len());
+    /// # Ok::<(), anyhow::Error>(())
+    /// ```
+    ///
     /// # Errors
     /// IO error reading the file, or JSON parse error on header/events.
     pub fn read(path: impl AsRef<Path>) -> anyhow::Result<Self> {
