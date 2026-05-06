@@ -5,6 +5,34 @@ interactive process under a PTY, captures raw IO, emits an asciinema
 cast whose timestamps come from virtual presentation time, then renders
 cast → PNG frames → GIF/MP4. Output is byte-stable across runs.
 
+## Quickstart
+
+Write a scene file targeting a local shell — no Docker required:
+
+```
+# demo.scene
+Version 1
+SetSpawn "bash" "--noprofile" "--norc" "-i"
+SetEnv "PS1" "$ "
+SetEnv "TERM" "xterm-256color"
+
+WaitForPrompt
+Run "echo hello"
+Run "ls /tmp | head -3"
+Sleep 800ms
+```
+
+Then render it to a GIF in one call:
+
+```bash
+$ term-recorder record demo.scene --out demo.gif
+```
+
+That's the whole loop. The local-PTY target (`SetSpawn`) is the
+default and works anywhere `bash` is on `PATH`. Docker-backed targets
+(`SetWarm` / `SetCold`) exist for hermetic CI / golden-gating; see
+[`docs/scene-grammar.md`](docs/scene-grammar.md) for the full grammar.
+
 ## Library use
 
 Render an existing cast to media in one call:
@@ -183,7 +211,7 @@ primitives, the scene runner, and the render pipeline.
 
 ## Determinism
 
-- Recording shell runs in a pinned `debian:12-slim` image with a fresh `$HOME`. No host `$PATH` leakage.
+- Cold-container mode (`SetCold`) pins the recording shell to a chosen image (e.g. `debian:12-slim`) with a fresh `$HOME` and no host `$PATH` leakage; local mode (`SetSpawn`, the default) inherits the host environment so determinism guarantees apply only to the render side (Arrow B).
 - PTY winsize is fixed before exec; `portable-pty` handles the platform-correct fork/exec/ctty dance.
 - The driver answers OSC 10/11 color queries with canned RGB, so the recorded process runs unmodified.
 - Cast timestamps come from cumulative `dwell_ms`, never wall clock.
@@ -194,17 +222,22 @@ primitives, the scene runner, and the render pipeline.
 
 ## Authoring scenes
 
-Scenes are small Rust binaries that drive a `Recorder`. Use
-`Recorder::spawn` for an arbitrary local process; use `Recorder::start`
-for a Docker-backed shell session. Prefer content-aware gates
-(`send_raw_wait_for`, plus consumer-defined helpers like
-`wait_for_prompt`, `ps2_enter`) over fixed sleeps and bare `Key::Enter`
-— the recorder's default settle is microseconds and not a substitute
-for syncing on a known byte pattern. Use presentation helpers only for
-output that does not affect shell state (comments, blank prompt lines,
-clear boundaries).
+Most scenes are `.scene` files (see the [Quickstart](#quickstart) and
+[`docs/scene-grammar.md`](docs/scene-grammar.md) for the v1 grammar).
+The DSL targets a local process by default (`SetSpawn`); switch to
+`SetWarm` / `SetCold` when you need hermetic recording. Power users
+can drop down to the `Recorder` library directly from a Rust binary —
+`Recorder::spawn` for an arbitrary local process, `Recorder::start`
+for the Docker-backed path.
 
-Working examples live in `examples/`.
+Either way, prefer content-aware gates (`WaitFor` / `WaitForPrompt`
+in the DSL, `send_raw_wait_for` in the library) over fixed sleeps and
+bare `Key::Enter` — the recorder's default settle is microseconds and
+not a substitute for syncing on a known byte pattern. Use presentation
+helpers (`Present` / `PresentTyped`) only for output that does not
+affect shell state: comments, blank prompt lines, clear boundaries.
+
+Working library examples live in `examples/`.
 
 ## License
 

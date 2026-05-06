@@ -71,6 +71,23 @@ Header verbs configure the recording context. They must precede any
 body verb; placing one after a body verb is a parse error. Order
 within the header is insignificant.
 
+### Choosing a target
+
+Every scene picks exactly one of three process targets:
+
+| Target          | Verb               | When to use                                            | Requires |
+| --------------- | ------------------ | ------------------------------------------------------ | -------- |
+| **Local**       | `SetSpawn argv...` | Default. Recording any local CLI on your dev machine.  | nothing  |
+| **Warm Docker** | `SetWarm name`     | Multiple recordings against a long-lived shared shell. | docker   |
+| **Cold Docker** | `SetCold image`    | Hermetic CI / golden-gating with a pinned base image.  | docker   |
+
+Reach for `SetSpawn` first. The Docker targets exist for hermetic
+recording — the cold-container path pins the entire shell environment
+to a chosen image so the cast captures only what the script does, not
+what your `~/.bashrc` decides to print. That guarantee is load-bearing
+when the cast is the input to a CI golden gate; for a one-off README
+GIF, local-PTY mode is fine.
+
 | Verb                                 | Purpose                                      | Default                           |
 | ------------------------------------ | -------------------------------------------- | --------------------------------- |
 | `SetCols N`                          | Terminal width                               | `80`                              |
