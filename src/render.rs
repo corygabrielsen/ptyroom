@@ -24,6 +24,10 @@ pub struct Render {
     /// `None` for in-memory casts built via [`Render::new`]; receipt
     /// emission requires a hashed cast and will error otherwise.
     cast_sha256: Option<String>,
+    /// Optional behavioral attestation hash. When set, the emitted
+    /// receipt carries `spec_sha256: Some(...)` so verifiers know to
+    /// require a spec.
+    spec_sha256: Option<String>,
     font_size: f32,
     padding: u32,
     width: Option<u32>,
@@ -39,6 +43,7 @@ impl Render {
         Self {
             cast,
             cast_sha256: None,
+            spec_sha256: None,
             font_size: 14.0,
             padding: 12,
             width: None,
@@ -46,6 +51,15 @@ impl Render {
             stubs: StubColors::default(),
             mp4_encoder: Mp4Encoder::Libx264,
         }
+    }
+
+    /// Pre-computed SHA-256 of a behavioral spec file. When set, the
+    /// emitted receipt carries this hash so verifiers can require the
+    /// matching spec via [`crate::receipt::Receipt::verify_with_spec`].
+    #[must_use]
+    pub fn spec_sha256(mut self, hash: impl Into<String>) -> Self {
+        self.spec_sha256 = Some(hash.into());
+        self
     }
 
     /// Font size in pixels (default `14.0`).
@@ -119,6 +133,7 @@ impl Render {
                  Render::new(cast) does not track the source bytes"
             )
         })?;
+        let spec_sha256 = self.spec_sha256.clone();
         let render_opts = self.render_options();
         let out_path = out.as_ref().to_path_buf();
 
@@ -143,6 +158,7 @@ impl Render {
             render: render_opts,
             output_sha256,
             output_filename,
+            spec_sha256,
         })
     }
 

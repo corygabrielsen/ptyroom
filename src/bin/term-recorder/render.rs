@@ -1,6 +1,9 @@
-//! `render` subcommand: cast file → MP4/GIF in one call, with optional receipt.
+//! `render` subcommand: cast file → MP4/GIF in one call, with optional
+//! receipt and behavioral spec attestation.
 
 use std::path::PathBuf;
+
+use term_recorder::receipt::sha256_hex;
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -24,6 +27,12 @@ pub struct Args {
     /// alongside the output for later reproducibility verification.
     #[arg(long)]
     receipt: Option<PathBuf>,
+    /// Optional behavioral spec path. When set, the spec file's hash
+    /// is embedded in the receipt so verifiers can require the
+    /// matching spec via `term-recorder verify --spec`. Requires
+    /// `--receipt` to be set.
+    #[arg(long, requires = "receipt")]
+    spec: Option<PathBuf>,
 }
 
 pub fn run(args: &Args) -> anyhow::Result<()> {
@@ -34,14 +43,24 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
     if let Some(w) = args.width {
         r = r.width(w);
     }
+    if let Some(spec_path) = &args.spec {
+        let spec_bytes = std::fs::read(spec_path)?;
+        r = r.spec_sha256(sha256_hex(&spec_bytes));
+    }
 
     if let Some(receipt_path) = &args.receipt {
         let receipt = r.to_path_with_receipt(&args.out)?;
         receipt.write(receipt_path)?;
+        let suffix = if args.spec.is_some() {
+            " (spec attested)"
+        } else {
+            ""
+        };
         println!(
-            "wrote {} + receipt {}",
+            "wrote {} + receipt {}{}",
             args.out.display(),
-            receipt_path.display()
+            receipt_path.display(),
+            suffix,
         );
     } else {
         r.to_path(&args.out)?;

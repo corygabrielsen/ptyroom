@@ -41,6 +41,12 @@ pub struct Receipt {
     pub output_sha256: String,
     /// Output filename at production time (informational).
     pub output_filename: String,
+    /// Optional behavioral attestation hash. When present, the
+    /// receipt promises that the cast satisfies a [`crate::spec::Spec`]
+    /// whose file bytes hash to this value. [`Receipt::verify_with_spec`]
+    /// confirms the spec hash matches and re-runs `Spec::check`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec_sha256: Option<String>,
 }
 
 /// Pipeline identity — the parts of the environment that affect
@@ -96,10 +102,11 @@ impl RenderOptions {
     }
 }
 
-/// Outcome of a [`Receipt::verify`] call.
+/// Outcome of a [`Receipt::verify`] or [`Receipt::verify_with_spec`] call.
 #[derive(Debug, Clone)]
 pub enum VerifyOutcome {
-    /// Cast hash, environment, and re-rendered output all match.
+    /// Every claim in the receipt held: cast hash + environment +
+    /// re-rendered output, plus (if checked) spec hash + spec eval.
     Match,
     /// Provided cast file's hash differs from the receipt's claim.
     CastDiffers { expected: String, got: String },
@@ -112,6 +119,14 @@ pub enum VerifyOutcome {
     },
     /// Re-rendered output bytes hash to a different value.
     OutputDiffers { expected: String, got: String },
+    /// Receipt has a `spec_sha256` claim but no spec was provided to
+    /// the verifier. Use [`Receipt::verify_with_spec`].
+    SpecRequired,
+    /// Provided spec file's hash differs from the receipt's claim.
+    SpecDiffers { expected: String, got: String },
+    /// Spec hash matched, but re-running [`crate::spec::Spec::check`]
+    /// against the cast did not pass every predicate.
+    SpecFailed { failed: usize, total: usize },
 }
 
 impl VerifyOutcome {
@@ -138,6 +153,15 @@ impl std::fmt::Display for VerifyOutcome {
             ),
             Self::OutputDiffers { expected, got } => {
                 write!(f, "OUTPUT_DIFFERS expected={expected} got={got}")
+            }
+            Self::SpecRequired => {
+                write!(f, "SPEC_REQUIRED receipt expects --spec")
+            }
+            Self::SpecDiffers { expected, got } => {
+                write!(f, "SPEC_DIFFERS expected={expected} got={got}")
+            }
+            Self::SpecFailed { failed, total } => {
+                write!(f, "SPEC_FAILED {failed}/{total} predicate(s)")
             }
         }
     }
@@ -173,16 +197,76 @@ impl Receipt {
     }
 
     /// Re-render the cast and confirm every claim in the receipt
-    /// holds. Returns the structured outcome instead of erroring on
-    /// mismatch — callers decide how to react.
+    /// holds (B-only check). Returns the structured outcome instead
+    /// of erroring on mismatch — callers decide how to react.
+    ///
+    /// If the receipt carries a [`Self::spec_sha256`] claim, this
+    /// method returns [`VerifyOutcome::SpecRequired`] without doing
+    /// the re-render — full verification needs the spec, so call
+    /// [`Self::verify_with_spec`] instead.
     ///
     /// # Errors
     /// Cast file missing, ffmpeg invocation failed, or other IO error
     /// during re-render. Receipt-claim mismatches return
     /// `Ok(VerifyOutcome::*)`, not `Err`.
     pub fn verify(&self, cast_path: impl AsRef<Path>) -> anyhow::Result<VerifyOutcome> {
-        let cast_path = cast_path.as_ref();
+        if self.spec_sha256.is_some() {
+            return Ok(VerifyOutcome::SpecRequired);
+        }
+        self.verify_b(cast_path.as_ref())
+    }
 
+    /// Verify the receipt with a spec file. Performs the B-check
+    /// (cast hash, environment, re-render output match) plus the
+    /// C-check (spec file hashes to the receipt's claim, and re-running
+    /// [`crate::spec::Spec::check`] passes every predicate).
+    ///
+    /// Calling this when the receipt has no `spec_sha256` claim still
+    /// runs the spec check against the cast — the receipt is silent
+    /// on the spec relationship, but the verifier confirms the spec
+    /// holds against the cast anyway.
+    ///
+    /// # Errors
+    /// Cast or spec file missing, ffmpeg invocation failed, JSON parse
+    /// error on the spec, or other IO error.
+    pub fn verify_with_spec(
+        &self,
+        cast_path: impl AsRef<Path>,
+        spec_path: impl AsRef<Path>,
+    ) -> anyhow::Result<VerifyOutcome> {
+        let cast_path = cast_path.as_ref();
+        let spec_path = spec_path.as_ref();
+
+        let spec_bytes = std::fs::read(spec_path).context("read spec for verify")?;
+        let spec_hash = sha256_hex(&spec_bytes);
+        if let Some(expected) = &self.spec_sha256
+            && &spec_hash != expected
+        {
+            return Ok(VerifyOutcome::SpecDiffers {
+                expected: expected.clone(),
+                got: spec_hash,
+            });
+        }
+
+        match self.verify_b(cast_path)? {
+            VerifyOutcome::Match => {}
+            other => return Ok(other),
+        }
+
+        let spec: crate::spec::Spec = serde_json::from_slice(&spec_bytes).context("parse spec")?;
+        let cast = Cast::read(cast_path)?;
+        let report = spec.check(&cast);
+        if !report.all_passed() {
+            return Ok(VerifyOutcome::SpecFailed {
+                failed: report.failed_count(),
+                total: report.outcomes.len(),
+            });
+        }
+
+        Ok(VerifyOutcome::Match)
+    }
+
+    fn verify_b(&self, cast_path: &Path) -> anyhow::Result<VerifyOutcome> {
         // 1. Cast hash check. If the verifier was handed a different
         //    cast file than the one the receipt was produced from, we
         //    can't reproduce anything meaningful.
