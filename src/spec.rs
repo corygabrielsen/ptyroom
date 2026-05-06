@@ -25,6 +25,7 @@ pub const SPEC_VERSION: u32 = 1;
 /// Behavioral attestation against a cast.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct Spec {
     /// Schema version; must equal [`SPEC_VERSION`].
     pub version: u32,
@@ -135,6 +136,7 @@ impl Default for Spec {
 
 /// Result of one predicate evaluated against a cast.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum CheckOutcome {
     Pass(Predicate),
     Fail(Predicate),
@@ -166,6 +168,7 @@ impl std::fmt::Display for CheckOutcome {
 
 /// Per-predicate verdict from a [`Spec::check`] call.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct SpecReport {
     pub outcomes: Vec<CheckOutcome>,
 }

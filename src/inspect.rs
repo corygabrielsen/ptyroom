@@ -50,6 +50,7 @@ impl RowRange {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum InspectMode {
     Plain,
     /// Emit ANSI true-color escapes per cell.

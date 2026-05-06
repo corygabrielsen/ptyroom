@@ -25,6 +25,7 @@ use crate::color::{CellColor, HexColor, PaletteOverrides};
 /// (`serde_json` honors derive order). Do not reorder fields without
 /// re-blessing goldens.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Cell {
     /// The grapheme. Usually one codepoint; combining marks land here too.
     /// Default is a single space — equivalent to "blank cell."
@@ -130,6 +131,7 @@ impl Cell {
 
 /// Captured frame: bg/fg/palette state + a rectangular grid.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct Snapshot {
     pub bg: HexColor,
     pub fg: HexColor,

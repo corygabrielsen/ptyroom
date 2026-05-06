@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 /// Content-shaped assertion checked against captured terminal output.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
+#[non_exhaustive]
 pub enum Predicate {
     /// `text` must appear in the captured output text.
     ContainsText { text: String },

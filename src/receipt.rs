@@ -28,6 +28,7 @@ pub const RECEIPT_VERSION: u32 = 1;
 /// On-disk reproducibility receipt.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct Receipt {
     /// Schema version; must equal [`RECEIPT_VERSION`].
     pub version: u32,
@@ -54,6 +55,7 @@ pub struct Receipt {
 /// fields should produce identical render output.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct ToolIdentity {
     pub name: String,
     pub version: String,
@@ -80,6 +82,7 @@ impl ToolIdentity {
 /// Render knobs that affect output bytes.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct RenderOptions {
     pub font_size: f32,
     pub padding: u32,
@@ -104,6 +107,7 @@ impl RenderOptions {
 
 /// Outcome of a [`Receipt::verify`] or [`Receipt::verify_with_spec`] call.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum VerifyOutcome {
     /// Every claim in the receipt held: cast hash + environment +
     /// re-rendered output, plus (if checked) spec hash + spec eval.

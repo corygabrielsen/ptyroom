@@ -27,6 +27,7 @@ impl TimingEntry {
 
 /// MP4 video encoder backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Mp4Encoder {
     /// Software x264 encoder. Default. Deterministic and broadly
     /// available; no GPU required.
