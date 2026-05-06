@@ -160,7 +160,7 @@ instead of failing on `OutputDiffers` later.
 
 These layer-level claims are continuously verified by:
 
-- `cargo test --lib` (133 tests including `paint_is_byte_stable`)
+- `cargo test --lib` (137 tests including `paint_is_byte_stable`)
 - `make verify-goldens` (45 layer hashes across 5 scenes)
 - `make bless-goldens` (N=10 agreement gate; refuses to commit a
   golden if any layer disagrees across 10 runs)
@@ -180,19 +180,17 @@ confirming that determinism survives the .rs → .scene boundary.
 | Snapshot replay  | vt100 state machine + `BTreeMap`                 | yes           |
 | Paint            | pure rasterization, byte-stability test          | yes (test)    |
 | Encode (libx264) | pinned ffmpeg flags incl. `-threads 1`           | yes           |
-| Encode (NVENC)   | **non-deterministic by design**                  | n/a (opt-in)  |
+| Encode (NVENC)   | non-deterministic by design; refused in verify   | yes (2f802a8) |
 | Encode (GIF)     | pinned palettegen + Bayer dither                 | yes           |
 | Concat file      | deterministic input ordering                     | yes           |
 | Cast write       | sorted env, ordered events                       | yes           |
 | Tool identity    | name + version + ffmpeg + font + recorder_sha256 | yes (e3d5a8a) |
 
-Every layer has a strong determinism story. The libx264 path,
-GIF path, snapshot replay, paint, and cast serialization are all
-byte-stable by construction or by test. NVENC is opt-in and
-explicitly flagged non-portable. Tool identity captures every
-variance source including the recorder binary's own SHA-256.
-
-**Remaining minor gap:** `Receipt::verify` does not refuse NVENC
-receipts up front — it re-renders and fails with `OutputDiffers`
-instead of with a clearer "this encoder is not byte-portable"
-error. Documented but not enforced.
+Every layer has a strong determinism story. The libx264 path, GIF
+path, snapshot replay, paint, and cast serialization are all byte-
+stable by construction or by test. NVENC is opt-in, explicitly
+flagged non-portable, and **`Receipt::verify` now refuses NVENC
+receipts for `.mp4` outputs up front with the
+`EncoderNotVerifiable { encoder }` outcome (commit 2f802a8)** —
+no wasted re-render, clear failure mode. Tool identity captures
+every variance source including the recorder binary's own SHA-256.
