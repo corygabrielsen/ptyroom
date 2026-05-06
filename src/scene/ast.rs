@@ -90,4 +90,14 @@ pub enum Action {
     },
     Mark(String),
     Present(Vec<u8>),
+    /// Synthetic typed text: emits one cast event per UTF-8 char with
+    /// `per_char` playback dwell between events. Like `Type` but the
+    /// bytes never reach the PTY — the cast looks like the text was
+    /// being typed, but the shell sees nothing. Used for explanatory
+    /// comments / labels that need the typed-animation feel without
+    /// actually running through bash.
+    PresentTyped {
+        text: Vec<u8>,
+        per_char: Option<Duration>,
+    },
 }

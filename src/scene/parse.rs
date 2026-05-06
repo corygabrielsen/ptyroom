@@ -288,6 +288,13 @@ fn parse_body_line(
             let bytes = expect_one_bytes(line)?;
             out.push(Located::new(lineno, Action::Present(bytes)));
         }
+        "PresentTyped" => {
+            let (text, per_char) = parse_type_args(line)?;
+            out.push(Located::new(
+                lineno,
+                Action::PresentTyped { text, per_char },
+            ));
+        }
         "Run" => {
             // Macro expansion: Type "cmd"; Press Enter; WaitFor <prompt>
             let cmd = expect_one_bytes(line)?;
@@ -708,5 +715,24 @@ mod tests {
         };
         assert_eq!(*dwell, Duration::from_millis(800));
         assert_eq!(*settle, Duration::from_millis(600));
+    }
+
+    #[test]
+    fn present_typed_captures_text_and_per_char() {
+        let scene = p("Version 1\nSetSpawn \"bash\"\nPresentTyped \"hello\" PerChar 28ms\n");
+        let Action::PresentTyped { text, per_char } = &scene.body[0].value else {
+            panic!("expected PresentTyped, got {:?}", scene.body[0].value);
+        };
+        assert_eq!(text, b"hello");
+        assert_eq!(*per_char, Some(Duration::from_millis(28)));
+    }
+
+    #[test]
+    fn present_typed_without_per_char_defaults_to_none() {
+        let scene = p("Version 1\nSetSpawn \"bash\"\nPresentTyped \"x\"\n");
+        let Action::PresentTyped { per_char, .. } = &scene.body[0].value else {
+            panic!();
+        };
+        assert!(per_char.is_none());
     }
 }

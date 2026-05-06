@@ -134,6 +134,12 @@ fn execute_action(
             // Default dwell ZERO; subsequent Sleep extends it.
             rec.push_presentation_output(bytes.clone(), Duration::ZERO)?;
         }
+        Action::PresentTyped { text, per_char } => {
+            let per_char = per_char.unwrap_or(scene_config.per_char_dwell);
+            let s = std::str::from_utf8(text)
+                .map_err(|_| anyhow!("PresentTyped with non-UTF-8 bytes is not supported yet"))?;
+            rec.type_presentation_text(s, per_char)?;
+        }
     }
     Ok(())
 }
