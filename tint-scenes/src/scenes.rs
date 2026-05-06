@@ -26,8 +26,8 @@ pub fn tint_shell_profile() -> ShellProfile {
 #[must_use]
 pub fn tint_recorder_config() -> RecorderConfig {
     RecorderConfig {
-        image: "tint-recorder:demo".into(),
-        warm_command: vec!["tint-recorder-shell".into()],
+        image: "term-recorder:demo".into(),
+        warm_command: vec!["term-recorder-shell".into()],
         shell: tint_shell_profile(),
         ..RecorderConfig::default()
     }

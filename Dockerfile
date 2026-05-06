@@ -1,4 +1,4 @@
-# Recording-only environment for tint-recorder.
+# Recording-only environment for term-recorder.
 #
 # Single-stage debian:12-slim with bash, ncurses, and the tint script.
 # Post-recording stages (snapshot replay, paint, encode, verify) all
@@ -25,14 +25,14 @@ RUN chmod +x /usr/local/bin/tint
 
 # Demo user with empty $HOME.
 RUN useradd -m -d /home/demo -s /bin/bash demo
-RUN cat > /home/demo/.tint-recorder.rc <<'EOF' \
-    && chown demo:demo /home/demo/.tint-recorder.rc
+RUN cat > /home/demo/.term-recorder.rc <<'EOF' \
+    && chown demo:demo /home/demo/.term-recorder.rc
 cd "$HOME"
 PS1='\[\e[31m\]t\[\e[33m\]i\[\e[32m\]n\[\e[36m\]t\[\e[0m\] $ '
 printf '\033[H\033[2J\033[3J'
 EOF
-RUN cat > /usr/local/bin/tint-recorder-shell <<'EOF' \
-    && chmod +x /usr/local/bin/tint-recorder-shell
+RUN cat > /usr/local/bin/term-recorder-shell <<'EOF' \
+    && chmod +x /usr/local/bin/term-recorder-shell
 #!/bin/sh
 set -eu
 # Per-session $HOME is unique (recorder picks the path via
@@ -43,7 +43,7 @@ set -eu
 rm -rf "$HOME"
 mkdir -p "$HOME"
 cd "$HOME"
-exec bash --rcfile /home/demo/.tint-recorder.rc -i
+exec bash --rcfile /home/demo/.term-recorder.rc -i
 EOF
 USER demo
 WORKDIR /home/demo

@@ -5,7 +5,7 @@ edition = "2024"
 rust-version = "1.95"
 license = "MIT"
 description = "Tint-specific scene helpers, contracts, and pipeline orchestration on top of term-recorder."
-repository = "https://github.com/corygabrielsen/tint-recorder"
+repository = "https://github.com/corygabrielsen/term-recorder"
 publish = false
 
 [lib]

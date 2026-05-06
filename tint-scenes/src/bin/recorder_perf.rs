@@ -27,7 +27,7 @@ enum Case {
 }
 
 #[derive(Parser)]
-#[command(about = "Measure isolated tint-recorder capture legs")]
+#[command(about = "Measure isolated term-recorder capture legs")]
 struct Args {
     #[arg(long, value_enum, default_value_t = Case::All)]
     case: Case,

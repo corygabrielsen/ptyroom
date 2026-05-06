@@ -11,8 +11,8 @@ SCENE     ?= demo_full
 CAST       = assets/$(SCENE).cast
 OUT_EXT   ?= .gif
 OUT        = assets/$(SCENE)$(OUT_EXT)
-IMAGE     := tint-recorder:demo
-WARM_CONTAINER ?= tint-recorder-warm
+IMAGE     := term-recorder:demo
+WARM_CONTAINER ?= term-recorder-warm
 TINT_PATH ?= ../tint/tint
 # Export so scene binaries pick TINT_PATH up via clap's `env=` attribute
 # without each recipe having to mention it. Without this, demo_full's
@@ -40,9 +40,9 @@ setup:
 	@pre-commit install
 
 # Compile every host-side binary across both workspace crates:
-# - tint-recorder: generic encode/paint/stitch/inspect/compare_snapshots
+# - term-recorder: generic encode/paint/stitch/inspect/compare_snapshots
 #   /stress-child binaries.
-# - tint-recorder-scenes: tint-coupled scene drivers + verify +
+# - tint-scenes: tint-coupled scene drivers + verify +
 #   pipeline-test + recorder_perf.
 build:
 	cargo build --workspace --release

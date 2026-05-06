@@ -39,7 +39,7 @@ impl Default for PipelineOptions {
     fn default() -> Self {
         Self {
             warm_container: std::env::var("WARM_CONTAINER")
-                .unwrap_or_else(|_| "tint-recorder-warm".into()),
+                .unwrap_or_else(|_| "term-recorder-warm".into()),
             font_size: 40,
             gif_width: 824,
             tint_path: std::env::var("TINT_PATH")

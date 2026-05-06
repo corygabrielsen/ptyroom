@@ -9,7 +9,7 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
-      # No `no-commit-to-branch` here: tint-recorder doesn't gate on
+      # No `no-commit-to-branch` here: term-recorder doesn't gate on
       # PRs (sibling tint and tint-website repos do — see their
       # configs for the typed-branch regex if/when this repo adopts
       # the same workflow).

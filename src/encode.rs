@@ -94,7 +94,7 @@ pub fn encode(req: &EncodeRequest) -> anyhow::Result<()> {
     let concat_file = {
         use std::io::Write as _;
         let mut f = tempfile::Builder::new()
-            .prefix("tint-recorder-concat-")
+            .prefix("term-recorder-concat-")
             .suffix(".txt")
             .tempfile()?;
         f.write_all(concat_text.as_bytes())?;
