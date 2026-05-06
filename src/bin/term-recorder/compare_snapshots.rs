@@ -1,16 +1,15 @@
-//! CLI: frame-by-frame A/B comparison of replayed snapshot directories.
+//! `compare-snapshots` subcommand: frame-by-frame A/B comparison of replayed
+//! snapshot directories.
 
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
 
-use clap::Parser;
 use term_recorder::color::HexColor;
 use term_recorder::encode::TimingEntry;
 use term_recorder::snapshot::{Cell, Snapshot};
 use term_recorder::verify::list_numbered_snapshots;
 
-#[derive(Parser)]
-struct Args {
+#[derive(clap::Args)]
+pub struct Args {
     /// Baseline snapshot directory.
     baseline: PathBuf,
     /// Candidate snapshot directory.
@@ -23,18 +22,7 @@ struct Args {
     ignore_timing: bool,
 }
 
-fn main() -> ExitCode {
-    match run(&Args::parse()) {
-        Ok(true) => ExitCode::SUCCESS,
-        Ok(false) => ExitCode::from(1),
-        Err(err) => {
-            eprintln!("compare_snapshots: {err:#}");
-            ExitCode::from(2)
-        }
-    }
-}
-
-fn run(args: &Args) -> anyhow::Result<bool> {
+pub fn run(args: &Args) -> anyhow::Result<bool> {
     let baseline = load_named_snapshots(&args.baseline)?;
     let candidate = load_named_snapshots(&args.candidate)?;
     let mut report = DiffReport::new(args.max_examples);

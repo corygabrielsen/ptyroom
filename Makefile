@@ -80,11 +80,11 @@ demo-walkthrough: build recorder-warm
 	TERM_RECORDER_CONTAINER=$(WARM_CONTAINER) ./target/release/demo_full --cast assets/demo_full.cast
 	@echo "=== paint at FONT_SIZE=40 ==="
 	rm -rf assets/snapshots assets/frames
-	./target/release/snapshot assets/demo_full.cast assets/snapshots
-	./target/release/paint --font-size 40 assets/snapshots assets/frames
+	./target/release/term-recorder snapshot assets/demo_full.cast assets/snapshots
+	./target/release/term-recorder paint --font-size 40 assets/snapshots assets/frames
 	@echo "=== parallel encode: mp4 native + scaled gif ==="
-	./target/release/encode assets/frames assets/snapshots/timing.json assets/demo_full.mp4 & \
-	./target/release/encode assets/frames assets/snapshots/timing.json assets/demo_full.gif --width 824 & \
+	./target/release/term-recorder encode assets/frames assets/snapshots/timing.json assets/demo_full.mp4 & \
+	./target/release/term-recorder encode assets/frames assets/snapshots/timing.json assets/demo_full.gif --width 824 & \
 	wait
 	./target/release/verify demo_full --snapshots-dir assets/snapshots
 	@echo "wrote assets/demo_full.mp4 + assets/demo_full.gif"
@@ -115,12 +115,12 @@ picker-timeline-prototype: build build-image
 	    --trace assets/picker_timeline.trace.json
 	@echo "=== snapshot + paint ==="
 	rm -rf assets/picker_timeline_snapshots assets/picker_timeline_frames
-	./target/release/snapshot assets/picker_timeline.cast assets/picker_timeline_snapshots
-	./target/release/paint --font-size 28 assets/picker_timeline_snapshots assets/picker_timeline_frames
+	./target/release/term-recorder snapshot assets/picker_timeline.cast assets/picker_timeline_snapshots
+	./target/release/term-recorder paint --font-size 28 assets/picker_timeline_snapshots assets/picker_timeline_frames
 	@echo "=== encode: CPU paint + libx264, CPU paint + NVENC, GIF ==="
-	./target/release/encode assets/picker_timeline_frames assets/picker_timeline_snapshots/timing.json assets/picker_timeline_libx264.mp4 --mp4-encoder libx264
-	./target/release/encode assets/picker_timeline_frames assets/picker_timeline_snapshots/timing.json assets/picker_timeline_nvenc.mp4 --mp4-encoder h264_nvenc
-	./target/release/encode assets/picker_timeline_frames assets/picker_timeline_snapshots/timing.json assets/picker_timeline.gif --width 824
+	./target/release/term-recorder encode assets/picker_timeline_frames assets/picker_timeline_snapshots/timing.json assets/picker_timeline_libx264.mp4 --mp4-encoder libx264
+	./target/release/term-recorder encode assets/picker_timeline_frames assets/picker_timeline_snapshots/timing.json assets/picker_timeline_nvenc.mp4 --mp4-encoder h264_nvenc
+	./target/release/term-recorder encode assets/picker_timeline_frames assets/picker_timeline_snapshots/timing.json assets/picker_timeline.gif --width 824
 	./target/release/verify picker --snapshots-dir assets/picker_timeline_snapshots
 	@echo "wrote assets/picker_timeline_libx264.mp4 + assets/picker_timeline_nvenc.mp4 + assets/picker_timeline.gif"
 
@@ -182,7 +182,7 @@ bench-subloops-parallel: build build-image
 		    --subloop-only {} \
 		    --cast assets/bench_subloops_{}.cast
 	@echo "=== stitch ==="
-	./target/release/stitch \
+	./target/release/term-recorder stitch \
 	    --out assets/bench_subloops.cast \
 	    assets/bench_subloops_0.cast \
 	    assets/bench_subloops_1.cast \
@@ -190,9 +190,9 @@ bench-subloops-parallel: build build-image
 	    assets/bench_subloops_3.cast
 	@echo "=== render ==="
 	rm -rf assets/snapshots assets/frames
-	./target/release/snapshot assets/bench_subloops.cast assets/snapshots
-	./target/release/paint --font-size $(FONT_SIZE) assets/snapshots assets/frames
-	./target/release/encode assets/frames assets/snapshots/timing.json assets/bench_subloops.gif
+	./target/release/term-recorder snapshot assets/bench_subloops.cast assets/snapshots
+	./target/release/term-recorder paint --font-size $(FONT_SIZE) assets/snapshots assets/frames
+	./target/release/term-recorder encode assets/frames assets/snapshots/timing.json assets/bench_subloops.gif
 	./target/release/verify bench_subloops --snapshots-dir assets/snapshots
 	@echo "wrote assets/bench_subloops.gif"
 
@@ -214,9 +214,9 @@ all-scenes: build build-image
 render:
 	./target/release/$(SCENE) --cast $(CAST)
 	rm -rf assets/snapshots assets/frames
-	./target/release/snapshot $(CAST) assets/snapshots
-	./target/release/paint --font-size $(FONT_SIZE) assets/snapshots assets/frames
-	./target/release/encode assets/frames assets/snapshots/timing.json $(OUT)
+	./target/release/term-recorder snapshot $(CAST) assets/snapshots
+	./target/release/term-recorder paint --font-size $(FONT_SIZE) assets/snapshots assets/frames
+	./target/release/term-recorder encode assets/frames assets/snapshots/timing.json $(OUT)
 	./target/release/verify $(SCENE) --snapshots-dir assets/snapshots
 	@echo "wrote $(OUT)"
 

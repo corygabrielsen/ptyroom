@@ -1,12 +1,12 @@
-//! CLI: ASCII-render any snapshot to the terminal.
+//! `inspect` subcommand: ASCII-render any snapshot to the terminal.
+
 use std::path::PathBuf;
 
-use clap::Parser;
 use term_recorder::inspect::{InspectMode, RowRange, render};
 use term_recorder::snapshot::Snapshot;
 
-#[derive(Parser)]
-struct Args {
+#[derive(clap::Args)]
+pub struct Args {
     snapshot: PathBuf,
     /// Emit ANSI 24-bit color (bg + fg) per cell.
     #[arg(long)]
@@ -16,8 +16,7 @@ struct Args {
     rows: String,
 }
 
-fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
+pub fn run(args: &Args) -> anyhow::Result<()> {
     let snap = Snapshot::load(&args.snapshot)?;
     let range = RowRange::parse(&args.rows, snap.rows()).map_err(|e| anyhow::anyhow!("{e}"))?;
     let mode = if args.color {

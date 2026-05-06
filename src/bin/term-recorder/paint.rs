@@ -1,20 +1,16 @@
-//! CLI: snapshots dir → frames dir of PNGs.
+//! `paint` subcommand: snapshots directory → painted PNGs (one per frame).
 //!
-//! Frames are painted in parallel. Each frame is independent of every
-//! other (load snapshot, paint to RGB image, save PNG), so rayon's
-//! `par_iter` scales linearly with available cores. The painter struct
-//! is `Sync` (font + scale + immutable metrics), shareable across
-//! worker threads without locking.
+//! Frames are painted in parallel via rayon; each is independent.
+
 use std::path::PathBuf;
 
-use clap::Parser;
 use rayon::prelude::*;
 use term_recorder::paint::{FONT_BYTES, PaintConfig, Painter};
 use term_recorder::snapshot::Snapshot;
 use term_recorder::verify::list_numbered_snapshots;
 
-#[derive(Parser)]
-struct Args {
+#[derive(clap::Args)]
+pub struct Args {
     snap_dir: PathBuf,
     out_dir: PathBuf,
     #[arg(long, default_value_t = 14.0)]
@@ -23,8 +19,7 @@ struct Args {
     padding: u32,
 }
 
-fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
+pub fn run(args: &Args) -> anyhow::Result<()> {
     std::fs::create_dir_all(&args.out_dir)?;
 
     let painter = Painter::new(

@@ -155,14 +155,16 @@ pub fn run_pipeline(scene: &str, opts: &PipelineOptions) -> anyhow::Result<()> {
     // 2. Snapshot. vt100 + OscTracker consume the cast and emit
     //    per-frame JSON + timing.json.
     run_quiet(
-        Command::new("./target/release/snapshot")
+        Command::new("./target/release/term-recorder")
+            .arg("snapshot")
             .arg(&cast)
             .arg(&snaps),
     )?;
 
     // 3. Paint. Each snapshot JSON → PNG. rayon-parallel internally.
     run_quiet(
-        Command::new("./target/release/paint")
+        Command::new("./target/release/term-recorder")
+            .arg("paint")
             .arg("--font-size")
             .arg(opts.font_size.to_string())
             .arg(&snaps)
@@ -173,15 +175,20 @@ pub fn run_pipeline(scene: &str, opts: &PipelineOptions) -> anyhow::Result<()> {
     //    run concurrently. Each write to a per-call concat tempfile so
     //    they can't race on disk.
     let timing_json = snaps.join("timing.json");
-    let mut mp4_cmd = Command::new("./target/release/encode");
-    mp4_cmd.arg(&frames).arg(&timing_json).arg(&mp4);
+    let mut mp4_cmd = Command::new("./target/release/term-recorder");
+    mp4_cmd
+        .arg("encode")
+        .arg(&frames)
+        .arg(&timing_json)
+        .arg(&mp4);
     let mp4_child = mp4_cmd
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()?;
 
-    let mut gif_cmd = Command::new("./target/release/encode");
+    let mut gif_cmd = Command::new("./target/release/term-recorder");
     gif_cmd
+        .arg("encode")
         .arg(&frames)
         .arg(&timing_json)
         .arg(&gif)

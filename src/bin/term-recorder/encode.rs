@@ -1,17 +1,12 @@
-//! CLI: PNG sequence + timing.json → GIF/MP4.
+//! `encode` subcommand: PNG sequence + timing.json → GIF/MP4.
+
 use std::path::PathBuf;
 
-use clap::{Parser, ValueEnum};
+use clap::ValueEnum;
 use term_recorder::encode::{EncodeRequest, Mp4Encoder, TimingEntry, encode};
 
-/// Encode a PNG sequence into a GIF or MP4.
-///
-/// Reads `timing.json` (a list of `{frame, dwell_ms}` entries written by the
-/// snapshot stage) and emits a single media file via ffmpeg's concat demuxer. The
-/// timing values come from the recorded scene's intent (`dwell_ms`), so
-/// playback is independent of the wall-clock time of the recording.
-#[derive(Parser)]
-struct Args {
+#[derive(clap::Args)]
+pub struct Args {
     /// Directory containing the PNG frames.
     frames_dir: PathBuf,
     /// Path to `timing.json` written by the snapshot stage.
@@ -23,8 +18,7 @@ struct Args {
     fps: u32,
     /// Optional output width in pixels. When set, frames are scaled
     /// (lanczos) to this width with height auto-computed to preserve
-    /// aspect ratio. Used by the marketing render flow to encode a single
-    /// high-resolution frame set into multiple output sizes.
+    /// aspect ratio.
     #[arg(long)]
     width: Option<u32>,
     /// MP4 encoder to use when the output path ends in `.mp4`.
@@ -48,8 +42,7 @@ impl From<Mp4EncoderArg> for Mp4Encoder {
     }
 }
 
-fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
+pub fn run(args: Args) -> anyhow::Result<()> {
     let timing_bytes = std::fs::read(&args.timing_json)?;
     let timing: Vec<TimingEntry> = serde_json::from_slice(&timing_bytes)?;
     encode(&EncodeRequest {
@@ -59,6 +52,5 @@ fn main() -> anyhow::Result<()> {
         fps: args.fps,
         mp4_encoder: args.mp4_encoder.into(),
         width: args.width,
-    })?;
-    Ok(())
+    })
 }
