@@ -27,6 +27,7 @@ pub mod paint;
 pub mod proof;
 pub(crate) mod proof_timeline;
 pub(crate) mod raw_log;
+pub mod receipt;
 pub mod recorder;
 pub mod recording;
 mod render;
