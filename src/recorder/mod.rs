@@ -586,15 +586,22 @@ impl Recorder {
         Ok(())
     }
 
-    /// Capture bytes after a real-time settle without creating a playback
-    /// event. The settle is capture latency only.
+    /// Capture bytes after a real-time settle. Records observed bytes
+    /// into the cast at zero playback dwell (so wait-style polls don't
+    /// inflate the cast's virtual time), and returns them for caller
+    /// inspection (e.g. regex matching).
     ///
     /// # Errors
     /// Recording exceeded `max_runtime`.
     pub fn capture_after(&mut self, settle: Duration) -> anyhow::Result<Vec<u8>> {
         self.check_runtime()?;
         std::thread::sleep(settle);
-        Ok(self.drainer.consume())
+        let captured = self.drainer.consume();
+        if !captured.is_empty() {
+            self.recording
+                .record_output(captured.clone(), DwellMs::from_duration(Duration::ZERO))?;
+        }
+        Ok(captured)
     }
 
     fn send_and_capture(
