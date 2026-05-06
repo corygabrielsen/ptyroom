@@ -5,6 +5,7 @@ mod compare_snapshots;
 mod encode;
 mod inspect;
 mod paint;
+mod rec;
 mod record;
 mod render;
 mod snapshot;
@@ -24,6 +25,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Live: record your real terminal session into a cast (asciinema-shaped UX).
+    Rec(rec::Args),
     /// Run a `.scene` file → cast (or chain through render to MP4/GIF).
     Record(record::Args),
     /// Cast → MP4/GIF in one call (with optional reproducibility receipt).
@@ -49,6 +52,7 @@ enum Cmd {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result: anyhow::Result<ExitCode> = match cli.cmd {
+        Cmd::Rec(args) => rec::run(args).map(|()| ExitCode::SUCCESS),
         Cmd::Record(args) => record::run(&args).map(|()| ExitCode::SUCCESS),
         Cmd::Render(args) => render::run(&args).map(|()| ExitCode::SUCCESS),
         Cmd::Verify(args) => verify::run(&args).map(|ok| {

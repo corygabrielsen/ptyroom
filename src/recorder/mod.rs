@@ -10,11 +10,13 @@
 
 mod drainer;
 mod keys;
+mod live;
 mod osc;
 mod pty;
 
 pub use drainer::WatchHandle;
 pub use keys::Key;
+pub use live::{LiveOpts, record_interactive};
 pub use osc::StubColors;
 
 use std::os::fd::BorrowedFd;

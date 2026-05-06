@@ -33,6 +33,32 @@ default and works anywhere `bash` is on `PATH`. Docker-backed targets
 (`SetWarm` / `SetCold`) exist for hermetic CI / golden-gating; see
 [`docs/scene-grammar.md`](docs/scene-grammar.md) for the full grammar.
 
+## Live recording
+
+Don't have a script? Just press the key:
+
+```bash
+$ term-recorder rec --out demo.cast
+[recording → demo.cast]  type 'exit' or Ctrl-D to stop
+$ echo hello
+hello
+$ exit
+wrote demo.cast (3 events, 4.2s)
+
+$ term-recorder render demo.cast demo.gif
+```
+
+`rec` spawns your `$SHELL` (falling back to `bash`) under a PTY,
+puts the host stdin in raw mode, and streams every byte from the
+shell into the cast — like `asciinema rec`. The session ends when
+you `exit` or hit Ctrl-D.
+
+**Determinism scope.** Live casts use _real wall-clock_ dwells —
+the cast's timeline is a faithful record of what was typed when, not
+a reproducible derivation. The downstream `cast → media` render is
+still byte-stable, so receipts attest the render exactly as for
+scripted recordings.
+
 ## Library use
 
 Render an existing cast to media in one call:
@@ -142,15 +168,17 @@ single verifiable claim.
 One unified binary with subcommands:
 
 ```bash
-term-recorder render <cast> <out> [--receipt R] [--spec S]   # cast → MP4/GIF (one call)
-term-recorder verify --receipt R --cast C [--spec S]         # check a receipt
-term-recorder check  --cast C --spec S                       # check a spec
+term-recorder rec     [--out PATH]                           # live: record your real terminal session
+term-recorder record  <scene> --out <cast|media>             # scripted: run a .scene file
+term-recorder render  <cast>  <out>  [--receipt R] [--spec S] # cast → MP4/GIF (one call)
+term-recorder verify  --receipt R --cast C [--spec S]        # check a receipt
+term-recorder check   --cast C --spec S                      # check a spec
 term-recorder snapshot <cast> <out_dir>                      # cast → snapshot JSON
-term-recorder paint <snap_dir> <out_dir>                     # snapshots → PNGs
-term-recorder encode <frames> <timing> <out>                 # PNGs → MP4/GIF
-term-recorder stitch --out OUT INPUT...                      # concatenate casts
+term-recorder paint    <snap_dir> <out_dir>                  # snapshots → PNGs
+term-recorder encode   <frames> <timing> <out>               # PNGs → MP4/GIF
+term-recorder stitch   --out OUT INPUT...                    # concatenate casts
 term-recorder compare-snapshots <baseline> <candidate>       # frame-by-frame diff
-term-recorder inspect <snapshot>                             # ASCII-render to terminal
+term-recorder inspect  <snapshot>                            # ASCII-render to terminal
 ```
 
 `render` chains `snapshot → paint → encode` in memory; the lower
