@@ -226,6 +226,15 @@ impl Receipt {
     /// on the spec relationship, but the verifier confirms the spec
     /// holds against the cast anyway.
     ///
+    /// ```no_run
+    /// use term_recorder::receipt::{Receipt, VerifyOutcome};
+    ///
+    /// let receipt = Receipt::read("demo.gif.receipt.json")?;
+    /// let outcome = receipt.verify_with_spec("demo.cast", "demo.spec.json")?;
+    /// assert!(matches!(outcome, VerifyOutcome::Match));
+    /// # Ok::<(), anyhow::Error>(())
+    /// ```
+    ///
     /// # Errors
     /// Cast or spec file missing, ffmpeg invocation failed, JSON parse
     /// error on the spec, or other IO error.

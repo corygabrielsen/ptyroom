@@ -122,6 +122,14 @@ impl Render {
     /// hash is known). Calling on an in-memory `Render::new(cast)`
     /// errors.
     ///
+    /// ```no_run
+    /// let receipt = term_recorder::render("demo.cast")?
+    ///     .font_size(40.0)
+    ///     .to_path_with_receipt("demo.gif")?;
+    /// receipt.write("demo.gif.receipt.json")?;
+    /// # Ok::<(), anyhow::Error>(())
+    /// ```
+    ///
     /// # Errors
     /// Same as [`Render::to_path`], plus: cast hash unknown (built
     /// via `Render::new` rather than `render(path)`); ffmpeg version

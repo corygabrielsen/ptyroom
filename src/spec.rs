@@ -84,6 +84,26 @@ impl Spec {
     /// [`crate::recording::RecordingBuilder::record_step_matching`]
     /// — same haystack, same `check`, so a spec built from the same
     /// predicates that gated recording always passes verification.
+    ///
+    /// ```
+    /// use term_recorder::cast::{Cast, CastEvent, CastHeader, EventKind};
+    /// use term_recorder::observer::Predicate;
+    /// use term_recorder::spec::Spec;
+    ///
+    /// let cast = Cast {
+    ///     header: CastHeader { version: 2, width: 80, height: 24, env: Default::default() },
+    ///     events: vec![CastEvent {
+    ///         time_s: 0.0,
+    ///         kind: EventKind::Output,
+    ///         data: "hello world".into(),
+    ///     }],
+    /// };
+    /// let spec = Spec::new()
+    ///     .with(Predicate::ContainsText { text: "hello".into() })
+    ///     .with(Predicate::DoesNotContainText { text: "error".into() });
+    /// let report = spec.check(&cast);
+    /// assert!(report.all_passed());
+    /// ```
     #[must_use]
     pub fn check(&self, cast: &Cast) -> SpecReport {
         let mut accumulated = String::new();
