@@ -14,6 +14,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use tracer::tracer::{CaptureOpts, capture};
+use tracer::witness::VerifyOutcome;
 
 const BASENAME: &str = "demo";
 const FONT_SIZE: f32 = 14.0;
@@ -94,8 +95,23 @@ pub fn run() -> anyhow::Result<()> {
         eprintln!("    ffmpeg_sha256:   {}…", short_hash(ff_sha));
     }
 
+    // 3. Re-verify the witness we just produced. This re-renders the
+    //    trace and confirms the output bytes hash to exactly what the
+    //    witness claims. The "✓ MATCH" line is the holy-shit moment —
+    //    the audience sees the cryptographic round-trip in the same
+    //    output as the live capture they just watched.
+    let outcome = witness.verify(&trace_path)?;
+    match &outcome {
+        VerifyOutcome::Match => {
+            eprintln!("✓ verified   MATCH  (re-rendered, output bytes identical)");
+        }
+        other => {
+            eprintln!("✗ verify     {other}");
+        }
+    }
+
     eprintln!();
-    eprintln!("─── verify on any machine ──────────────────────────");
+    eprintln!("─── reproduce on any machine ──────────────────────");
     eprintln!(
         "    tracer verify --witness {} --trace {}",
         witness_path.display(),
