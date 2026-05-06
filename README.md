@@ -168,23 +168,29 @@ single verifiable claim.
 One unified binary with subcommands:
 
 ```bash
-term-recorder rec     [--out PATH]                           # live: record your real terminal session
-term-recorder record  <scene> --out <cast|media>             # scripted: run a .scene file
+term-recorder rec     [--out PATH]                            # live: record your real terminal session
+term-recorder record  <scene> --out <cast|media>              # scripted: run a .scene file
 term-recorder render  <cast>  <out>  [--receipt R] [--spec S] # cast → MP4/GIF (one call)
-term-recorder verify  --receipt R --cast C [--spec S]        # check a receipt
-term-recorder check   --cast C --spec S                      # check a spec
-term-recorder snapshot <cast> <out_dir>                      # cast → snapshot JSON
-term-recorder paint    <snap_dir> <out_dir>                  # snapshots → PNGs
-term-recorder encode   <frames> <timing> <out>               # PNGs → MP4/GIF
-term-recorder stitch   --out OUT INPUT...                    # concatenate casts
-term-recorder compare-snapshots <baseline> <candidate>       # frame-by-frame diff
-term-recorder inspect  <snapshot>                            # ASCII-render to terminal
+term-recorder stitch  --out OUT INPUT...                      # concatenate casts (the cast-monoid ⊕)
+term-recorder verify  --receipt R --cast C [--spec S]         # check a receipt
+term-recorder check   --cast C --spec S                       # check a spec
 ```
 
-`render` chains `snapshot → paint → encode` in memory; the lower
-subcommands expose each stage separately when you want the intermediate
-artifacts on disk. `verify` and `check` are the two attestation
-verifiers (provenance and behavior).
+Per-stage pipeline tools sit under `term-recorder debug ...`:
+
+```bash
+term-recorder debug snapshot          <cast> <out_dir>          # cast → snapshot JSON
+term-recorder debug paint             <snap_dir> <out_dir>      # snapshots → PNGs
+term-recorder debug encode            <frames> <timing> <out>   # PNGs → MP4/GIF
+term-recorder debug compare-snapshots <baseline> <candidate>    # frame-by-frame diff
+term-recorder debug inspect           <snapshot>                # ASCII-render to terminal
+```
+
+`render` chains `snapshot → paint → encode` in memory; the `debug`
+subcommands expose each stage separately when you want intermediate
+artifacts on disk (typically: layered hash gates that pin every stage
+independently). `verify` and `check` are the two attestation verifiers
+(provenance and behavior).
 
 ## Pipeline
 
