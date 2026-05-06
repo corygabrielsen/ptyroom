@@ -57,6 +57,12 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
         let spec_bytes = std::fs::read(spec_path)?;
         r = r.spec_sha256(sha256_hex(&spec_bytes));
     }
+    // Always pin the scene as provenance when a receipt is requested —
+    // the scene file IS the recipe, no flag needed.
+    if args.receipt.is_some() {
+        let scene_bytes = std::fs::read(&args.scene)?;
+        r = r.scene_sha256(sha256_hex(&scene_bytes));
+    }
 
     if let Some(receipt_path) = &args.receipt {
         let receipt = r.to_path_with_receipt(&args.out)?;

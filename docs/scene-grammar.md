@@ -235,10 +235,13 @@ term-recorder record demo.scene \
     --spec demo.spec.json
 ```
 
-Receipts gain an optional `scene_sha256` field for full provenance:
-the artifact (`output`) is `g(f(scene))` for `f = scene.run` and
-`g = render`. A B+C verifier can confirm all three hashes plus run
-the spec against the cast.
+When `--receipt` is set, the receipt's `scene_sha256` field records the
+hash of the source scene file — `output` is `g(f(scene))` for
+`f = scene.run` and `g = render`, and the receipt now pins all three
+hashes (cast, output, scene) plus optional `spec_sha256`. The field is
+provenance only: verification does not re-run the scene (scene
+execution depends on shells, docker images, and external state that
+the recorder does not pin).
 
 ## Out of scope for v1
 

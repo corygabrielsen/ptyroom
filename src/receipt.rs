@@ -48,6 +48,14 @@ pub struct Receipt {
     /// confirms the spec hash matches and re-runs `Spec::check`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spec_sha256: Option<String>,
+    /// Optional source-scene provenance hash. When present, the
+    /// receipt records that the cast was produced by running
+    /// [`crate::scene::Scene`]`::run` on a `.scene` file whose bytes
+    /// hash to this value. This is provenance only — verification does
+    /// not re-run the scene (scene execution depends on shells, docker
+    /// images, and external state that the recorder does not pin).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene_sha256: Option<String>,
 }
 
 /// Pipeline identity — the parts of the environment that affect
@@ -392,4 +400,102 @@ fn detect_ffmpeg_version() -> anyhow::Result<String> {
     // First line: "ffmpeg version 6.1.1 ..."; record verbatim.
     let line = stdout.lines().next().unwrap_or("").trim();
     Ok(line.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture_receipt() -> Receipt {
+        Receipt {
+            version: RECEIPT_VERSION,
+            tool: ToolIdentity {
+                name: "term-recorder".into(),
+                version: "0.1.0".into(),
+                ffmpeg_version: "ffmpeg version 6.1.1".into(),
+                font_sha256: "f".repeat(64),
+            },
+            cast_sha256: "c".repeat(64),
+            render: RenderOptions {
+                font_size: 14.0,
+                padding: 12,
+                width: None,
+                fps: 25,
+                mp4_encoder: "libx264".into(),
+            },
+            output_sha256: "o".repeat(64),
+            output_filename: "demo.gif".into(),
+            spec_sha256: None,
+            scene_sha256: None,
+        }
+    }
+
+    #[test]
+    fn legacy_receipt_without_optional_hashes_parses() {
+        // No spec_sha256, no scene_sha256 → still valid (back-compat
+        // with receipts written before either field existed).
+        let json = r#"{
+            "version": 1,
+            "tool": {
+                "name": "term-recorder",
+                "version": "0.1.0",
+                "ffmpeg_version": "ffmpeg version 6.1.1",
+                "font_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+            },
+            "cast_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "render": {
+                "font_size": 14.0,
+                "padding": 12,
+                "width": null,
+                "fps": 25,
+                "mp4_encoder": "libx264"
+            },
+            "output_sha256": "oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo",
+            "output_filename": "demo.gif"
+        }"#;
+        let r: Receipt = serde_json::from_str(json).expect("legacy receipt parses");
+        assert!(r.spec_sha256.is_none());
+        assert!(r.scene_sha256.is_none());
+    }
+
+    #[test]
+    fn receipt_with_scene_sha256_round_trips() {
+        let mut r = fixture_receipt();
+        r.scene_sha256 = Some("a".repeat(64));
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(
+            json.contains(r#""scene_sha256":"#),
+            "scene_sha256 should serialize when Some"
+        );
+        let parsed: Receipt = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.scene_sha256, r.scene_sha256);
+    }
+
+    #[test]
+    fn none_optional_fields_are_omitted_from_json() {
+        let r = fixture_receipt();
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(
+            !json.contains("scene_sha256"),
+            "None scene_sha256 must skip serialization (back-compat)"
+        );
+        assert!(
+            !json.contains("spec_sha256"),
+            "None spec_sha256 must skip serialization (back-compat)"
+        );
+    }
+
+    #[test]
+    fn scene_and_spec_compose_in_one_receipt() {
+        // Both attestation hashes can coexist — receipt records full
+        // provenance (scene → cast → render → output) plus behavioral
+        // attestation (spec → cast).
+        let mut r = fixture_receipt();
+        r.scene_sha256 = Some("a".repeat(64));
+        r.spec_sha256 = Some("b".repeat(64));
+        let json = serde_json::to_string(&r).unwrap();
+        let parsed: Receipt = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.scene_sha256.as_deref(), Some(&"a".repeat(64)[..]));
+        assert_eq!(parsed.spec_sha256.as_deref(), Some(&"b".repeat(64)[..]));
+    }
 }

@@ -28,6 +28,10 @@ pub struct Render {
     /// receipt carries `spec_sha256: Some(...)` so verifiers know to
     /// require a spec.
     spec_sha256: Option<String>,
+    /// Optional source-scene provenance hash. When set, the emitted
+    /// receipt carries `scene_sha256: Some(...)` recording which
+    /// `.scene` file the input cast was produced from.
+    scene_sha256: Option<String>,
     font_size: f32,
     padding: u32,
     width: Option<u32>,
@@ -44,6 +48,7 @@ impl Render {
             cast,
             cast_sha256: None,
             spec_sha256: None,
+            scene_sha256: None,
             font_size: 14.0,
             padding: 12,
             width: None,
@@ -59,6 +64,16 @@ impl Render {
     #[must_use]
     pub fn spec_sha256(mut self, hash: impl Into<String>) -> Self {
         self.spec_sha256 = Some(hash.into());
+        self
+    }
+
+    /// Pre-computed SHA-256 of the source `.scene` file. When set, the
+    /// emitted receipt records this as provenance — third parties can
+    /// confirm a held scene file is byte-identical to the recipe that
+    /// produced this cast.
+    #[must_use]
+    pub fn scene_sha256(mut self, hash: impl Into<String>) -> Self {
+        self.scene_sha256 = Some(hash.into());
         self
     }
 
@@ -142,6 +157,7 @@ impl Render {
             )
         })?;
         let spec_sha256 = self.spec_sha256.clone();
+        let scene_sha256 = self.scene_sha256.clone();
         let render_opts = self.render_options();
         let out_path = out.as_ref().to_path_buf();
 
@@ -167,6 +183,7 @@ impl Render {
             output_sha256,
             output_filename,
             spec_sha256,
+            scene_sha256,
         })
     }
 
