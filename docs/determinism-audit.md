@@ -125,43 +125,42 @@ changed, can produce different output bytes:
 
 ```rust
 pub struct ToolIdentity {
-    pub name: String,            // "term-recorder"
-    pub version: String,         // CARGO_PKG_VERSION
-    pub ffmpeg_version: String,  // first line of `ffmpeg -version`
-    pub font_sha256: String,     // hash of bundled DejaVu Sans Mono
+    pub name: String,                    // "term-recorder"
+    pub version: String,                 // CARGO_PKG_VERSION
+    pub ffmpeg_version: String,          // first line of `ffmpeg -version`
+    pub font_sha256: String,             // hash of bundled DejaVu Sans Mono
+    pub recorder_sha256: Option<String>, // SHA-256 of the recorder binary itself
 }
 ```
 
-**Adequacy:** these four pin the major variance sources. ffmpeg
-version captures libx264 + libfreetype + container muxer behavior;
-font hash captures glyph rasterization input; recorder name+version
-capture the rest of the Rust side.
+**Adequacy:** these five pin every variance source that affects
+output bytes. ffmpeg version captures libx264 + libfreetype +
+container muxer behavior; font hash captures glyph rasterization
+input; `recorder_sha256` pins the exact binary, closing the gap
+where two builds at the same `Cargo.toml` version with different
+`Cargo.lock` patch versions could in principle diverge.
 
-**Gap (for strict blockchain attestation):** the recorder version
-corresponds to a `Cargo.toml` version string, not a specific binary
-hash. Two builds of the recorder at version `0.1.0` from different
-`Cargo.lock` states (different vt100 / image / serde_json patch
-versions) could in principle produce different output. The tool
-identity does not currently include the recorder binary's own
-SHA-256 or the `Cargo.lock` hash.
+`recorder_sha256` is `Option<String>` for two reasons:
 
-For most use cases this is fine — patch-level dep variance
-typically doesn't affect output. For blockchain trust where any
-divergence breaks consensus, recommend adding either:
+1. **Back-compat:** legacy receipts written before the field
+   existed continue to parse via `#[serde(default)]`.
+2. **Best-effort population:** if `std::env::current_exe()` fails
+   (rare, but possible if the binary is unlinked under us), the
+   recorder still emits a receipt — just without the field. The
+   verifier symmetrically skips comparison when either side lacks
+   the hash.
 
-1. `recorder_sha256` field — hash of the binary at recording time,
-   verifiable on any node by hashing its own binary.
-2. `cargo_lock_sha256` field — hash of the Cargo.lock used to build
-   the recorder, narrower but more portable.
-
-Either change is additive (use `#[serde(default,
-skip_serializing_if)]` like `spec_sha256` and `scene_sha256`).
+When both sides have a hash and they disagree, `Receipt::verify`
+returns `EnvironmentDiffers { field: "tool.recorder_sha256", ... }`
+before the re-render even runs. For strict blockchain attestation,
+two nodes with different binary hashes are rejected up front
+instead of failing on `OutputDiffers` later.
 
 ## Empirical confirmation
 
 These layer-level claims are continuously verified by:
 
-- `cargo test --lib` (131 tests including `paint_is_byte_stable`)
+- `cargo test --lib` (133 tests including `paint_is_byte_stable`)
 - `make verify-goldens` (45 layer hashes across 5 scenes)
 - `make bless-goldens` (N=10 agreement gate; refuses to commit a
   golden if any layer disagrees across 10 runs)
@@ -175,22 +174,25 @@ confirming that determinism survives the .rs → .scene boundary.
 
 ## Summary
 
-| Layer             | Determinism source                      | Verified     |
-| ----------------- | --------------------------------------- | ------------ |
-| Cast parse        | `serde_json` + `Vec`/`BTreeMap`         | yes          |
-| Snapshot replay   | vt100 state machine + `BTreeMap`        | yes          |
-| Paint             | pure rasterization, byte-stability test | yes (test)   |
-| Encode (libx264)  | pinned ffmpeg flags incl. `-threads 1`  | yes          |
-| Encode (NVENC)    | **non-deterministic by design**         | n/a (opt-in) |
-| Encode (GIF)      | pinned palettegen + Bayer dither        | yes          |
-| Concat file       | deterministic input ordering            | yes          |
-| Cast write        | sorted env, ordered events              | yes          |
-| **Tool identity** | **partial — see "Gap" above**           | **partial**  |
+| Layer            | Determinism source                               | Verified      |
+| ---------------- | ------------------------------------------------ | ------------- |
+| Cast parse       | `serde_json` + `Vec`/`BTreeMap`                  | yes           |
+| Snapshot replay  | vt100 state machine + `BTreeMap`                 | yes           |
+| Paint            | pure rasterization, byte-stability test          | yes (test)    |
+| Encode (libx264) | pinned ffmpeg flags incl. `-threads 1`           | yes           |
+| Encode (NVENC)   | **non-deterministic by design**                  | n/a (opt-in)  |
+| Encode (GIF)     | pinned palettegen + Bayer dither                 | yes           |
+| Concat file      | deterministic input ordering                     | yes           |
+| Cast write       | sorted env, ordered events                       | yes           |
+| Tool identity    | name + version + ffmpeg + font + recorder_sha256 | yes (e3d5a8a) |
 
-Every layer except tool identity has a strong determinism story.
-The libx264 path, GIF path, snapshot replay, paint, and cast
-serialization are all byte-stable by construction or by test.
-NVENC is opt-in and explicitly flagged non-portable. Tool identity
-captures version + ffmpeg + font but not the recorder binary
-itself; the recommended additive field for strict provenance is
-`recorder_sha256` in the receipt.
+Every layer has a strong determinism story. The libx264 path,
+GIF path, snapshot replay, paint, and cast serialization are all
+byte-stable by construction or by test. NVENC is opt-in and
+explicitly flagged non-portable. Tool identity captures every
+variance source including the recorder binary's own SHA-256.
+
+**Remaining minor gap:** `Receipt::verify` does not refuse NVENC
+receipts up front — it re-renders and fails with `OutputDiffers`
+instead of with a clearer "this encoder is not byte-portable"
+error. Documented but not enforced.
