@@ -13,9 +13,8 @@ use term_recorder::recorder::{Key, Recorder, RecorderConfig, ShellProfile};
 #[must_use]
 pub fn tint_shell_profile() -> ShellProfile {
     ShellProfile {
-        setup_commands: vec!["cd \"$HOME\"".into()],
         prompt: r"\[\e[31m\]t\[\e[33m\]i\[\e[32m\]n\[\e[36m\]t\[\e[0m\] $ ".into(),
-        clear_on_start: true,
+        ..ShellProfile::simple()
     }
 }
 

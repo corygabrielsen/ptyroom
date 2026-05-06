@@ -53,6 +53,11 @@ pub struct ShellProfile {
     pub prompt: String,
     /// Whether to clear the terminal after startup setup.
     pub clear_on_start: bool,
+    /// Optional verbatim rcfile bytes. When `Some`, the structured
+    /// fields above are ignored and these bytes are written to the
+    /// rcfile as-is. Used by the scene DSL to pass through a heredoc
+    /// `SetShellRcfile` block.
+    pub raw_rcfile: Option<Vec<u8>>,
 }
 
 /// Bytes inserted into the presentation stream without touching the PTY.
@@ -123,6 +128,7 @@ impl ShellProfile {
             setup_commands: vec!["cd \"$HOME\"".into()],
             prompt: "$ ".into(),
             clear_on_start: true,
+            raw_rcfile: None,
         }
     }
 }
@@ -725,12 +731,16 @@ fn build_rcfile(profile: &ShellProfile) -> std::io::Result<NamedTempFile> {
         .prefix("term-recorder-rc-")
         .suffix(".rc")
         .tempfile()?;
-    for line in &profile.setup_commands {
-        writeln!(f, "{line}")?;
-    }
-    writeln!(f, "PS1={}", shell_single_quote(&profile.prompt))?;
-    if profile.clear_on_start {
-        writeln!(f, "printf '\\033[H\\033[2J\\033[3J'")?;
+    if let Some(raw) = &profile.raw_rcfile {
+        f.write_all(raw)?;
+    } else {
+        for line in &profile.setup_commands {
+            writeln!(f, "{line}")?;
+        }
+        writeln!(f, "PS1={}", shell_single_quote(&profile.prompt))?;
+        if profile.clear_on_start {
+            writeln!(f, "printf '\\033[H\\033[2J\\033[3J'")?;
+        }
     }
     f.flush()?;
     Ok(f)
@@ -782,6 +792,7 @@ mod tests {
             setup_commands: vec!["cd /work".into(), "export DEMO=1".into()],
             prompt: "demo's $ ".into(),
             clear_on_start: false,
+            raw_rcfile: None,
         })
         .unwrap();
         let s = std::fs::read_to_string(f.path()).unwrap();

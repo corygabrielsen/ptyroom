@@ -29,6 +29,7 @@ pub mod receipt;
 pub mod recorder;
 pub mod recording;
 mod render;
+pub mod scene;
 pub mod snapshot;
 pub mod snapshot_replay;
 pub mod spec;
