@@ -41,7 +41,7 @@ write side and continues reading output until `ptyshare` closes.
 Input ordering is the order in which the host event loop drains readable
 participants. There is no causal metadata or per-client identity in the
 trace yet. If identity matters, put an authenticated layer in front of
-the TCP stream and attach that identity through a future attestation.
+the TCP stream and attach that identity through an attestation.
 
 ## Backpressure
 

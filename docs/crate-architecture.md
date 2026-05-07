@@ -221,6 +221,8 @@ The witness commits to an attestation file hash, and verification checks
 the load-bearing law: `attestation.target_sha256 == witness.trace_sha256`.
 Provider-specific trust, such as SSH host identity or KMS signatures, lives
 behind `AttestationProvider` / `AttestationVerifier` implementations.
+The formal substitution model is in
+[`provenance-anchors.md`](provenance-anchors.md).
 
 ## Publication Bar
 

@@ -211,7 +211,8 @@ The witness format is nix-derivation-shaped (provenance + bit-exact
 reproduction); the contract is in-toto-policy-shaped (behavioral
 assertions); the attestation is a provider-shaped provenance anchor.
 Together they make the GIF/MP4, behavior, and external claim meet at
-one trace digest.
+one trace digest. The provider substitution model is documented in
+[`docs/provenance-anchors.md`](docs/provenance-anchors.md).
 
 ## CLI
 

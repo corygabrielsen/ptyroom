@@ -1,137 +1,94 @@
-# Provenance Anchors
+# Provenance Anchors And Trust Algebra
 
-`ptytrace` currently proves a render claim:
+`ptytrace` can prove that media was rendered from a trace. That is not
+the same as proving the trace came from a particular machine, user,
+service, or courtroom exhibit. A trace is bytes; bytes can be fabricated.
 
-```text
-this media was rendered from this trace by this render pipeline
-```
+The missing durable object is an attestation: a provider-specific claim
+over the trace digest.
 
-That is valuable, but it does not prove the trace came from a real
-session. A PTY trace is just bytes. If someone fabricates the bytes,
-the current witness can still faithfully certify the fabricated story.
-
-The missing object is a provenance anchor: a verifiable claim that an
-identity, machine, service, or session bound itself to the trace digest.
-
-## Current Topology
+## Objects
 
 ```text
-Script -------------------------- run --------------------------> Trace
-src/script/exec.rs                                              src/trace.rs
-
-Live PTY session ---------------- capture ----------------------> Trace
-src/pty/live.rs                                              src/trace.rs
-
-Trace --------------------------- render -----------------------> Media
-src/render.rs                                                   GIF / MP4
-
-Trace × Media × RenderOptions ---- witness ---------------------> Witness
-src/render.rs                                                   src/witness.rs
-
-Trace × Contract ---------------- check ------------------------> Bool
-src/contract.rs
-
-Witness × Trace × Media × Contract -- verify -------------------> Bool
-src/witness.rs
+S = session, command, or external context
+T = .ptytrace bytes
+R = render options
+M = media bytes, usually GIF or MP4
+C = behavioral contract
+A = attestation sidecar
+W = witness sidecar
+h = SHA-256 over exact file bytes
 ```
 
-The current `Witness` contains:
-
-- `trace_sha256`
-- render configuration
-- tool identity
-- `output_sha256`
-- optional `contract_sha256`
-- optional `script_sha256`
-- optional `attestation_sha256`
-
-`script_sha256` records the recipe for scripted recordings. It is useful
-provenance, but it is not an attestation that the trace happened in a
-particular external context. Verification does not re-run the script,
-and live captures have no script recipe at all.
-
-## Target Topology
-
-Add one new object:
+Implemented files map directly onto those objects:
 
 ```text
-A = Attestation
+T : src/trace.rs
+M : src/render.rs + src/encode.rs
+C : src/contract.rs
+A : src/attestation.rs
+W : src/witness.rs
 ```
 
-Then the topology becomes:
-
-```text
-Session/Context ---------------- capture -----------------------> Trace
-       |                                                           |
-       | attest(hash(Trace))                                      | hash
-       v                                                           v
-Attestation -------------------------------------------------- target_sha256
-
-Trace --------------------------- render -----------------------> Media
-Trace × Contract ---------------- check ------------------------> Bool
-
-Trace × Media × Contract × Attestation -- witness --------------> Witness
-Witness × Trace × Media × Contract × Attestation -- verify -----> Bool
-```
-
-The witness should not claim "SSH happened" by embedding SSH-looking
-strings. It should commit to an `Attestation` object that can be verified
-independently and whose target is the trace hash.
-
-## Algebra
-
-Objects:
-
-```text
-S = session or external context
-T = trace
-M = media
-C = contract
-A = attestation
-W = witness
-```
-
-Operations:
+## Operations
 
 ```text
 capture : S -> T
-render  : T -> M
-check   : T × C -> Bool
-attest  : Provider × hash(T) -> A
-witness : T × M × C × A -> W
-verify  : W × T × M × C × A -> Bool
+render  : T x R -> M
+check   : T x C -> Bool
+attest  : Provider x h(T) -> A
+witness : h(T) x R x h(M) x h(C)? x h(A)? -> W
+verify  : W x T x M x C? x A? -> Outcome
 ```
 
-Verification predicate:
+The current implementation supports one optional attestation sidecar in
+`Witness::attestation_sha256`. The algebra generalizes to multiple
+anchors by replacing `A?` with a set of attestations or an aggregate
+attestation whose target is still `h(T)`.
+
+## Verification Predicate
+
+For a witness with both a contract and an attestation:
 
 ```text
 verify(W, T, M, C, A) =
-  hash(T) == W.trace_sha256
-  AND hash(M) == W.output_sha256
-  AND hash(C) == W.contract_sha256, when present
-  AND hash(A) == W.attestation_sha256, when present
+  h(T) == W.trace_sha256
+  AND h(M) == W.output_sha256
+  AND h(C) == W.contract_sha256
+  AND h(A) == W.attestation_sha256
   AND render(T, W.render) == M
-  AND check(T, C), when present
-  AND verify_attestation(A)
-  AND A.target_sha256 == hash(T)
+  AND check(T, C)
+  AND A.target_sha256 == h(T)
+  AND verify_provider(A) == Trusted
 ```
 
-The important law is:
+The load-bearing law is:
 
 ```text
-A.target_sha256 == hash(T)
+A.target_sha256 == h(T)
 ```
 
-Without that law, an attacker can pair a real attestation from one
-session with a fabricated trace from another session. The attestation
-would be valid, but irrelevant.
+Without that law, a verifier can be tricked by a valid attestation for
+one session paired with a fabricated trace from another session.
 
-## Substitution Rule
+## Three Trust Layers
 
-SSH is one possible anchor provider. It is substitutable with any
-provider that can emit a verifiable claim over `hash(T)`.
+Keep these separate:
 
-Minimum provider interface:
+| Layer | Question | Examples | Durable in witness? |
+| --- | --- | --- | --- |
+| Render witness | Was this media rendered from this trace by this pipeline? | `Witness`, ffmpeg identity, font hash | Yes |
+| Behavioral contract | Did this trace contain the expected behavior? | text/color predicates, forbidden output | Yes, by contract hash |
+| Provenance anchor | Did some external identity bind itself to this trace hash? | SSH signature, KMS signature, TPM quote, OIDC token, log inclusion | Yes, by attestation hash |
+
+Authenticated transport is useful but not enough by itself. SSH,
+WireGuard, TLS, or a private network can control who participates during
+a live session. They become durable evidence only when some provider
+emits an attestation targeting `h(T)`.
+
+## Provider Interface
+
+The code uses two provider traits:
 
 ```rust
 trait AttestationProvider {
@@ -145,150 +102,125 @@ trait AttestationVerifier {
 }
 ```
 
-Minimum attestation shape:
-
-```rust
-struct Attestation {
-    version: u32,
-    kind: String,
-    issuer: String,
-    subject: String,
-    context: serde_json::Value,
-    target_sha256: String,
-    freshness: Freshness,
-    proof: serde_json::Value,
-}
-```
-
-`context` is provider-specific. `target_sha256` is not.
-
-## Candidate Providers
-
-SSH:
+Every provider writes the same provider-independent fields:
 
 ```text
-subject: user key fingerprint or user cert principal
-issuer: host key fingerprint or SSH CA
-context: remote user, host, session id when available
-proof: signature or transcript-derived binding over hash(T)
+kind
+issuer
+subject
+context
+target_sha256
+freshness
+proof
 ```
 
-KMS / HSM:
+`context`, `freshness`, and `proof` are provider-specific. `target_sha256`
+is not. The target is what lets unrelated trust mechanisms compose with
+the same trace, witness, contract, and media.
+
+## Substitution Rule
+
+SSH is substitutable with another provider exactly when that provider can
+make a verifier-checkable claim over `h(T)`.
+
+A provider is a valid substitute for SSH in this topology if it satisfies
+all of these laws:
+
+| Law | Requirement |
+| --- | --- |
+| Target binding | The provider proof covers `A.target_sha256`, and `A.target_sha256 == h(T)`. |
+| Provider verification | A verifier for `A.kind` can return `Trusted`, `Invalid`, or `UnsupportedKind` without relying on the witness text. |
+| Subject semantics | `issuer`, `subject`, and `context` have provider-defined meaning that a reviewer can interpret. |
+| Freshness policy | Replay resistance is explicit: none, nonce, timestamp, or nonce plus timestamp. |
+| Byte stability | `h(A)` is over exact serialized attestation bytes, so a witness cannot silently swap sidecars. |
+
+Substitution does not mean all providers prove the same fact. It means
+they plug into the same verification equation.
+
+## Provider Matrix
+
+| Provider | What it can prove | What it does not prove |
+| --- | --- | --- |
+| SSH signature | A user key, host key, or SSH CA principal signed `h(T)`. | The command was authorized, legal, complete, or honestly recorded. |
+| SSH transport | The live byte stream crossed an authenticated SSH channel. | Durable proof after the fact unless the channel metadata is signed into `A`. |
+| WireGuard / overlay network | A peer key or network identity was allowed on the private transport. | Which human acted, or what happened after bytes entered the PTY. |
+| TLS / mTLS | A certificate identity participated in a channel or signed `h(T)`. | That the terminal state was semantically correct. |
+| KMS / HSM | A managed key signed `h(T)` under an account, role, policy, or hardware boundary. | That the operator or workload should have been allowed to request the signature. |
+| TPM | A device produced a quote binding `h(T)` to machine state or PCRs. | User intent, app correctness, or completeness of capture. |
+| CI / OIDC | A workflow identity, repo, commit, run id, or deploy job bound itself to `h(T)`. | That source code was safe, reviewed, or free of supply-chain compromise. |
+| Sigstore / Fulcio / Rekor | An OIDC identity signed `h(T)` and optionally logged it. | That the trace is truthful beyond the identity and log guarantees. |
+| Transparency log | `h(T)`, `h(W)`, or `h(A)` existed in an append-only log at an index/time. | Who created it unless combined with a signature identity. |
+| File provider | A local unsigned sidecar targets `h(T)`. | Any external identity. This is for fixtures, demos, and plumbing tests. |
+
+## Example Topologies
+
+### Remote SSH Session
 
 ```text
-subject: key id
-issuer: cloud account or HSM cluster
-context: account, region, role, key policy snapshot if available
-proof: KMS signature over hash(T)
+ptytrace ssh host.example.com -> T
+ssh-key-sign(h(T))            -> A_ssh
+ptyrender T M --attestation A_ssh -> W
+verify(W, T, M, A_ssh)
 ```
 
-TPM:
+The SSH channel made the session possible. The durable claim is the SSH
+signature over `h(T)`.
+
+### Shared Terminal Behind SSH
 
 ```text
-subject: device identity
-issuer: TPM endorsement / attestation chain
-context: PCR set, boot state, machine identity
-proof: quote with hash(T) as nonce or qualifying data
+ssh -L 7000:127.0.0.1:7000 host
+ptyshare --listen 127.0.0.1:7000 -> T
+provider-sign(h(T))              -> A
 ```
 
-CI / OIDC:
+The tunnel authenticates the live transport. The attestation makes an
+after-the-fact claim about the finished trace.
+
+### CI Demonstration
 
 ```text
-subject: repo, workflow, run id, commit
-issuer: OIDC issuer
-context: job, actor, ref, workflow sha
-proof: token or exchange result that binds to hash(T)
+ptytrace run demo.script -> T
+OIDC token exchange over h(T) -> A_oidc
+contract check(T, C)
+render(T, R) -> M
+witness(h(T), R, h(M), h(C), h(A_oidc)) -> W
 ```
 
-Transparency log:
+The verifier checks reproducibility, behavior, and workload identity
+against one trace digest.
+
+### Courtroom Exhibit
 
 ```text
-subject: witness hash
-issuer: log identity
-context: log index, tree size, timestamp
-proof: inclusion proof for hash(W)
+forensic source material -> scripted or live reconstruction -> T
+expert/lab/court system signs h(T) -> A
+render(T) -> M
+witness(T, M, A) -> W
 ```
 
-## Code Insertion Points
+The GIF or MP4 explains the exhibit. The trace is the replayable record.
+The attestation says which expert, lab, or system bound itself to that
+record. Chain of custody for the underlying evidence still lives outside
+`ptytrace`.
 
-Add `src/attestation.rs`:
+## What Verification Does Not Prove
+
+Even a fully verified tuple `(W, T, M, C, A)` does not prove:
+
+- the trace is a complete record of the world;
+- the operator had authority;
+- the command was safe;
+- the external system was uncompromised;
+- the contract captured every relevant behavior;
+- legal chain of custody exists.
+
+It proves the narrower and useful claim:
 
 ```text
-Attestation
-AttestationRef / attestation_sha256
-AttestationProvider
-AttestationVerifier
-AttestationOutcome
+This exact media, behavior claim, and provider claim all meet at this
+exact trace digest.
 ```
 
-Extend `src/witness.rs`:
-
-```text
-Witness {
-    ...
-    attestation_sha256: Option<String>,
-}
-
-VerifyOutcome {
-    ...
-    AttestationRequired,
-    AttestationDiffers,
-    AttestationTargetDiffers,
-}
-```
-
-Extend `src/render.rs`:
-
-```text
-Render {
-    ...
-    attestation_sha256: Option<String>,
-}
-
-Render::attestation_sha256(hash)
-```
-
-Extend CLI surface:
-
-```text
-ptytrace attest file --trace T --out A
-ptyrender TRACE OUT --receipt W --attestation A
-ptyrender TRACE OUT --receipt W --attestation-out A
-ptytrace run SCRIPT --out OUT --receipt W --attestation A
-ptytrace run SCRIPT --out OUT --receipt W --attestation-out A
-ptytrace verify --witness W --trace T --attestation A
-```
-
-The first implementation is detached:
-
-```text
-1. Produce trace.
-2. Produce or load attestation over hash(trace).
-3. Render trace to media and include hash(attestation bytes) in witness.
-4. Verify witness, trace, media, optional contract, and attestation together.
-```
-
-This avoids coupling recorder internals to SSH/KMS/TPM on day one.
-The built-in `file` provider is explicitly unsigned. It proves the
-sidecar binds to the trace digest; it does not prove an external
-identity.
-
-## Threat Boundary
-
-An attestation does not prove the whole world was true. It proves only
-that the named provider validated a proof whose target was the trace
-hash.
-
-Examples:
-
-- SSH host/user identity does not prove authorization or legality.
-- KMS signature does not prove the trace was complete.
-- TPM quote does not prove the operator intended the action.
-- Transparency-log inclusion does not prove the trace was honest.
-
-Those are separate contracts or external evidence. The invariant here
-is narrower and stronger:
-
-```text
-media, behavior, and provenance all meet at the same trace digest
-```
+That is the algebraic value: independent evidence surfaces compose by
+hashing to the same object.
