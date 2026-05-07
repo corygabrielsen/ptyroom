@@ -12,10 +12,10 @@
 //! `max_runtime` budget is exhausted.
 //!
 //! **Determinism scope.** Unlike scripted recording (virtual playback
-//! time, byte-stable cast under repetition), live recording uses real
-//! wall-clock dwells — the cast's timeline is a record of what was
+//! time, byte-stable trace under repetition), live recording uses real
+//! wall-clock dwells: the trace's timeline is a record of what was
 //! typed when, not a reproducible derivation. The downstream
-//! `cast → media` render remains byte-stable; receipts attest that
+//! `trace -> media` render remains byte-stable; receipts attest that
 //! arrow.
 
 use std::io;
@@ -28,7 +28,7 @@ use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use nix::sys::termios::{SetArg, Termios, cfmakeraw, tcgetattr, tcsetattr};
 use nix::unistd::{read, write};
 
-use super::pty;
+use super::process;
 use crate::recording::{DwellMs, TraceBuilder};
 use crate::trace::Trace;
 
@@ -61,7 +61,7 @@ impl Default for CaptureOpts {
     }
 }
 
-/// Record a live terminal session and return the resulting cast.
+/// Record a live terminal session and return the resulting trace.
 ///
 /// Requires stdin to be a tty (`tcgetattr` fails otherwise). The
 /// foreground loop exits when:
@@ -88,7 +88,7 @@ pub fn capture(opts: CaptureOpts) -> Result<Trace> {
     let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
     let (cols, rows) = resolve_geometry(opts.cols, opts.rows);
 
-    let mut pty = pty::spawn(&argv_refs, cols, rows)?;
+    let mut pty = process::spawn(&argv_refs, cols, rows)?;
     let pty_fd = pty.fd();
 
     let stdin_fd = io::stdin().as_raw_fd();
@@ -157,7 +157,7 @@ pub fn capture(opts: CaptureOpts) -> Result<Trace> {
                         let stdout_borrow = unsafe { BorrowedFd::borrow_raw(stdout_fd) };
                         // Best-effort tee: a stalled stdout shouldn't
                         // halt the recording. Worst case the user
-                        // misses a frame; the cast still has it.
+                        // misses a frame; the trace still has it.
                         let _ = write(stdout_borrow, bytes);
                         let now = Instant::now();
                         let dwell =
@@ -179,7 +179,7 @@ pub fn capture(opts: CaptureOpts) -> Result<Trace> {
 
     pty.terminate_child();
     let recording = builder.finish_screen(cols, rows)?;
-    Ok(recording.into_cast())
+    Ok(recording.into_trace())
 }
 
 fn resolve_argv(argv: Vec<String>) -> Vec<String> {

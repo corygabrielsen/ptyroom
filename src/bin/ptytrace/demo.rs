@@ -1,11 +1,12 @@
-//! `tracer` (bare) — the one-command demo flow.
+//! `ptytrace` (bare) — the one-command demo flow.
 //!
 //! No subcommand. No flags. Capture a live terminal session, render
-//! it to a GIF, produce a reproducibility witness, open the GIF, and
-//! print a hash summary. Everything end-to-end in a single command.
+//! it to a GIF, produce a reproducibility witness plus attestation,
+//! open the GIF, and print a hash summary. Everything end-to-end in a
+//! single command.
 //!
 //! Designed for live demos: the audience watches a terminal session,
-//! and at the end a video pops up plus a JSON witness whose hashes
+//! and at the end a video pops up plus JSON sidecars whose hashes
 //! anyone can re-verify on any machine.
 
 use std::io::IsTerminal;
@@ -13,8 +14,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use tracer::tracer::{CaptureOpts, capture};
-use tracer::witness::VerifyOutcome;
+use ptytrace::pty::{CaptureOpts, capture};
+use ptytrace::witness::VerifyOutcome;
 
 const BASENAME: &str = "demo";
 const FONT_SIZE: f32 = 14.0;
@@ -23,18 +24,19 @@ const GIF_WIDTH: u32 = 800;
 pub fn run() -> anyhow::Result<()> {
     if !std::io::stdin().is_terminal() {
         anyhow::bail!(
-            "tracer: stdin is not a terminal — bare-mode demo needs an interactive tty.\n\
-             Pipe-driven users want `tracer capture --out X` (writes a trace) or\n\
-             `tracer render <trace> <out>` (renders an existing trace)."
+            "ptytrace: stdin is not a terminal — bare-mode demo needs an interactive tty.\n\
+             Pipe-driven users want `ptytrace capture --out X` (writes a trace) or\n\
+             `ptyrender <trace> <out>` (renders an existing trace)."
         );
     }
 
     let trace_path = PathBuf::from(format!("{BASENAME}.trace"));
     let gif_path = PathBuf::from(format!("{BASENAME}.gif"));
+    let attestation_path = PathBuf::from(format!("{BASENAME}.attestation.json"));
     let witness_path = PathBuf::from(format!("{BASENAME}.witness.json"));
 
     eprintln!();
-    eprintln!("─── tracer ─────────────────────────────────────────");
+    eprintln!("─── ptytrace ─────────────────────────────────────────");
     eprintln!("recording → {}", trace_path.display());
     eprintln!("type freely; Ctrl-D or `exit` to finish");
     eprintln!("────────────────────────────────────────────────────");
@@ -57,10 +59,13 @@ pub fn run() -> anyhow::Result<()> {
     eprintln!();
     eprintln!("─── post-capture ───────────────────────────────────");
 
+    let attestation_sha256 = write_demo_attestation(&trace_path, &attestation_path)?;
+
     // 2. Render to GIF + emit witness.
-    let witness = tracer::render(&trace_path)?
+    let witness = ptytrace::render(&trace_path)?
         .font_size(FONT_SIZE)
         .width(GIF_WIDTH)
+        .attestation_sha256(attestation_sha256.clone())
         .to_path_with_receipt(&gif_path)?;
     witness.write(&witness_path)?;
 
@@ -79,28 +84,16 @@ pub fn run() -> anyhow::Result<()> {
         gif_path.display(),
         fmt_size(gif_size),
     );
+    eprintln!("✓ attested   {}", attestation_path.display());
     eprintln!("✓ witness    {}", witness_path.display());
-    eprintln!(
-        "    trace_sha256:    {}…",
-        short_hash(&witness.trace_sha256)
-    );
-    eprintln!(
-        "    output_sha256:   {}…",
-        short_hash(&witness.output_sha256)
-    );
-    if let Some(rec_sha) = &witness.tool.recorder_sha256 {
-        eprintln!("    tracer_sha256:   {}…", short_hash(rec_sha));
-    }
-    if let Some(ff_sha) = &witness.tool.ffmpeg_sha256 {
-        eprintln!("    ffmpeg_sha256:   {}…", short_hash(ff_sha));
-    }
+    print_hash_summary(&witness, &attestation_sha256);
 
     // 3. Re-verify the witness we just produced. This re-renders the
     //    trace and confirms the output bytes hash to exactly what the
     //    witness claims. The "✓ MATCH" line is the holy-shit moment —
     //    the audience sees the cryptographic round-trip in the same
     //    output as the live capture they just watched.
-    let outcome = witness.verify(&trace_path)?;
+    let outcome = witness.verify_with_attestation(&trace_path, &attestation_path)?;
     match &outcome {
         VerifyOutcome::Match => {
             eprintln!("✓ verified   MATCH  (re-rendered, output bytes identical)");
@@ -113,9 +106,13 @@ pub fn run() -> anyhow::Result<()> {
     eprintln!();
     eprintln!("─── reproduce on any machine ──────────────────────");
     eprintln!(
-        "    tracer verify --witness {} --trace {}",
+        "    ptytrace verify --witness {} --trace {}",
         witness_path.display(),
         trace_path.display(),
+    );
+    eprintln!(
+        "                  --attestation {}",
+        attestation_path.display()
     );
     eprintln!();
 
@@ -161,6 +158,40 @@ fn open_path(path: &Path) -> anyhow::Result<&'static str> {
         }
     }
     anyhow::bail!("no opener available (tried: {})", openers.join(", "))
+}
+
+fn write_demo_attestation(trace_path: &Path, attestation_path: &Path) -> anyhow::Result<String> {
+    let (trace_sha256, trace_size_bytes) = super::attestation_io::trace_sha256(trace_path)?;
+    let attestation = super::attestation_io::file_attestation(
+        trace_path,
+        &trace_sha256,
+        trace_size_bytes,
+        None,
+        None,
+        None,
+    )?;
+    super::attestation_io::write_attestation(attestation_path, &attestation)
+}
+
+fn print_hash_summary(witness: &ptytrace::witness::Witness, attestation_sha256: &str) {
+    eprintln!(
+        "    trace_sha256:    {}…",
+        short_hash(&witness.trace_sha256)
+    );
+    eprintln!(
+        "    output_sha256:   {}…",
+        short_hash(&witness.output_sha256)
+    );
+    if let Some(rec_sha) = &witness.tool.recorder_sha256 {
+        eprintln!("    ptytrace_sha256:   {}…", short_hash(rec_sha));
+    }
+    if let Some(ff_sha) = &witness.tool.ffmpeg_sha256 {
+        eprintln!("    ffmpeg_sha256:   {}…", short_hash(ff_sha));
+    }
+    eprintln!(
+        "    attestation_sha256: {}…",
+        short_hash(attestation_sha256)
+    );
 }
 
 fn fmt_size(bytes: u64) -> String {

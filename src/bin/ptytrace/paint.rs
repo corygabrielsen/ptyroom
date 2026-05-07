@@ -4,10 +4,10 @@
 
 use std::path::PathBuf;
 
+use ptytrace::frame::Frame;
+use ptytrace::paint::{FONT_BYTES, PaintConfig, Painter};
+use ptytrace::verify::list_numbered_snapshots;
 use rayon::prelude::*;
-use tracer::frame::Frame;
-use tracer::paint::{FONT_BYTES, PaintConfig, Painter};
-use tracer::verify::list_numbered_snapshots;
 
 #[derive(clap::Args)]
 pub struct Args {

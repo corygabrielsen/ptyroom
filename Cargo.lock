@@ -102,6 +102,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
+name = "base64"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+
+[[package]]
 name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -587,6 +593,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "ptytrace"
+version = "0.1.0"
+dependencies = [
+ "ab_glyph",
+ "anyhow",
+ "base64",
+ "clap",
+ "image",
+ "nix 0.31.2",
+ "portable-pty",
+ "rayon",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "vt100",
+]
+
+[[package]]
 name = "pxfm"
 version = "0.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -810,25 +836,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "tracer"
-version = "0.1.0"
-dependencies = [
- "ab_glyph",
- "anyhow",
- "clap",
- "image",
- "nix 0.31.2",
- "portable-pty",
- "rayon",
- "regex",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "vt100",
 ]
 
 [[package]]

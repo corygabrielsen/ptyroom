@@ -2,8 +2,8 @@
 
 use std::path::PathBuf;
 
-use tracer::frame::Frame;
-use tracer::inspect::{InspectMode, RowRange, render};
+use ptytrace::frame::Frame;
+use ptytrace::inspect::{InspectMode, RowRange, render};
 
 #[derive(clap::Args)]
 pub struct Args {

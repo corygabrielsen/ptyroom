@@ -1,7 +1,7 @@
-//! Reproducibility receipts for rendered casts.
+//! Reproducibility receipts for rendered traces.
 //!
 //! A [`Witness`] is a JSON sidecar that lets a third party verify the
-//! rendered output (MP4/GIF) was produced from a known cast file by a
+//! rendered output (MP4/GIF) was produced from a known trace file by a
 //! known pipeline. The receipt is written alongside the artifact and
 //! verified later by [`Witness::verify`], which re-runs the pipeline
 //! with the recorded inputs and confirms the output bytes hash to the
@@ -17,6 +17,7 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::attestation::Attestation;
 use crate::encode::Mp4Encoder;
 use crate::paint::FONT_BYTES;
 use crate::render::Render;
@@ -34,7 +35,7 @@ pub struct Witness {
     pub version: u32,
     /// Tool / environment identity at production time.
     pub tool: ToolIdentity,
-    /// SHA-256 of the input cast file (raw bytes).
+    /// SHA-256 of the input trace file (raw bytes).
     pub trace_sha256: String,
     /// Render configuration that produced the output.
     pub render: RenderOptions,
@@ -43,19 +44,25 @@ pub struct Witness {
     /// Output filename at production time (informational).
     pub output_filename: String,
     /// Optional behavioral attestation hash. When present, the
-    /// receipt promises that the cast satisfies a [`crate::contract::Contract`]
+    /// receipt promises that the trace satisfies a [`crate::contract::Contract`]
     /// whose file bytes hash to this value. [`Witness::verify_with_spec`]
     /// confirms the spec hash matches and re-runs `Contract::check`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contract_sha256: Option<String>,
-    /// Optional source-scene provenance hash. When present, the
-    /// receipt records that the cast was produced by running
-    /// [`crate::script::Script`]`::run` on a `.scene` file whose bytes
+    /// Optional source-script provenance hash. When present, the
+    /// receipt records that the trace was produced by running
+    /// [`crate::script::Script`]`::run` on a `.script` file whose bytes
     /// hash to this value. This is provenance only — verification does
-    /// not re-run the scene (scene execution depends on shells, docker
+    /// not re-run the script (script execution depends on shells, docker
     /// images, and external state that the recorder does not pin).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub script_sha256: Option<String>,
+    /// Optional external provenance attestation hash. When present,
+    /// the receipt commits to an [`crate::attestation::Attestation`]
+    /// sidecar whose file bytes hash to this value and whose
+    /// `target_sha256` equals this receipt's `trace_sha256`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation_sha256: Option<String>,
 }
 
 /// Pipeline identity — the parts of the environment that affect
@@ -100,7 +107,7 @@ impl ToolIdentity {
     /// current binary is non-fatal: `recorder_sha256` is left `None`.
     pub fn current() -> anyhow::Result<Self> {
         Ok(Self {
-            name: "tracer".into(),
+            name: "ptytrace".into(),
             version: env!("CARGO_PKG_VERSION").into(),
             ffmpeg_version: detect_ffmpeg_version()?,
             font_sha256: sha256_hex(FONT_BYTES),
@@ -162,15 +169,15 @@ impl RenderOptions {
     }
 }
 
-/// Outcome of a [`Witness::verify`] or [`Witness::verify_with_spec`] call.
+/// Outcome of a [`Witness::verify`] call and its stricter variants.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum VerifyOutcome {
-    /// Every claim in the receipt held: cast hash + environment +
+    /// Every claim in the receipt held: trace hash + environment +
     /// re-rendered output, plus (if checked) spec hash + spec eval.
     Match,
-    /// Provided cast file's hash differs from the receipt's claim.
-    CastDiffers { expected: String, got: String },
+    /// Provided trace file's hash differs from the receipt's claim.
+    TraceDiffers { expected: String, got: String },
     /// Local environment differs from the receipt's pipeline identity.
     /// `field` names which sub-field disagreed.
     EnvironmentDiffers {
@@ -186,13 +193,23 @@ pub enum VerifyOutcome {
     /// Provided spec file's hash differs from the receipt's claim.
     ContractDiffers { expected: String, got: String },
     /// Contract hash matched, but re-running [`crate::contract::Contract::check`]
-    /// against the cast did not pass every predicate.
+    /// against the trace did not pass every predicate.
     ContractFailed { failed: usize, total: usize },
+    /// Witness has an `attestation_sha256` claim but no attestation
+    /// sidecar was provided to the verifier. Use
+    /// [`Witness::verify_with_attestation`] or
+    /// [`Witness::verify_with_spec_and_attestation`].
+    AttestationRequired,
+    /// Provided attestation file's hash differs from the receipt's claim.
+    AttestationDiffers { expected: String, got: String },
+    /// Attestation hash matched, but the attestation targets a different
+    /// trace digest than this receipt.
+    AttestationTargetDiffers { expected: String, got: String },
     /// The receipt's MP4 encoder is not byte-deterministic across
     /// machines (e.g. `h264_nvenc` depends on GPU + driver version).
     /// Re-rendering would produce a meaningless comparison; verify
-    /// refuses up front. The cast itself and any GIF outputs from
-    /// the same cast remain verifiable; this is specifically about
+    /// refuses up front. The trace itself and any GIF outputs from
+    /// the same trace remain verifiable; this is specifically about
     /// the MP4 output bytes.
     EncoderNotVerifiable { encoder: String },
 }
@@ -208,8 +225,8 @@ impl std::fmt::Display for VerifyOutcome {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Match => write!(f, "MATCH"),
-            Self::CastDiffers { expected, got } => {
-                write!(f, "CAST_DIFFERS expected={expected} got={got}")
+            Self::TraceDiffers { expected, got } => {
+                write!(f, "TRACE_DIFFERS expected={expected} got={got}")
             }
             Self::EnvironmentDiffers {
                 field,
@@ -230,6 +247,18 @@ impl std::fmt::Display for VerifyOutcome {
             }
             Self::ContractFailed { failed, total } => {
                 write!(f, "SPEC_FAILED {failed}/{total} predicate(s)")
+            }
+            Self::AttestationRequired => {
+                write!(f, "ATTESTATION_REQUIRED receipt expects --attestation")
+            }
+            Self::AttestationDiffers { expected, got } => {
+                write!(f, "ATTESTATION_DIFFERS expected={expected} got={got}")
+            }
+            Self::AttestationTargetDiffers { expected, got } => {
+                write!(
+                    f,
+                    "ATTESTATION_TARGET_DIFFERS expected={expected} got={got}"
+                )
             }
             Self::EncoderNotVerifiable { encoder } => {
                 write!(f, "ENCODER_NOT_VERIFIABLE encoder={encoder}")
@@ -267,7 +296,7 @@ impl Witness {
         Ok(())
     }
 
-    /// Re-render the cast and confirm every claim in the receipt
+    /// Re-render the trace and confirm every claim in the receipt
     /// holds (B-only check). Returns the structured outcome instead
     /// of erroring on mismatch — callers decide how to react.
     ///
@@ -275,33 +304,40 @@ impl Witness {
     /// method returns [`VerifyOutcome::ContractRequired`] without doing
     /// the re-render — full verification needs the spec, so call
     /// [`Self::verify_with_spec`] instead.
+    /// If the receipt carries a [`Self::attestation_sha256`] claim, this
+    /// method returns [`VerifyOutcome::AttestationRequired`] without
+    /// doing the re-render — full verification needs the attestation
+    /// sidecar, so call [`Self::verify_with_attestation`] instead.
     ///
     /// # Errors
     /// Trace file missing, ffmpeg invocation failed, or other IO error
     /// during re-render. Witness-claim mismatches return
     /// `Ok(VerifyOutcome::*)`, not `Err`.
-    pub fn verify(&self, cast_path: impl AsRef<Path>) -> anyhow::Result<VerifyOutcome> {
+    pub fn verify(&self, trace_path: impl AsRef<Path>) -> anyhow::Result<VerifyOutcome> {
         if self.contract_sha256.is_some() {
             return Ok(VerifyOutcome::ContractRequired);
         }
-        self.verify_b(cast_path.as_ref())
+        if self.attestation_sha256.is_some() {
+            return Ok(VerifyOutcome::AttestationRequired);
+        }
+        self.verify_b(trace_path.as_ref())
     }
 
     /// Verify the receipt with a spec file. Performs the B-check
-    /// (cast hash, environment, re-render output match) plus the
+    /// (trace hash, environment, re-render output match) plus the
     /// C-check (spec file hashes to the receipt's claim, and re-running
     /// [`crate::contract::Contract::check`] passes every predicate).
     ///
     /// Calling this when the receipt has no `contract_sha256` claim still
-    /// runs the spec check against the cast — the receipt is silent
+    /// runs the spec check against the trace — the receipt is silent
     /// on the spec relationship, but the verifier confirms the spec
-    /// holds against the cast anyway.
+    /// holds against the trace anyway.
     ///
     /// ```no_run
-    /// use tracer::witness::{Witness, VerifyOutcome};
+    /// use ptytrace::witness::{Witness, VerifyOutcome};
     ///
     /// let receipt = Witness::read("demo.gif.receipt.json")?;
-    /// let outcome = receipt.verify_with_spec("demo.cast", "demo.spec.json")?;
+    /// let outcome = receipt.verify_with_spec("demo.ptytrace", "demo.spec.json")?;
     /// assert!(matches!(outcome, VerifyOutcome::Match));
     /// # Ok::<(), anyhow::Error>(())
     /// ```
@@ -311,52 +347,172 @@ impl Witness {
     /// error on the spec, or other IO error.
     pub fn verify_with_spec(
         &self,
-        cast_path: impl AsRef<Path>,
+        trace_path: impl AsRef<Path>,
         spec_path: impl AsRef<Path>,
     ) -> anyhow::Result<VerifyOutcome> {
-        let cast_path = cast_path.as_ref();
+        let trace_path = trace_path.as_ref();
         let spec_path = spec_path.as_ref();
 
-        let spec_bytes = std::fs::read(spec_path).context("read spec for verify")?;
-        let spec_hash = sha256_hex(&spec_bytes);
-        if let Some(expected) = &self.contract_sha256
-            && &spec_hash != expected
-        {
-            return Ok(VerifyOutcome::ContractDiffers {
-                expected: expected.clone(),
-                got: spec_hash,
-            });
+        if self.attestation_sha256.is_some() {
+            return Ok(VerifyOutcome::AttestationRequired);
         }
 
-        match self.verify_b(cast_path)? {
+        let spec_bytes = match self.read_spec_claim(spec_path)? {
+            Ok(spec_bytes) => spec_bytes,
+            Err(outcome) => return Ok(outcome),
+        };
+
+        match self.verify_b(trace_path)? {
             VerifyOutcome::Match => {}
             other => return Ok(other),
         }
 
-        let spec: crate::contract::Contract =
-            serde_json::from_slice(&spec_bytes).context("parse spec")?;
-        let cast = Trace::read(cast_path)?;
-        let report = spec.check(&cast);
-        if !report.all_passed() {
-            return Ok(VerifyOutcome::ContractFailed {
-                failed: report.failed_count(),
-                total: report.outcomes.len(),
-            });
+        if let Some(outcome) = Self::verify_contract_bytes(trace_path, &spec_bytes)? {
+            return Ok(outcome);
         }
 
         Ok(VerifyOutcome::Match)
     }
 
-    fn verify_b(&self, cast_path: &Path) -> anyhow::Result<VerifyOutcome> {
-        // 1. Trace hash check. If the verifier was handed a different
-        //    cast file than the one the receipt was produced from, we
-        //    can't reproduce anything meaningful.
-        let cast_bytes = std::fs::read(cast_path).context("read cast for verify")?;
-        let cast_hash = sha256_hex(&cast_bytes);
-        if cast_hash != self.trace_sha256 {
-            return Ok(VerifyOutcome::CastDiffers {
+    /// Verify the receipt with an attestation sidecar. Performs the
+    /// B-check (trace hash, environment, re-render output match) plus
+    /// the provenance-anchor check (attestation file hashes to the
+    /// receipt's claim, when present, and targets this receipt's trace
+    /// digest).
+    ///
+    /// Calling this when the receipt has no `attestation_sha256` claim
+    /// still checks that the provided attestation targets the receipt's
+    /// trace hash — the receipt is silent on sidecar identity, but the
+    /// verifier confirms the sidecar is relevant.
+    ///
+    /// # Errors
+    /// Trace or attestation file missing, attestation JSON parse error,
+    /// unsupported attestation version, ffmpeg invocation failed, or
+    /// other IO error.
+    pub fn verify_with_attestation(
+        &self,
+        trace_path: impl AsRef<Path>,
+        attestation_path: impl AsRef<Path>,
+    ) -> anyhow::Result<VerifyOutcome> {
+        let trace_path = trace_path.as_ref();
+        let attestation_path = attestation_path.as_ref();
+
+        if let Some(outcome) = self.verify_attestation_claim(attestation_path)? {
+            return Ok(outcome);
+        }
+
+        if self.contract_sha256.is_some() {
+            return Ok(VerifyOutcome::ContractRequired);
+        }
+
+        self.verify_b(trace_path)
+    }
+
+    /// Verify the receipt with both a behavioral spec and an attestation
+    /// sidecar.
+    ///
+    /// # Errors
+    /// Trace, spec, or attestation file missing; spec or attestation JSON
+    /// parse error; unsupported attestation version; ffmpeg invocation
+    /// failed; or other IO error.
+    pub fn verify_with_spec_and_attestation(
+        &self,
+        trace_path: impl AsRef<Path>,
+        spec_path: impl AsRef<Path>,
+        attestation_path: impl AsRef<Path>,
+    ) -> anyhow::Result<VerifyOutcome> {
+        let trace_path = trace_path.as_ref();
+        let spec_path = spec_path.as_ref();
+        let attestation_path = attestation_path.as_ref();
+
+        let spec_bytes = match self.read_spec_claim(spec_path)? {
+            Ok(spec_bytes) => spec_bytes,
+            Err(outcome) => return Ok(outcome),
+        };
+        if let Some(outcome) = self.verify_attestation_claim(attestation_path)? {
+            return Ok(outcome);
+        }
+
+        match self.verify_b(trace_path)? {
+            VerifyOutcome::Match => {}
+            other => return Ok(other),
+        }
+
+        if let Some(outcome) = Self::verify_contract_bytes(trace_path, &spec_bytes)? {
+            return Ok(outcome);
+        }
+
+        Ok(VerifyOutcome::Match)
+    }
+
+    fn read_spec_claim(&self, spec_path: &Path) -> anyhow::Result<Result<Vec<u8>, VerifyOutcome>> {
+        let spec_bytes = std::fs::read(spec_path).context("read spec for verify")?;
+        let spec_hash = sha256_hex(&spec_bytes);
+        if let Some(expected) = &self.contract_sha256
+            && &spec_hash != expected
+        {
+            return Ok(Err(VerifyOutcome::ContractDiffers {
+                expected: expected.clone(),
+                got: spec_hash,
+            }));
+        }
+        Ok(Ok(spec_bytes))
+    }
+
+    fn verify_contract_bytes(
+        trace_path: &Path,
+        spec_bytes: &[u8],
+    ) -> anyhow::Result<Option<VerifyOutcome>> {
+        let spec: crate::contract::Contract =
+            serde_json::from_slice(spec_bytes).context("parse spec")?;
+        let trace = Trace::read(trace_path)?;
+        let report = spec.check(&trace);
+        if !report.all_passed() {
+            return Ok(Some(VerifyOutcome::ContractFailed {
+                failed: report.failed_count(),
+                total: report.outcomes.len(),
+            }));
+        }
+        Ok(None)
+    }
+
+    fn verify_attestation_claim(
+        &self,
+        attestation_path: &Path,
+    ) -> anyhow::Result<Option<VerifyOutcome>> {
+        let attestation_bytes =
+            std::fs::read(attestation_path).context("read attestation for verify")?;
+        let attestation_hash = sha256_hex(&attestation_bytes);
+        if let Some(expected) = &self.attestation_sha256
+            && &attestation_hash != expected
+        {
+            return Ok(Some(VerifyOutcome::AttestationDiffers {
+                expected: expected.clone(),
+                got: attestation_hash,
+            }));
+        }
+
+        let attestation = Attestation::from_slice(&attestation_bytes)?;
+        if !attestation.targets_trace(&self.trace_sha256) {
+            return Ok(Some(VerifyOutcome::AttestationTargetDiffers {
                 expected: self.trace_sha256.clone(),
-                got: cast_hash,
+                got: attestation.target_sha256,
+            }));
+        }
+
+        Ok(None)
+    }
+
+    fn verify_b(&self, trace_path: &Path) -> anyhow::Result<VerifyOutcome> {
+        // 1. Trace hash check. If the verifier was handed a different
+        //    trace file than the one the receipt was produced from, we
+        //    can't reproduce anything meaningful.
+        let trace_bytes = std::fs::read(trace_path).context("read trace for verify")?;
+        let trace_hash = sha256_hex(&trace_bytes);
+        if trace_hash != self.trace_sha256 {
+            return Ok(VerifyOutcome::TraceDiffers {
+                expected: self.trace_sha256.clone(),
+                got: trace_hash,
             });
         }
 
@@ -368,7 +524,7 @@ impl Witness {
             return Ok(diff);
         }
 
-        // 3. Re-render the cast with the receipt's config into a
+        // 3. Re-render the trace with the receipt's config into a
         //    tempfile sized by the recorded extension, then hash and
         //    compare against the receipt's output_sha256.
         let ext = Path::new(&self.output_filename)
@@ -393,13 +549,13 @@ impl Witness {
         }
 
         let tmp = tempfile::Builder::new()
-            .prefix("tracer-verify-")
+            .prefix("ptytrace-verify-")
             .suffix(&format!(".{ext}"))
             .tempfile()
             .context("create verify tempfile")?;
 
-        let cast = Trace::parse(std::str::from_utf8(&cast_bytes)?)?;
-        let mut r = Render::new(cast)
+        let trace = Trace::parse(std::str::from_utf8(&trace_bytes)?)?;
+        let mut r = Render::new(trace)
             .font_size(self.render.font_size)
             .padding(self.render.padding)
             .fps(self.render.fps)
@@ -502,13 +658,15 @@ fn detect_ffmpeg_version() -> anyhow::Result<String> {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
 
     fn fixture_receipt() -> Witness {
         Witness {
             version: WITNESS_VERSION,
             tool: ToolIdentity {
-                name: "tracer".into(),
+                name: "ptytrace".into(),
                 version: "0.1.0".into(),
                 ffmpeg_version: "ffmpeg version 6.1.1".into(),
                 font_sha256: "f".repeat(64),
@@ -527,18 +685,35 @@ mod tests {
             output_filename: "demo.gif".into(),
             contract_sha256: None,
             script_sha256: None,
+            attestation_sha256: None,
         }
+    }
+
+    fn write_attestation(target_sha256: &str) -> tempfile::NamedTempFile {
+        let attestation = Attestation::new(
+            "file",
+            "test-suite",
+            "fixture",
+            target_sha256,
+            crate::attestation::Freshness::None,
+            json!({}),
+            json!({ "algorithm": "none" }),
+        );
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        attestation.write(tmp.path()).unwrap();
+        tmp
     }
 
     #[test]
     fn legacy_receipt_without_optional_hashes_parses() {
         // Legacy receipts (pre-contract_sha256, pre-script_sha256, pre-
-        // recorder_sha256, pre-ffmpeg_sha256) must continue to parse —
-        // those fields are additive Option<String> with serde defaults.
+        // attestation_sha256, pre-recorder_sha256, pre-ffmpeg_sha256)
+        // must continue to parse — those fields are additive Option<String>
+        // with serde defaults.
         let json = r#"{
             "version": 1,
             "tool": {
-                "name": "tracer",
+                "name": "ptytrace",
                 "version": "0.1.0",
                 "ffmpeg_version": "ffmpeg version 6.1.1",
                 "font_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
@@ -557,6 +732,7 @@ mod tests {
         let r: Witness = serde_json::from_str(json).expect("legacy receipt parses");
         assert!(r.contract_sha256.is_none());
         assert!(r.script_sha256.is_none());
+        assert!(r.attestation_sha256.is_none());
         assert!(r.tool.recorder_sha256.is_none());
         assert!(r.tool.ffmpeg_sha256.is_none());
     }
@@ -588,12 +764,12 @@ mod tests {
         r.render.mp4_encoder = "h264_nvenc".into();
         r.output_filename = "demo.mp4".into();
 
-        // Write a fake cast file matching the receipt's claim so the
-        // cast-hash check passes and we exercise the encoder check.
+        // Write a fake trace file matching the receipt's claim so the
+        // trace-hash check passes and we exercise the encoder check.
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        let cast_bytes = b"{\"version\":2,\"width\":80,\"height\":24}\n";
-        std::fs::write(tmp.path(), cast_bytes).unwrap();
-        r.trace_sha256 = sha256_hex(cast_bytes);
+        let trace_bytes = b"{\"version\":2,\"width\":80,\"height\":24}\n";
+        std::fs::write(tmp.path(), trace_bytes).unwrap();
+        r.trace_sha256 = sha256_hex(trace_bytes);
         // Match tool identity to the current environment so we don't
         // get an EnvironmentDiffers diff first.
         r.tool = ToolIdentity::current().expect("ffmpeg present in test env");
@@ -613,7 +789,7 @@ mod tests {
         // mp4_encoder is irrelevant for GIF rendering, so verify
         // must NOT refuse on encoder grounds — it should proceed
         // to the re-render (which here will fail later for other
-        // reasons, since fixture cast bytes are minimal). This test
+        // reasons, since fixture trace bytes are minimal). This test
         // just asserts the refusal path doesn't fire.
         let mut r = fixture_receipt();
         r.render.mp4_encoder = "h264_nvenc".into();
@@ -705,7 +881,7 @@ mod tests {
     }
 
     #[test]
-    fn receipt_with_scene_sha256_round_trips() {
+    fn receipt_with_script_sha256_round_trips() {
         let mut r = fixture_receipt();
         r.script_sha256 = Some("a".repeat(64));
         let json = serde_json::to_string(&r).unwrap();
@@ -715,6 +891,19 @@ mod tests {
         );
         let parsed: Witness = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.script_sha256, r.script_sha256);
+    }
+
+    #[test]
+    fn receipt_with_attestation_sha256_round_trips() {
+        let mut r = fixture_receipt();
+        r.attestation_sha256 = Some("a".repeat(64));
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(
+            json.contains(r#""attestation_sha256":"#),
+            "attestation_sha256 should serialize when Some"
+        );
+        let parsed: Witness = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.attestation_sha256, r.attestation_sha256);
     }
 
     #[test]
@@ -730,22 +919,95 @@ mod tests {
             "None contract_sha256 must skip serialization (back-compat)"
         );
         assert!(
+            !json.contains("attestation_sha256"),
+            "None attestation_sha256 must skip serialization (back-compat)"
+        );
+        assert!(
             !json.contains("ffmpeg_sha256"),
             "None ffmpeg_sha256 must skip serialization (back-compat)"
         );
     }
 
     #[test]
-    fn scene_and_spec_compose_in_one_receipt() {
-        // Both attestation hashes can coexist — receipt records full
-        // provenance (scene → cast → render → output) plus behavioral
-        // attestation (spec → cast).
+    fn script_spec_and_attestation_compose_in_one_receipt() {
+        // Receipt records source-script provenance, behavioral contract,
+        // and external provenance attestation independently.
         let mut r = fixture_receipt();
         r.script_sha256 = Some("a".repeat(64));
         r.contract_sha256 = Some("b".repeat(64));
+        r.attestation_sha256 = Some("d".repeat(64));
         let json = serde_json::to_string(&r).unwrap();
         let parsed: Witness = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.script_sha256.as_deref(), Some(&"a".repeat(64)[..]));
         assert_eq!(parsed.contract_sha256.as_deref(), Some(&"b".repeat(64)[..]));
+        assert_eq!(
+            parsed.attestation_sha256.as_deref(),
+            Some(&"d".repeat(64)[..])
+        );
+    }
+
+    #[test]
+    fn verify_requires_attestation_when_receipt_claims_one() {
+        let mut r = fixture_receipt();
+        r.attestation_sha256 = Some("a".repeat(64));
+
+        let outcome = r.verify("unused.ptytrace").unwrap();
+
+        assert!(matches!(outcome, VerifyOutcome::AttestationRequired));
+        assert_eq!(
+            outcome.to_string(),
+            "ATTESTATION_REQUIRED receipt expects --attestation"
+        );
+    }
+
+    #[test]
+    fn verify_with_spec_requires_attestation_when_receipt_claims_one() {
+        let mut r = fixture_receipt();
+        r.attestation_sha256 = Some("a".repeat(64));
+
+        let outcome = r
+            .verify_with_spec("unused.ptytrace", "unused.spec.json")
+            .unwrap();
+
+        assert!(matches!(outcome, VerifyOutcome::AttestationRequired));
+    }
+
+    #[test]
+    fn verify_with_attestation_reports_hash_diff() {
+        let mut r = fixture_receipt();
+        r.attestation_sha256 = Some("b".repeat(64));
+        let attestation = write_attestation(&r.trace_sha256);
+
+        let outcome = r
+            .verify_with_attestation("unused.ptytrace", attestation.path())
+            .unwrap();
+
+        match outcome {
+            VerifyOutcome::AttestationDiffers { expected, got } => {
+                assert_eq!(expected, "b".repeat(64));
+                assert_ne!(got, expected);
+            }
+            other => panic!("expected AttestationDiffers, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verify_with_attestation_reports_target_diff() {
+        let mut r = fixture_receipt();
+        let attestation = write_attestation(&"d".repeat(64));
+        let attestation_bytes = std::fs::read(attestation.path()).unwrap();
+        r.attestation_sha256 = Some(sha256_hex(&attestation_bytes));
+
+        let outcome = r
+            .verify_with_attestation("unused.ptytrace", attestation.path())
+            .unwrap();
+
+        match outcome {
+            VerifyOutcome::AttestationTargetDiffers { expected, got } => {
+                assert_eq!(expected, r.trace_sha256);
+                assert_eq!(got, "d".repeat(64));
+            }
+            other => panic!("expected AttestationTargetDiffers, got {other:?}"),
+        }
     }
 }

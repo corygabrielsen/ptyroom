@@ -1,6 +1,6 @@
 # Crate Architecture
 
-`tracer` is a reusable deterministic terminal tracer. Its
+`ptytrace` is a reusable deterministic PTY session recorder. Its
 primitives are designed to compose into scripted recordings of any
 interactive CLI; consumer-specific scenes live above this library, not
 inside it.
@@ -28,15 +28,16 @@ script helpers
   Small reusable beats: type a line, press Enter, wait for a prompt,
   hold a frame, add presentation-only text.
 
-tracer core
+ptytrace core
   PTY spawn, typed input, raw byte capture, content-aware waits,
-  virtual presentation time, asciicast output.
+  virtual presentation time, asciinema-compatible trace output.
 
 raw evidence and proof layers
-  Append-only IO log, verified semantic transitions, monotonic timeline.
+  Append-only IO log, verified semantic transitions, monotonic timeline,
+  detached provenance anchors over trace digests.
 
 terminal model and verification
-  Replay casts into snapshots, then check predicates over text, colors,
+  Replay traces into snapshots, then check predicates over text, colors,
   cursor-visible state, and forbidden regressions.
 
 rendering
@@ -45,7 +46,7 @@ rendering
 
 ## Core Contract
 
-The tracer core owns terminal mechanics:
+The ptytrace core owns terminal mechanics:
 
 - process spawning under a PTY;
 - terminal rows and columns;
@@ -55,7 +56,7 @@ The tracer core owns terminal mechanics:
 - virtual dwell;
 - trace construction.
 
-The tracer core must not own product semantics:
+The ptytrace core must not own product semantics:
 
 - no consumer-specific identifiers (theme names, command names, etc.);
 - no consumer-specific UI conventions;
@@ -103,7 +104,7 @@ demonstrated.
 The generic API should stay small:
 
 ```rust
-let mut r = Tracer::spawn(config, &["bash", "-i"])?;
+let mut r = PtyTracer::spawn(config, &["bash", "-i"])?;
 r.type_text("echo hello", char_dwell)?;
 r.send_raw_wait_for(b"\n", enter_dwell, b"$ ", timeout, "prompt")?;
 r.push_presentation_output("# heading", heading_dwell)?;
@@ -113,13 +114,76 @@ let trace = r.stop()?;
 The Docker convenience path is an adapter:
 
 ```rust
-let mut r = Tracer::start(TracerConfig {
+let mut r = PtyTracer::start(PtyTracerConfig {
     shell: ShellProfile::simple(),
-    ..TracerConfig::default()
+    ..PtyTracerConfig::default()
 })?;
 ```
 
-Consumer-specific script helpers should remain outside the tracer core.
+Consumer-specific script helpers should remain outside the ptytrace core.
+
+## Command Algebra
+
+The user-facing tools should separate primitives from composed workflows:
+
+```text
+ptytrace : Command -> Trace
+ptyrender: Trace x RenderOptions -> Media x Witness
+ptyrecord: Command x RenderOptions -> PtyRecord
+```
+
+`ptytrace htop` and `ptytrace ssh ...` are the raw operation: run a
+command under a PTY and preserve the resulting trace. They should not
+need to render media.
+
+`ptyrender trace.ptytrace out.gif` is the pure replay/render
+operation. It can run at any later time, on another machine, or inside
+a verifier.
+
+`ptyrecord htop` and `ptyrecord ssh ...` are convenience composition:
+
+```text
+ptyrecord(command, options) =
+  bundle(ptytrace(command), ptyrender(ptytrace(command), options))
+```
+
+`ptyrecord --trace-in T --media-in M --witness-in W --out R` exposes the
+same final `bundle(...)` step for static-site and release pipelines that
+already rendered media from a trace.
+
+That composition can later be optimized into a streaming pipeline so
+the GIF/MP4 is nearly ready when capture ends, but the optimization
+must preserve the same algebra: the trace remains the durable artifact,
+rendering remains repeatable from that artifact, and the `.ptyrecord`
+bundle is just a portable packaging layer.
+
+## Current CLI Shape
+
+The current crate installs three user-facing binaries:
+
+- `ptytrace`: the raw primitive plus named low-level subcommands.
+- `ptyrender`: the renderer that turns a trace into GIF/MP4 media and
+  optional witnesses.
+- `ptyrecord`: the composed command recorder that captures, renders MP4,
+  and writes a `.ptyrecord` bundle.
+
+`ptytrace render` remains available as the low-level subcommand form of
+`ptyrender`.
+
+## Future Package Split
+
+Prefer package names that make the layering explicit even if installed
+binaries are short:
+
+- `ptytrace`: trace schema, PTY capture, script runner, provenance
+  anchors over trace digests, and the raw `ptytrace` binary.
+- `ptyrender`: frame replay, paint, encode, render witnesses,
+  contracts over rendered terminal state, and the `ptyrender` CLI.
+- `ptyrecord`: thin CLI package that depends on both lower
+  layers and exposes the composed `ptyrecord` CLI.
+
+`ptyrecord` should not own trace or render logic. It is a UX shell
+around the two lower-level operations.
 
 ## Verification Model
 
@@ -128,21 +192,28 @@ A recording is not "good" because encoding succeeded. It is good when:
 - raw IO is closed;
 - expected transitions are replay-verified;
 - presentation timestamps are monotonic;
-- rendered snapshots satisfy the script contract.
+- rendered snapshots satisfy the script contract;
+- any external provenance sidecar targets the same trace digest as the witness.
 
 The verification layer should be reusable. A consumer should be able to assert
 that text appeared, that text never appeared, that a color was reached, or that
 the final frame matches a desired loop state.
 
+Provenance anchors are provider-shaped and detached from the recorder.
+The witness commits to an attestation file hash, and verification checks
+the load-bearing law: `attestation.target_sha256 == witness.trace_sha256`.
+Provider-specific trust, such as SSH host identity or KMS signatures, lives
+behind `AttestationProvider` / `AttestationVerifier` implementations.
+
 ## Publication Bar
 
 Before publishing, this project should have:
 
-- a crate name and README that describe the generic tracer;
+- a crate name and README that describe the generic ptytrace;
 - examples that record a tiny CLI session without Docker;
 - examples that record a Docker-backed shell session;
 - documented guarantees for time virtualization and output source identity;
 - a clean separation between reusable modules and consumer scenes;
-- stable public names for `Tracer`, `TracerConfig`, `ShellProfile`,
+- stable public names for `PtyTracer`, `PtyTracerConfig`, `ShellProfile`,
   `PresentationOutput`, `Key`, `StubColors`, `Trace`, and frame/verification
   primitives.

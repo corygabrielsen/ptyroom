@@ -1,4 +1,4 @@
-//! Script AST — the parsed, expanded form of a `.scene` file.
+//! Script AST — the parsed, expanded form of a `.script` file.
 //!
 //! `Run` and `WaitForPrompt` macros are expanded by the parser before
 //! reaching the AST, so executors only see primitive verbs.
@@ -7,9 +7,9 @@ use std::time::Duration;
 
 use regex::bytes::Regex;
 
-use crate::tracer::Key;
+use crate::pty::Key;
 
-/// A parsed scene file, ready for execution.
+/// A parsed script file, ready for execution.
 #[derive(Debug)]
 pub struct Script {
     pub version: u32,
@@ -60,15 +60,15 @@ pub enum SpawnTarget {
 /// Body verbs after macro expansion.
 #[derive(Debug)]
 pub enum Action {
-    // Class A — PTY side-effect (no cast event)
+    // Class A: PTY side effect (no trace event).
     Send(Vec<u8>),
     Press {
         key: Key,
         repeat: u32,
         dwell: Option<Duration>,
         /// Optional wall-clock settle window to capture incoming PTY
-        /// bytes for each repeat (TUI scenes need this so the response
-        /// to each keystroke lands in the cast — picker draws after
+        /// bytes for each repeat (TUI scripts need this so the response
+        /// to each keystroke lands in the trace: picker draws after
         /// each j/k press, etc.). When `None`, falls back to the
         /// recorder's default settle of microseconds.
         settle: Option<Duration>,
@@ -83,18 +83,18 @@ pub enum Action {
         pattern: Regex,
         timeout: Option<Duration>,
         label: Option<String>,
-        /// Optional playback dwell on the resulting cast event (the
+        /// Optional playback dwell on the resulting trace event (the
         /// one carrying the captured-bytes-up-to-pattern). When set,
         /// virtual time advances by this much after the match event,
-        /// matching `Tracer::send_raw_wait_for(bytes, dwell, ...)`.
+        /// matching `PtyTracer::send_raw_wait_for(bytes, dwell, ...)`.
         /// Default is `0`.
         dwell: Option<Duration>,
     },
     /// Advance virtual playback time, optionally with a wall-clock
     /// settle window during which incoming PTY bytes are captured into
-    /// the cast. `Sleep 800ms` is playback-only (zero settle); `Sleep
+    /// the trace. `Sleep 800ms` is playback-only (zero settle); `Sleep
     /// 800ms Settle 100ms` advances 800ms of playback AND captures
-    /// bytes for 100ms of real time — needed for TUI scenes where the
+    /// bytes for 100ms of real time: needed for TUI scripts where the
     /// child draws frames asynchronously after a key press.
     Sleep {
         dwell: Duration,
@@ -102,9 +102,9 @@ pub enum Action {
     },
     Mark(String),
     Present(Vec<u8>),
-    /// Synthetic typed text: emits one cast event per UTF-8 char with
+    /// Synthetic typed text: emits one trace event per UTF-8 char with
     /// `per_char` playback dwell between events. Like `Type` but the
-    /// bytes never reach the PTY — the cast looks like the text was
+    /// bytes never reach the PTY; the trace looks like the text was
     /// being typed, but the shell sees nothing. Used for explanatory
     /// comments / labels that need the typed-animation feel without
     /// actually running through bash.

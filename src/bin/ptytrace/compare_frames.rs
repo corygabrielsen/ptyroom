@@ -3,10 +3,10 @@
 
 use std::path::{Path, PathBuf};
 
-use tracer::color::HexColor;
-use tracer::encode::TimingEntry;
-use tracer::frame::{Cell, Frame};
-use tracer::verify::list_numbered_snapshots;
+use ptytrace::color::HexColor;
+use ptytrace::encode::TimingEntry;
+use ptytrace::frame::{Cell, Frame};
+use ptytrace::verify::list_numbered_snapshots;
 
 #[derive(clap::Args)]
 pub struct Args {

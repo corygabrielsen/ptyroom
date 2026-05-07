@@ -12,7 +12,7 @@ use std::time::Duration;
 use anyhow::{Context, anyhow, bail};
 use regex::bytes::Regex;
 
-use crate::tracer::Key;
+use crate::pty::Key;
 
 use super::ast::{Action, Config, Located, Script, SpawnTarget};
 use super::lex::{Line, Token, lex};
@@ -29,7 +29,7 @@ const DEFAULT_PER_KEY_DWELL: Duration = Duration::from_millis(35);
 #[allow(clippy::duration_suboptimal_units)]
 const DEFAULT_MAX_RUNTIME: Duration = Duration::from_secs(240);
 
-/// Parse a `.scene` source string into a [`Script`].
+/// Parse a `.script` source string into a [`Script`].
 ///
 /// # Errors
 /// Lex errors, version mismatch, missing required header verbs, unknown
@@ -46,14 +46,14 @@ fn parse_lines(lines: Vec<Line>) -> anyhow::Result<Script> {
     let version = match iter.next() {
         Some(line) if line.verb == "Version" => parse_version(&line)?,
         Some(line) => bail!(
-            "scene:{}: first verb must be `Version`, found `{}`",
+            "script:{}: first verb must be `Version`, found `{}`",
             line.lineno,
             line.verb,
         ),
-        None => bail!("scene: empty file (no Version line)"),
+        None => bail!("script: empty file (no Version line)"),
     };
     if version != SCHEMA_VERSION {
-        bail!("scene: unsupported version {version} (this build supports v{SCHEMA_VERSION})");
+        bail!("script: unsupported version {version} (this build supports v{SCHEMA_VERSION})");
     }
 
     // 2. Header pass: consume Set* lines until we see a non-Set verb.
@@ -72,7 +72,7 @@ fn parse_lines(lines: Vec<Line>) -> anyhow::Result<Script> {
     for line in iter {
         if is_header_verb(&line.verb) {
             bail!(
-                "scene:{}: `{}` is a header verb but appears after the body has begun",
+                "script:{}: `{}` is a header verb but appears after the body has begun",
                 line.lineno,
                 line.verb,
             );
@@ -89,9 +89,9 @@ fn parse_lines(lines: Vec<Line>) -> anyhow::Result<Script> {
 
 fn parse_version(line: &Line) -> anyhow::Result<u32> {
     let [Token::Integer(n)] = line.args.as_slice() else {
-        bail!("scene:{}: Version expects a single integer", line.lineno);
+        bail!("script:{}: Version expects a single integer", line.lineno);
     };
-    u32::try_from(*n).map_err(|_| anyhow!("scene:{}: version out of range", line.lineno))
+    u32::try_from(*n).map_err(|_| anyhow!("script:{}: version out of range", line.lineno))
 }
 
 fn is_header_verb(verb: &str) -> bool {
@@ -131,7 +131,7 @@ struct HeaderBuilder {
 impl HeaderBuilder {
     fn finish(self) -> anyhow::Result<Config> {
         let spawn = self.spawn.ok_or_else(|| {
-            anyhow!("scene: missing process target — set one of SetSpawn / SetWarm / SetCold")
+            anyhow!("script: missing process target — set one of SetSpawn / SetWarm / SetCold")
         })?;
 
         // Warn (without erroring) on shell_rcfile + non-Cold target —
@@ -160,7 +160,7 @@ impl HeaderBuilder {
 
 fn apply_header(h: &mut HeaderBuilder, line: &Line) -> anyhow::Result<()> {
     let lineno = line.lineno;
-    let ctx = || format!("scene:{lineno}: {}", line.verb);
+    let ctx = || format!("script:{lineno}: {}", line.verb);
     match line.verb.as_str() {
         "SetCols" => {
             let n = expect_one_integer(line)?;
@@ -174,7 +174,7 @@ fn apply_header(h: &mut HeaderBuilder, line: &Line) -> anyhow::Result<()> {
             check_spawn_unique(h, lineno, "SetSpawn")?;
             let argv = expect_strings_to_text(&line.args, lineno)?;
             if argv.is_empty() {
-                bail!("scene:{lineno}: SetSpawn requires at least one argv element");
+                bail!("script:{lineno}: SetSpawn requires at least one argv element");
             }
             h.spawn = Some(SpawnTarget::Spawn(argv));
             h.spawn_set_at = Some(lineno);
@@ -188,7 +188,7 @@ fn apply_header(h: &mut HeaderBuilder, line: &Line) -> anyhow::Result<()> {
         "SetWarmCommand" => {
             let argv = expect_strings_to_text(&line.args, lineno)?;
             if argv.is_empty() {
-                bail!("scene:{lineno}: SetWarmCommand requires at least one argv element");
+                bail!("script:{lineno}: SetWarmCommand requires at least one argv element");
             }
             h.warm_command = Some(argv);
         }
@@ -201,7 +201,7 @@ fn apply_header(h: &mut HeaderBuilder, line: &Line) -> anyhow::Result<()> {
         "SetEnv" => {
             let strings = expect_strings_to_text(&line.args, lineno)?;
             let [k, v] = <[String; 2]>::try_from(strings).map_err(|_| {
-                anyhow!("scene:{lineno}: SetEnv expects two string args (KEY VALUE)")
+                anyhow!("script:{lineno}: SetEnv expects two string args (KEY VALUE)")
             })?;
             h.env.push((k, v));
         }
@@ -221,7 +221,7 @@ fn apply_header(h: &mut HeaderBuilder, line: &Line) -> anyhow::Result<()> {
         "SetPerKeyDwell" => {
             h.per_key_dwell = Some(expect_one_duration(line)?);
         }
-        other => bail!("scene:{lineno}: unknown header verb `{other}`"),
+        other => bail!("script:{lineno}: unknown header verb `{other}`"),
     }
     Ok(())
 }
@@ -229,7 +229,7 @@ fn apply_header(h: &mut HeaderBuilder, line: &Line) -> anyhow::Result<()> {
 fn check_spawn_unique(h: &HeaderBuilder, lineno: u32, verb: &str) -> anyhow::Result<()> {
     if let Some(prev) = h.spawn_set_at {
         bail!(
-            "scene:{lineno}: {verb} sets a process target, but one is already set at line {prev}"
+            "script:{lineno}: {verb} sets a process target, but one is already set at line {prev}"
         );
     }
     Ok(())
@@ -334,7 +334,7 @@ fn parse_body_line(
                 },
             ));
         }
-        other => bail!("scene:{lineno}: unknown verb `{other}`"),
+        other => bail!("script:{lineno}: unknown verb `{other}`"),
     }
     Ok(())
 }
@@ -344,9 +344,9 @@ fn parse_sleep_args(line: &Line) -> anyhow::Result<(Duration, Duration)> {
     let mut iter = line.args.iter();
     let dwell_tok = iter
         .next()
-        .ok_or_else(|| anyhow!("scene:{lineno}: Sleep expects a duration"))?;
+        .ok_or_else(|| anyhow!("script:{lineno}: Sleep expects a duration"))?;
     let Token::Duration(dwell) = dwell_tok else {
-        bail!("scene:{lineno}: Sleep's first arg must be a duration");
+        bail!("script:{lineno}: Sleep's first arg must be a duration");
     };
     let mut settle = Duration::ZERO;
     while let Some(tok) = iter.next() {
@@ -354,13 +354,13 @@ fn parse_sleep_args(line: &Line) -> anyhow::Result<(Duration, Duration)> {
             Token::Ident(name) if name == "Settle" => {
                 let v = iter
                     .next()
-                    .ok_or_else(|| anyhow!("scene:{lineno}: Sleep Settle needs a duration"))?;
+                    .ok_or_else(|| anyhow!("script:{lineno}: Sleep Settle needs a duration"))?;
                 let Token::Duration(d) = v else {
-                    bail!("scene:{lineno}: Sleep Settle expects a duration");
+                    bail!("script:{lineno}: Sleep Settle expects a duration");
                 };
                 settle = *d;
             }
-            other => bail!("scene:{lineno}: unexpected Sleep arg {other:?}"),
+            other => bail!("script:{lineno}: unexpected Sleep arg {other:?}"),
         }
     }
     Ok((*dwell, settle))
@@ -371,13 +371,13 @@ fn parse_press_args(line: &Line) -> anyhow::Result<(Key, u32, Option<Duration>, 
     let mut iter = line.args.iter();
     let key_tok = iter
         .next()
-        .ok_or_else(|| anyhow!("scene:{lineno}: Press expects a key name"))?;
+        .ok_or_else(|| anyhow!("script:{lineno}: Press expects a key name"))?;
     let key_name = match key_tok {
         Token::Ident(s) => s.as_str(),
-        _ => bail!("scene:{lineno}: Press's first arg must be a key name (e.g., Enter)"),
+        _ => bail!("script:{lineno}: Press's first arg must be a key name (e.g., Enter)"),
     };
     let key = key_from_name(key_name)
-        .ok_or_else(|| anyhow!("scene:{lineno}: unknown key `{key_name}`"))?;
+        .ok_or_else(|| anyhow!("script:{lineno}: unknown key `{key_name}`"))?;
     let mut repeat = 1u32;
     let mut dwell = None;
     let mut settle = None;
@@ -385,27 +385,27 @@ fn parse_press_args(line: &Line) -> anyhow::Result<(Key, u32, Option<Duration>, 
         match tok {
             Token::Integer(n) => {
                 repeat =
-                    u32::try_from(*n).map_err(|_| anyhow!("scene:{lineno}: repeat overflow"))?;
+                    u32::try_from(*n).map_err(|_| anyhow!("script:{lineno}: repeat overflow"))?;
             }
             Token::Ident(name) if name == "Dwell" => {
                 let v = iter
                     .next()
-                    .ok_or_else(|| anyhow!("scene:{lineno}: Press Dwell needs a duration"))?;
+                    .ok_or_else(|| anyhow!("script:{lineno}: Press Dwell needs a duration"))?;
                 let Token::Duration(d) = v else {
-                    bail!("scene:{lineno}: Press Dwell expects a duration");
+                    bail!("script:{lineno}: Press Dwell expects a duration");
                 };
                 dwell = Some(*d);
             }
             Token::Ident(name) if name == "Settle" => {
                 let v = iter
                     .next()
-                    .ok_or_else(|| anyhow!("scene:{lineno}: Press Settle needs a duration"))?;
+                    .ok_or_else(|| anyhow!("script:{lineno}: Press Settle needs a duration"))?;
                 let Token::Duration(d) = v else {
-                    bail!("scene:{lineno}: Press Settle expects a duration");
+                    bail!("script:{lineno}: Press Settle expects a duration");
                 };
                 settle = Some(*d);
             }
-            other => bail!("scene:{lineno}: unexpected Press arg {other:?}"),
+            other => bail!("script:{lineno}: unexpected Press arg {other:?}"),
         }
     }
     Ok((key, repeat, dwell, settle))
@@ -416,7 +416,7 @@ fn parse_type_args(line: &Line) -> anyhow::Result<(Vec<u8>, Option<Duration>)> {
     let mut iter = line.args.iter();
     let text_tok = iter
         .next()
-        .ok_or_else(|| anyhow!("scene:{lineno}: Type expects a string"))?;
+        .ok_or_else(|| anyhow!("script:{lineno}: Type expects a string"))?;
     let text = bytes_from(text_tok, lineno, "Type")?;
     let mut per_char = None;
     while let Some(tok) = iter.next() {
@@ -424,13 +424,13 @@ fn parse_type_args(line: &Line) -> anyhow::Result<(Vec<u8>, Option<Duration>)> {
             Token::Ident(name) if name == "PerChar" => {
                 let v = iter
                     .next()
-                    .ok_or_else(|| anyhow!("scene:{lineno}: Type PerChar needs a duration"))?;
+                    .ok_or_else(|| anyhow!("script:{lineno}: Type PerChar needs a duration"))?;
                 let Token::Duration(d) = v else {
-                    bail!("scene:{lineno}: Type PerChar expects a duration");
+                    bail!("script:{lineno}: Type PerChar expects a duration");
                 };
                 per_char = Some(*d);
             }
-            other => bail!("scene:{lineno}: unexpected Type arg {other:?}"),
+            other => bail!("script:{lineno}: unexpected Type arg {other:?}"),
         }
     }
     Ok((text, per_char))
@@ -448,7 +448,7 @@ fn parse_waitfor_args(line: &Line) -> anyhow::Result<WaitForArgs> {
     let mut iter = line.args.iter();
     let re_tok = iter
         .next()
-        .ok_or_else(|| anyhow!("scene:{lineno}: WaitFor expects a regex"))?;
+        .ok_or_else(|| anyhow!("script:{lineno}: WaitFor expects a regex"))?;
     let pattern = compile_regex(re_tok, lineno, "WaitFor")?;
     let mut timeout = None;
     let mut label = None;
@@ -458,31 +458,31 @@ fn parse_waitfor_args(line: &Line) -> anyhow::Result<WaitForArgs> {
             Token::Ident(name) if name == "Timeout" => {
                 let v = iter
                     .next()
-                    .ok_or_else(|| anyhow!("scene:{lineno}: WaitFor Timeout needs a duration"))?;
+                    .ok_or_else(|| anyhow!("script:{lineno}: WaitFor Timeout needs a duration"))?;
                 let Token::Duration(d) = v else {
-                    bail!("scene:{lineno}: WaitFor Timeout expects a duration");
+                    bail!("script:{lineno}: WaitFor Timeout expects a duration");
                 };
                 timeout = Some(*d);
             }
             Token::Ident(name) if name == "Label" => {
                 let v = iter
                     .next()
-                    .ok_or_else(|| anyhow!("scene:{lineno}: WaitFor Label needs a string"))?;
+                    .ok_or_else(|| anyhow!("script:{lineno}: WaitFor Label needs a string"))?;
                 let Token::String(s) = v else {
-                    bail!("scene:{lineno}: WaitFor Label expects a string");
+                    bail!("script:{lineno}: WaitFor Label expects a string");
                 };
                 label = Some(String::from_utf8_lossy(s).into_owned());
             }
             Token::Ident(name) if name == "Dwell" => {
                 let v = iter
                     .next()
-                    .ok_or_else(|| anyhow!("scene:{lineno}: WaitFor Dwell needs a duration"))?;
+                    .ok_or_else(|| anyhow!("script:{lineno}: WaitFor Dwell needs a duration"))?;
                 let Token::Duration(d) = v else {
-                    bail!("scene:{lineno}: WaitFor Dwell expects a duration");
+                    bail!("script:{lineno}: WaitFor Dwell expects a duration");
                 };
                 dwell = Some(*d);
             }
-            other => bail!("scene:{lineno}: unexpected WaitFor arg {other:?}"),
+            other => bail!("script:{lineno}: unexpected WaitFor arg {other:?}"),
         }
     }
     Ok(WaitForArgs {
@@ -502,23 +502,23 @@ fn parse_waitforprompt_args(line: &Line) -> anyhow::Result<(Option<Duration>, Op
         match tok {
             Token::Ident(name) if name == "Timeout" => {
                 let v = iter.next().ok_or_else(|| {
-                    anyhow!("scene:{lineno}: WaitForPrompt Timeout needs a duration")
+                    anyhow!("script:{lineno}: WaitForPrompt Timeout needs a duration")
                 })?;
                 let Token::Duration(d) = v else {
-                    bail!("scene:{lineno}: WaitForPrompt Timeout expects a duration");
+                    bail!("script:{lineno}: WaitForPrompt Timeout expects a duration");
                 };
                 timeout = Some(*d);
             }
             Token::Ident(name) if name == "Dwell" => {
                 let v = iter.next().ok_or_else(|| {
-                    anyhow!("scene:{lineno}: WaitForPrompt Dwell needs a duration")
+                    anyhow!("script:{lineno}: WaitForPrompt Dwell needs a duration")
                 })?;
                 let Token::Duration(d) = v else {
-                    bail!("scene:{lineno}: WaitForPrompt Dwell expects a duration");
+                    bail!("script:{lineno}: WaitForPrompt Dwell expects a duration");
                 };
                 dwell = Some(*d);
             }
-            other => bail!("scene:{lineno}: unexpected WaitForPrompt arg {other:?}"),
+            other => bail!("script:{lineno}: unexpected WaitForPrompt arg {other:?}"),
         }
     }
     Ok((timeout, dwell))
@@ -529,7 +529,7 @@ fn parse_waitforprompt_args(line: &Line) -> anyhow::Result<(Option<Duration>, Op
 fn expect_one_integer(line: &Line) -> anyhow::Result<u64> {
     let [Token::Integer(n)] = line.args.as_slice() else {
         bail!(
-            "scene:{}: {} expects a single integer",
+            "script:{}: {} expects a single integer",
             line.lineno,
             line.verb
         );
@@ -540,7 +540,7 @@ fn expect_one_integer(line: &Line) -> anyhow::Result<u64> {
 fn expect_one_duration(line: &Line) -> anyhow::Result<Duration> {
     let [Token::Duration(d)] = line.args.as_slice() else {
         bail!(
-            "scene:{}: {} expects a single duration (e.g., 500ms)",
+            "script:{}: {} expects a single duration (e.g., 500ms)",
             line.lineno,
             line.verb
         );
@@ -550,20 +550,20 @@ fn expect_one_duration(line: &Line) -> anyhow::Result<Duration> {
 
 fn expect_one_string_text(line: &Line) -> anyhow::Result<String> {
     let bytes = expect_one_bytes(line)?;
-    String::from_utf8(bytes).map_err(|_| anyhow!("scene:{}: expected UTF-8 string", line.lineno))
+    String::from_utf8(bytes).map_err(|_| anyhow!("script:{}: expected UTF-8 string", line.lineno))
 }
 
 fn expect_one_bytes(line: &Line) -> anyhow::Result<Vec<u8>> {
     let arg = line.args.first().ok_or_else(|| {
         anyhow!(
-            "scene:{}: {} expects one string-or-heredoc arg",
+            "script:{}: {} expects one string-or-heredoc arg",
             line.lineno,
             line.verb
         )
     })?;
     if line.args.len() != 1 {
         bail!(
-            "scene:{}: {} expects exactly one string-or-heredoc arg",
+            "script:{}: {} expects exactly one string-or-heredoc arg",
             line.lineno,
             line.verb
         );
@@ -575,10 +575,10 @@ fn expect_one_regex(line: &Line) -> anyhow::Result<Regex> {
     let arg = line
         .args
         .first()
-        .ok_or_else(|| anyhow!("scene:{}: {} expects a regex", line.lineno, line.verb))?;
+        .ok_or_else(|| anyhow!("script:{}: {} expects a regex", line.lineno, line.verb))?;
     if line.args.len() != 1 {
         bail!(
-            "scene:{}: {} expects a single regex arg",
+            "script:{}: {} expects a single regex arg",
             line.lineno,
             line.verb
         );
@@ -590,8 +590,8 @@ fn expect_strings_to_text(args: &[Token], lineno: u32) -> anyhow::Result<Vec<Str
     args.iter()
         .map(|t| match t {
             Token::String(b) => String::from_utf8(b.clone())
-                .map_err(|_| anyhow!("scene:{lineno}: non-UTF-8 string arg")),
-            other => bail!("scene:{lineno}: expected string, got {other:?}"),
+                .map_err(|_| anyhow!("script:{lineno}: non-UTF-8 string arg")),
+            other => bail!("script:{lineno}: expected string, got {other:?}"),
         })
         .collect()
 }
@@ -599,15 +599,15 @@ fn expect_strings_to_text(args: &[Token], lineno: u32) -> anyhow::Result<Vec<Str
 fn bytes_from(tok: &Token, lineno: u32, verb: &str) -> anyhow::Result<Vec<u8>> {
     match tok {
         Token::String(b) | Token::Heredoc(b) => Ok(b.clone()),
-        other => bail!("scene:{lineno}: {verb} expected string or heredoc, got {other:?}"),
+        other => bail!("script:{lineno}: {verb} expected string or heredoc, got {other:?}"),
     }
 }
 
 fn compile_regex(tok: &Token, lineno: u32, verb: &str) -> anyhow::Result<Regex> {
     let Token::Regex(s) = tok else {
-        bail!("scene:{lineno}: {verb} expected a /regex/, got {tok:?}");
+        bail!("script:{lineno}: {verb} expected a /regex/, got {tok:?}");
     };
-    Regex::new(s).with_context(|| format!("scene:{lineno}: {verb} regex"))
+    Regex::new(s).with_context(|| format!("script:{lineno}: {verb} regex"))
 }
 
 fn key_from_name(name: &str) -> Option<Key> {
@@ -635,26 +635,28 @@ mod tests {
     }
 
     #[test]
-    fn minimal_scene_with_spawn() {
-        let scene = p(r#"
+    fn minimal_script_with_spawn() {
+        let script = p(r#"
             Version 1
             SetSpawn "bash" "-i"
             WaitForPrompt
             Run "echo hello"
         "#);
-        assert_eq!(scene.version, 1);
-        assert!(matches!(&scene.config.spawn, SpawnTarget::Spawn(argv) if argv == &["bash", "-i"]));
+        assert_eq!(script.version, 1);
+        assert!(
+            matches!(&script.config.spawn, SpawnTarget::Spawn(argv) if argv == &["bash", "-i"])
+        );
         // body: WaitForPrompt → 1 WaitFor; Run → 3 actions = 4 total.
-        assert_eq!(scene.body.len(), 4);
+        assert_eq!(script.body.len(), 4);
     }
 
     #[test]
     fn cold_with_heredoc_rcfile() {
-        let scene = p(
+        let script = p(
             "Version 1\nSetCold \"debian:12-slim\"\nSetShellRcfile <<BASH\nPS1='$ '\ncd \"$HOME\"\nBASH\nWaitForPrompt\n",
         );
-        assert!(matches!(&scene.config.spawn, SpawnTarget::Cold(s) if s == "debian:12-slim"));
-        let rcfile = scene.config.shell_rcfile.expect("rcfile present");
+        assert!(matches!(&script.config.spawn, SpawnTarget::Cold(s) if s == "debian:12-slim"));
+        let rcfile = script.config.shell_rcfile.expect("rcfile present");
         assert!(rcfile.starts_with(b"PS1='$ '\ncd \""));
     }
 
@@ -684,28 +686,28 @@ mod tests {
 
     #[test]
     fn run_macro_expands_to_three_actions() {
-        let scene = p("Version 1\nSetSpawn \"bash\"\nRun \"ls\"\n");
+        let script = p("Version 1\nSetSpawn \"bash\"\nRun \"ls\"\n");
         // Type, Press, WaitFor
-        assert_eq!(scene.body.len(), 3);
-        assert!(matches!(scene.body[0].value, Action::Type { .. }));
+        assert_eq!(script.body.len(), 3);
+        assert!(matches!(script.body[0].value, Action::Type { .. }));
         assert!(matches!(
-            scene.body[1].value,
+            script.body[1].value,
             Action::Press {
                 key: Key::Enter,
                 ..
             }
         ));
-        assert!(matches!(scene.body[2].value, Action::WaitFor { .. }));
+        assert!(matches!(script.body[2].value, Action::WaitFor { .. }));
     }
 
     #[test]
     fn waitfor_with_timeout_and_label() {
-        let scene = p(r#"
+        let script = p(r#"
             Version 1
             SetSpawn "bash"
             WaitFor /\$ / Timeout 5s Label "echo prompt"
         "#);
-        let Action::WaitFor { timeout, label, .. } = &scene.body[0].value else {
+        let Action::WaitFor { timeout, label, .. } = &script.body[0].value else {
             panic!();
         };
         assert_eq!(*timeout, Some(Duration::from_secs(5)));
@@ -720,13 +722,13 @@ mod tests {
 
     #[test]
     fn press_repeat_and_dwell() {
-        let scene = p("Version 1\nSetSpawn \"bash\"\nPress Down 3 Dwell 50ms\n");
+        let script = p("Version 1\nSetSpawn \"bash\"\nPress Down 3 Dwell 50ms\n");
         let Action::Press {
             key,
             repeat,
             dwell,
             settle,
-        } = &scene.body[0].value
+        } = &script.body[0].value
         else {
             panic!();
         };
@@ -738,13 +740,13 @@ mod tests {
 
     #[test]
     fn press_with_settle_captures_both() {
-        let scene = p("Version 1\nSetSpawn \"bash\"\nPress PickerDown 5 Dwell 50ms Settle 20ms\n");
+        let script = p("Version 1\nSetSpawn \"bash\"\nPress PickerDown 5 Dwell 50ms Settle 20ms\n");
         let Action::Press {
             key,
             repeat,
             dwell,
             settle,
-        } = &scene.body[0].value
+        } = &script.body[0].value
         else {
             panic!();
         };
@@ -756,9 +758,9 @@ mod tests {
 
     #[test]
     fn set_warm_command_captures_argv() {
-        let scene =
+        let script =
             p("Version 1\nSetWarm \"warm-c\"\nSetWarmCommand \"my-shell\" \"-l\"\nRun \"ls\"\n");
-        let argv = scene
+        let argv = script
             .config
             .warm_command
             .as_ref()
@@ -777,8 +779,8 @@ mod tests {
 
     #[test]
     fn sleep_without_settle_defaults_to_zero() {
-        let scene = p("Version 1\nSetSpawn \"bash\"\nSleep 500ms\n");
-        let Action::Sleep { dwell, settle } = &scene.body[0].value else {
+        let script = p("Version 1\nSetSpawn \"bash\"\nSleep 500ms\n");
+        let Action::Sleep { dwell, settle } = &script.body[0].value else {
             panic!();
         };
         assert_eq!(*dwell, Duration::from_millis(500));
@@ -787,8 +789,8 @@ mod tests {
 
     #[test]
     fn sleep_with_settle_captures_both() {
-        let scene = p("Version 1\nSetSpawn \"bash\"\nSleep 800ms Settle 600ms\n");
-        let Action::Sleep { dwell, settle } = &scene.body[0].value else {
+        let script = p("Version 1\nSetSpawn \"bash\"\nSleep 800ms Settle 600ms\n");
+        let Action::Sleep { dwell, settle } = &script.body[0].value else {
             panic!();
         };
         assert_eq!(*dwell, Duration::from_millis(800));
@@ -797,9 +799,9 @@ mod tests {
 
     #[test]
     fn present_typed_captures_text_and_per_char() {
-        let scene = p("Version 1\nSetSpawn \"bash\"\nPresentTyped \"hello\" PerChar 28ms\n");
-        let Action::PresentTyped { text, per_char } = &scene.body[0].value else {
-            panic!("expected PresentTyped, got {:?}", scene.body[0].value);
+        let script = p("Version 1\nSetSpawn \"bash\"\nPresentTyped \"hello\" PerChar 28ms\n");
+        let Action::PresentTyped { text, per_char } = &script.body[0].value else {
+            panic!("expected PresentTyped, got {:?}", script.body[0].value);
         };
         assert_eq!(text, b"hello");
         assert_eq!(*per_char, Some(Duration::from_millis(28)));
@@ -807,8 +809,8 @@ mod tests {
 
     #[test]
     fn present_typed_without_per_char_defaults_to_none() {
-        let scene = p("Version 1\nSetSpawn \"bash\"\nPresentTyped \"x\"\n");
-        let Action::PresentTyped { per_char, .. } = &scene.body[0].value else {
+        let script = p("Version 1\nSetSpawn \"bash\"\nPresentTyped \"x\"\n");
+        let Action::PresentTyped { per_char, .. } = &script.body[0].value else {
             panic!();
         };
         assert!(per_char.is_none());

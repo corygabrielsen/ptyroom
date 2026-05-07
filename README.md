@@ -1,9 +1,10 @@
-# tracer
+# ptytrace
 
-Deterministic GIF/MP4 tracer for scripted terminal demos. Spawns any
-interactive process under a PTY, captures raw IO, emits an asciinema
-trace whose timestamps come from virtual presentation time, then renders
-trace → PNG frames → GIF/MP4. Output is byte-stable across runs.
+Deterministic PTY recorder and renderer for interactive terminal
+sessions. It can record any command under a PTY, preserve the raw trace,
+and render that trace into GIF/MP4 with a reproducibility witness.
+Scripted traces use virtual presentation time; live command traces use
+wall-clock timing.
 
 ## Quickstart
 
@@ -25,35 +26,70 @@ Sleep 800ms
 Then render it to a GIF in one call:
 
 ```bash
-$ tracer run demo.script --out demo.gif
+$ ptytrace run demo.script --out demo.gif
 ```
 
 That's the whole loop. The local-PTY target (`SetSpawn`) is the
-default and works anywhere `bash` is on `PATH`. Docker-backed targets
+normal starting point and works anywhere `bash` is on `PATH`.
+Docker-backed targets
 (`SetWarm` / `SetCold`) exist for hermetic CI / golden-gating; see
 [`docs/script-grammar.md`](docs/script-grammar.md) for the full grammar.
 
-## Live recording
+## Command Recording
+
+Raw `ptytrace` records a command and writes only the durable trace:
+
+```bash
+$ ptytrace htop
+[recording → recording-1778082000.ptytrace]  type 'exit' or Ctrl-D to stop
+...
+wrote recording-1778082000.ptytrace
+```
+
+`ptyrecord` is the composed workflow. It captures the command, renders
+the trace to browser-controllable MP4, and writes one `.ptyrecord`
+bundle containing the `.ptytrace`, media, witness, and selectable text:
+
+```bash
+$ ptyrecord --out deploy.ptyrecord ssh deploy@example.com
+[recording → deploy.ptytrace]
+...
+wrote deploy.ptyrecord + embedded trace deploy.ptytrace + media deploy.mp4
+```
+
+To package an already-rendered trace and MP4, use bundle mode:
+
+```console
+$ ptyrecord --trace-in demo.ptytrace --media-in demo.mp4 \
+    --witness-in demo.mp4.receipt.json \
+    --out demo.ptyrecord
+```
+
+Algebraically, `ptyrecord(command) = bundle(ptytrace(command),
+ptyrender(ptytrace(command)))`. The trace remains the artifact you can
+keep, inspect, verify, stitch, or render again later.
+
+## Live Shell
 
 Don't have a script? Just press the key:
 
 ```bash
-$ tracer capture --out demo.trace
-[recording → demo.trace]  type 'exit' or Ctrl-D to stop
+$ ptytrace capture --out demo.ptytrace
+[recording → demo.ptytrace]  type 'exit' or Ctrl-D to stop
 $ echo hello
 hello
 $ exit
-wrote demo.trace (3 events, 4.2s)
+wrote demo.ptytrace (3 events, 4.2s)
 
-$ tracer render demo.trace demo.gif
+$ ptyrender demo.ptytrace demo.gif
 ```
 
-`rec` spawns your `$SHELL` (falling back to `bash`) under a PTY,
+`capture` spawns your `$SHELL` (falling back to `bash`) under a PTY,
 puts the host stdin in raw mode, and streams every byte from the
 shell into the trace — like `asciinema rec`. The session ends when
 you `exit` or hit Ctrl-D.
 
-**Determinism scope.** Live casts use _real wall-clock_ dwells —
+**Determinism scope.** Live command traces use _real wall-clock_ dwells —
 the trace's timeline is a faithful record of what was typed when, not
 a reproducible derivation. The downstream `trace → media` render is
 still byte-stable, so receipts attest the render exactly as for
@@ -64,7 +100,7 @@ scripted recordings.
 Render an existing trace to media in one call:
 
 ```rust
-term_recorder::render("demo.trace")?
+ptytrace::render("demo.ptytrace")?
     .font_size(40.0)
     .width(824)
     .to_path("demo.gif")?;
@@ -78,9 +114,9 @@ Drive an interactive process and produce a trace:
 
 ```rust
 use std::time::Duration;
-use term_recorder::tracer::{Tracer, TracerConfig};
+use ptytrace::pty::{PtyTracer, PtyTracerConfig};
 
-let mut rec = Tracer::spawn(TracerConfig::default(), &["bash"])?;
+let mut rec = PtyTracer::spawn(PtyTracerConfig::default(), &["bash"])?;
 rec.send_raw_wait_for(
     &[], Duration::ZERO,
     b"$ ", Duration::from_secs(2),
@@ -92,34 +128,34 @@ rec.send_raw_wait_for(
     b"$ ", Duration::from_secs(2),
     "echo prompt",
 )?;
-rec.stop()?.write("hello.trace")?;
+rec.stop()?.write("hello.ptytrace")?;
 ```
 
-A working version is at `examples/generic_shell.rs`. The tracer
+A working version is at `examples/generic_shell.rs`. The ptytrace
 library is process-agnostic — it works with any interactive CLI you
 can spawn under a PTY.
 
 ## Verifiable artifacts
 
 Determinism isn't just an internal property — it's externally checkable
-through two composable attestation layers:
+through three composable sidecars:
 
-**Receipts (provenance).** A witness is a JSON sidecar that records
-the trace hash, render config, tool / ffmpeg / font versions, and
-output hash. Re-rendering on any machine with the same identity
+**Witnesses (render reproduction).** A witness is a JSON sidecar that
+records the trace hash, render config, tool / ffmpeg / font versions,
+and output hash. Re-rendering on any machine with the same identity
 should produce the same output bytes:
 
 ```rust
-let witness = term_recorder::render("demo.trace")?
+let witness = ptytrace::render("demo.ptytrace")?
     .font_size(40.0)
     .to_path_with_receipt("demo.gif")?;
 witness.write("demo.gif.witness.json")?;
 ```
 
 ```bash
-tracer verify --witness demo.gif.witness.json --trace demo.trace
+ptytrace verify --witness demo.gif.witness.json --trace demo.ptytrace
 # MATCH  →  exit 0
-# CAST_DIFFERS / ENV_DIFFERS / OUTPUT_DIFFERS  →  exit 1
+# TRACE_DIFFERS / ENV_DIFFERS / OUTPUT_DIFFERS  →  exit 1
 ```
 
 **Specs (behavior).** A contract is a JSON file listing predicates the
@@ -136,66 +172,88 @@ trace must satisfy. The verifier replays the trace and re-evaluates:
 ```
 
 ```bash
-tracer check --trace demo.trace --contract demo.contract.json
+ptytrace check --trace demo.ptytrace --contract demo.contract.json
 # PASS / FAIL per predicate;  exit 0 only if every predicate passes
 ```
 
-**Composition.** A witness can embed a `contract_sha256` so a single
-`verify` covers both halves — provenance and behavior — at once:
+**Attestations (external provenance).** An attestation is a detached
+claim that some provider bound itself to `hash(trace)`. The built-in
+`file` provider is unsigned and local: it is useful for demos and
+plumbing tests, but it does not prove a remote identity. Stronger
+providers such as SSH, KMS, TPM, CI/OIDC, or transparency logs can use
+the same schema and target-digest check.
 
 ```bash
-tracer render demo.trace demo.gif \
-    --witness demo.gif.witness.json \
-    --contract    demo.contract.json
-# witness now carries contract_sha256
+ptytrace attest file --trace demo.ptytrace --out demo.attestation.json
+```
 
-tracer verify --witness demo.gif.witness.json \
-                     --trace    demo.trace \
-                     --contract    demo.contract.json
-# MATCH only if trace hash matches AND environment matches
-# AND re-render output matches AND contract hash matches AND every
-# predicate passes
+**Composition.** A witness can embed both `contract_sha256` and
+`attestation_sha256` so one `verify` covers render reproduction,
+behavior, and trace-targeted provenance:
+
+```bash
+ptyrender demo.ptytrace demo.gif \
+    --receipt demo.gif.witness.json \
+    --spec demo.contract.json \
+    --attestation demo.attestation.json
+
+ptytrace verify --witness demo.gif.witness.json \
+    --trace demo.ptytrace \
+    --contract demo.contract.json \
+    --attestation demo.attestation.json
+# MATCH only if trace hash matches, environment matches, re-render
+# output matches, contract hash + predicates pass, attestation hash
+# matches, and attestation.target_sha256 == trace_sha256.
 ```
 
 The witness format is nix-derivation-shaped (provenance + bit-exact
 reproduction); the contract is in-toto-policy-shaped (behavioral
-assertions). Both are pure deterministic functions of their inputs,
-so on a chain that supports Rust execution they compose into a
-single verifiable claim.
+assertions); the attestation is a provider-shaped provenance anchor.
+Together they make the GIF/MP4, behavior, and external claim meet at
+one trace digest.
 
 ## CLI
 
-One unified binary with subcommands:
+Raw and composed command forms:
 
 ```bash
-tracer capture     [--out PATH]                            # live: record your real terminal session
-tracer run  <script> --out <trace|media>              # scripted: run a .script file
-tracer render  <trace>  <out>  [--witness R] [--contract S] # trace → MP4/GIF (one call)
-tracer stitch  --out OUT INPUT...                      # concatenate casts (the trace-monoid ⊕)
-tracer verify  --witness R --trace C [--contract S]         # check a witness
-tracer check   --trace C --contract S                       # check a contract
+ptytrace <command...>                                      # command → trace
+ptyrender <trace> <out.gif|out.mp4> [--receipt R]          # trace → media
+ptyrecord [--out OUT.ptyrecord] <command...>               # command → trace + MP4 bundle
 ```
 
-Per-stage pipeline tools sit under `tracer debug ...`:
+The `ptytrace` binary also exposes named subcommands:
 
 ```bash
-tracer debug frame          <trace> <out_dir>          # trace → frame JSON
-tracer debug paint             <snap_dir> <out_dir>      # snapshots → PNGs
-tracer debug encode            <frames> <timing> <out>   # PNGs → MP4/GIF
-tracer debug compare-snapshots <baseline> <candidate>    # frame-by-frame diff
-tracer debug inspect           <frame>                # ASCII-render to terminal
+ptytrace capture [--out PATH]                            # live shell → trace
+ptytrace run <script> --out <trace|media>                # scripted .script → trace or media
+ptytrace render  <trace>  <out>  [--receipt R] [--spec S] [--attestation A|--attestation-out A]
+ptytrace attest file --trace <trace> --out <attestation>       # trace → provenance sidecar
+ptytrace stitch  --out OUT INPUT...                      # concatenate traces (the trace-monoid ⊕)
+ptytrace verify  --witness R --trace C [--contract S] [--attestation A]
+ptytrace check   --trace C --contract S                       # check a contract
 ```
 
-`render` chains `frame → paint → encode` in memory; the `debug`
-subcommands expose each stage separately when you want intermediate
-artifacts on disk (typically: layered hash gates that pin every stage
-independently). `verify` and `check` are the two attestation verifiers
-(provenance and behavior).
+Per-stage pipeline tools sit under `ptytrace debug ...`:
+
+```bash
+ptytrace debug replay         <trace> <out_dir>          # trace → frame JSON
+ptytrace debug paint             <snap_dir> <out_dir>      # snapshots → PNGs
+ptytrace debug encode            <frames> <timing> <out>   # PNGs → MP4/GIF
+ptytrace debug compare-snapshots <baseline> <candidate>    # frame-by-frame diff
+ptytrace debug inspect           <frame>                # ASCII-render to terminal
+```
+
+`ptyrender` and `ptytrace render` chain `frame → paint → encode` in
+memory; the `debug` subcommands expose each stage separately when you
+want intermediate artifacts on disk (typically: layered hash gates
+that pin every stage independently). `verify` and `check` are the two
+attestation verifiers (provenance and behavior).
 
 ## Pipeline
 
 ```
-Tracer API           → trace    PTY driver + scripted input + OSC responder
+PTY driver API      → trace    process spawn + scripted input + OSC responder
 src/frame_replay    → JSON    vt100 + OSC tracker → per-frame snapshots
 src/paint.rs           → PNGs    JSON + bundled font → image
 src/encode.rs          → GIF/MP4 ffmpeg concat-demuxer
@@ -229,44 +287,51 @@ non-determinism: if any layer's hash differs across the N=10 verify
 runs the bless aborts. Override `BLESS_RUNS=...` to tune the floor;
 pass `PIPELINE_TEST_FLAGS='--scenes=foo,bar'` for subset operation.
 
-Tracer library timing primitives are exercised in
-`tests/recorder_stress.rs` against a synthetic generic child
+PTY recorder timing primitives are exercised in
+`tests/ptytrace_stress.rs` against a synthetic generic child
 (`src/bin/stress_child.rs`). Tests assert the wait_for cutoff
 contract directly and verify byte-stability under parallel load
 and CPU contention. **Architectural rule:** these tests import
-`term_recorder::*` only — never any consumer crate. The tracer
+`ptytrace::*` only — never any consumer crate. The ptytrace
 library is meant to be domain-generic; the seam is enforced by
 where tests draw their dependencies.
 
 The `goldens/` directory and `make verify-goldens` / `make
 bless-goldens` targets ship in the consumer crate that drives this
-library, not here — `tracer` itself ships only the tracer
+library, not here — `ptytrace` itself ships only the recorder
 primitives, the script runner, and the render pipeline.
+
+The `.ptyrecord` bundle format is documented in
+[`docs/ptyrecord-format.md`](docs/ptyrecord-format.md).
 
 ## Determinism
 
-- Cold-container mode (`SetCold`) pins the tracer shell to a chosen image (e.g. `debian:12-slim`) with a fresh `$HOME` and no host `$PATH` leakage; local mode (`SetSpawn`, the default) inherits the host environment so determinism guarantees apply only to the render side (Arrow B).
+- Cold-container mode (`SetCold`) pins the recording shell to a chosen
+  image (e.g. `debian:12-slim`) with a fresh `$HOME` and no host
+  `$PATH` leakage; local mode (`SetSpawn`) inherits the host
+  environment so determinism guarantees apply only to the render side
+  (Arrow B).
 - PTY winsize is fixed before exec; `portable-pty` handles the platform-correct fork/exec/ctty dance.
 - The driver answers OSC 10/11 color queries with canned RGB, so the recorded process runs unmodified.
 - Trace timestamps come from cumulative `dwell_ms`, never wall clock.
-- `wait_for` cuts off the captured event at the pattern's end byte; bytes that arrive after the pattern stay in the drainer buffer for the next operation. Without this cutoff a slow tracer-thread wake under contention would scoop up post-pattern bytes that on a fast wake would belong to the next event — producing partition drift in the trace.
+- `wait_for` cuts off the captured event at the pattern's end byte; bytes that arrive after the pattern stay in the drainer buffer for the next operation. Without this cutoff a slow recorder-thread wake under contention would scoop up post-pattern bytes that on a fast wake would belong to the next event — producing partition drift in the trace.
 - libx264 mp4 encoding is pinned to `-threads 1` and the concat demuxer's manifest is written to a per-call tempfile, so encodes are byte-stable across runs and concurrent encodes against the same frame set don't race.
 - Glyph rasterization uses a bundled font (`include_bytes!`).
 - Raw IO, diagnostic wall time, and playback time are separate layers in the trace.
 
-## Authoring scenes
+## Authoring Scripts
 
-Most scenes are `.script` files (see the [Quickstart](#quickstart) and
+Most recordings start as `.script` files (see the [Quickstart](#quickstart) and
 [`docs/script-grammar.md`](docs/script-grammar.md) for the v1 grammar).
-The DSL targets a local process by default (`SetSpawn`); switch to
-`SetWarm` / `SetCold` when you need hermetic recording. Power users
-can drop down to the `Tracer` library directly from a Rust binary —
-`Tracer::spawn` for an arbitrary local process, `Tracer::start`
+Use `SetSpawn` for local processes; switch to `SetWarm` / `SetCold`
+when you need hermetic recording. Power users
+can drop down to the `PtyTracer` library directly from a Rust binary —
+`PtyTracer::spawn` for an arbitrary local process, `PtyTracer::start`
 for the Docker-backed path.
 
 Either way, prefer content-aware gates (`WaitFor` / `WaitForPrompt`
 in the DSL, `send_raw_wait_for` in the library) over fixed sleeps and
-bare `Key::Enter` — the tracer's default settle is microseconds and
+bare `Key::Enter` — the default settle is microseconds and
 not a substitute for syncing on a known byte pattern. Use presentation
 helpers (`Present` / `PresentTyped`) only for output that does not
 affect shell state: comments, blank prompt lines, clear boundaries.

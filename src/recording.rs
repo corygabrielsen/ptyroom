@@ -118,7 +118,7 @@ impl TraceBuilder {
         predicate: Option<Predicate>,
     ) -> anyhow::Result<()> {
         // Input bytes describe the cause but are not emitted to the
-        // cast (asciinema casts include only "o" output events here).
+        // trace (asciinema v2 includes only "o" output events here).
         // The parameter stays in the API for caller record-keeping
         // and for future "i" event emission if ever wanted.
         let _ = input.into();
@@ -138,7 +138,7 @@ impl TraceBuilder {
     }
 
     /// Record synthetic presentation output not produced by the child.
-    /// Identical to [`Self::record_output`] in cast emission today;
+    /// Identical to [`Self::record_output`] in trace emission today;
     /// kept as a separate method for caller intent.
     ///
     /// # Errors
@@ -206,7 +206,7 @@ impl TraceBuilder {
     /// Finish recording and produce a [`Recording`] sized for the
     /// given terminal dimensions.
     ///
-    /// `finish_synthetic` and `finish_screen` produce identical casts
+    /// `finish_synthetic` and `finish_screen` produce identical traces
     /// today — historical naming is preserved so callers don't churn.
     /// The synthetic name was once distinguished from a vt100-rendering
     /// path; predicate evaluation now happens uniformly at record time.
@@ -250,7 +250,7 @@ impl TraceBuilder {
         }
 
         Recording {
-            cast: Trace { header, events },
+            trace: Trace { header, events },
             markers: self.markers,
         }
     }
@@ -260,14 +260,14 @@ impl TraceBuilder {
 /// presentation markers.
 #[derive(Debug, Clone)]
 pub struct Recording {
-    cast: Trace,
+    trace: Trace,
     markers: Vec<TraceMarker>,
 }
 
 impl Recording {
     #[must_use]
-    pub const fn cast(&self) -> &Trace {
-        &self.cast
+    pub const fn trace(&self) -> &Trace {
+        &self.trace
     }
 
     #[must_use]
@@ -276,8 +276,8 @@ impl Recording {
     }
 
     #[must_use]
-    pub fn into_cast(self) -> Trace {
-        self.cast
+    pub fn into_trace(self) -> Trace {
+        self.trace
     }
 }
 
@@ -297,8 +297,8 @@ mod tests {
         b.record_step(b"a".to_vec(), b"A".to_vec(), DwellMs::new(10))
             .unwrap();
         let rec = b.finish_synthetic(80, 24).unwrap();
-        assert_eq!(rec.cast().events.len(), 1);
-        assert_eq!(rec.cast().events[0].data, "A");
+        assert_eq!(rec.trace().events.len(), 1);
+        assert_eq!(rec.trace().events[0].data, "A");
     }
 
     #[test]
@@ -311,7 +311,7 @@ mod tests {
             .unwrap();
         let rec = b.finish_synthetic(80, 24).unwrap();
         // Second event timestamp = first dwell (10) + beat (5) = 15ms.
-        assert!((rec.cast().events[1].time_s - 0.015).abs() < f64::EPSILON);
+        assert!((rec.trace().events[1].time_s - 0.015).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -343,7 +343,7 @@ mod tests {
         )
         .unwrap();
         let rec = b.finish_synthetic(80, 24).unwrap();
-        assert_eq!(rec.cast().events.len(), 1);
+        assert_eq!(rec.trace().events.len(), 1);
     }
 
     #[test]
@@ -354,16 +354,16 @@ mod tests {
         b.record_step(Vec::new(), Vec::new(), DwellMs::new(7))
             .unwrap();
         let rec = b.finish_synthetic(80, 24).unwrap();
-        assert_eq!(rec.cast().events.len(), 1);
+        assert_eq!(rec.trace().events.len(), 1);
     }
 
     #[test]
-    fn presentation_output_emitted_in_cast() {
+    fn presentation_output_emitted_in_trace() {
         let mut b = TraceBuilder::new();
         b.record_presentation_output(b"# note".to_vec(), DwellMs::new(10))
             .unwrap();
         let rec = b.finish_synthetic(80, 24).unwrap();
-        assert_eq!(rec.cast().events[0].data, "# note");
+        assert_eq!(rec.trace().events[0].data, "# note");
     }
 
     #[test]

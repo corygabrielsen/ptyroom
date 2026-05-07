@@ -1,10 +1,14 @@
-//! Unified tracer CLI: `tracer <subcommand> ...`.
+//! Unified ptytrace CLI: `ptytrace <command...>` or `ptytrace <subcommand> ...`.
 //!
 //! User-facing subcommands sit at the top level. Per-stage pipeline
 //! tools (replay → paint → encode plus the diff/inspect helpers)
-//! live under `tracer debug <subcmd>` so the top-level help lists
-//! only the surface most users actually reach for.
+//! live under `ptytrace debug <subcmd>` so the top-level help lists
+//! only the surface most users actually reach for. Unknown subcommands
+//! are treated as argv to record under a PTY, so `ptytrace htop` is the
+//! raw trace primitive.
 
+mod attest;
+mod attestation_io;
 mod capture;
 mod check;
 mod compare_frames;
@@ -25,14 +29,15 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(
     version,
-    about = "tracer — deterministic terminal-session recorder",
-    long_about = "Run with no subcommand for the full demo flow: capture a live\n\
-                  terminal session, render it to a GIF, produce a witness, open\n\
-                  the GIF. Subcommands expose individual stages."
+    about = "ptytrace — deterministic terminal-session recorder",
+    long_about = "Run `ptytrace <command...>` to capture a command under a PTY\n\
+                  and write a trace. Run with no subcommand for the full demo\n\
+                  flow. Named subcommands expose individual stages."
 )]
 struct Cli {
-    /// Subcommand to run. Omit for the bare `tracer` demo flow:
-    /// capture → render → witness → open the GIF.
+    /// Subcommand to run. Unknown subcommands are treated as command argv:
+    /// `ptytrace ssh host`, `ptytrace htop`, etc. Omit for the bare demo flow:
+    /// capture → render → witness + attestation → open the GIF.
     #[command(subcommand)]
     cmd: Option<Cmd>,
 }
@@ -43,8 +48,10 @@ enum Cmd {
     Capture(capture::Args),
     /// Run a `.script` file → trace (or chain through render to MP4/GIF).
     Run(run::Args),
-    /// Trace → MP4/GIF in one call (with optional reproducibility witness).
+    /// Trace → MP4/GIF in one call (also available as `ptyrender`).
     Render(render::Args),
+    /// Produce a detached provenance attestation for a trace.
+    Attest(attest::Args),
     /// Concatenate N traces into one, rebasing event timestamps (the trace-monoid ⊕).
     Stitch(stitch::Args),
     /// Verify a previously-issued reproducibility witness by re-rendering.
@@ -54,6 +61,9 @@ enum Cmd {
     /// Per-stage pipeline tools (replay, paint, encode, inspect, compare-frames).
     #[command(subcommand)]
     Debug(DebugCmd),
+    /// Raw command passthrough: `ptytrace ssh host`, `ptytrace htop`, etc.
+    #[command(external_subcommand)]
+    Command(Vec<String>),
 }
 
 /// Pipeline internals. These expose the individual stages of `render`
@@ -81,9 +91,11 @@ fn main() -> ExitCode {
         Some(Cmd::Capture(args)) => capture::run(args).map(|()| ExitCode::SUCCESS),
         Some(Cmd::Run(args)) => run::run(&args).map(|()| ExitCode::SUCCESS),
         Some(Cmd::Render(args)) => render::run(&args).map(|()| ExitCode::SUCCESS),
+        Some(Cmd::Attest(args)) => attest::run(&args).map(|()| ExitCode::SUCCESS),
         Some(Cmd::Stitch(args)) => stitch::run(&args).map(|()| ExitCode::SUCCESS),
         Some(Cmd::Verify(args)) => verify::run(&args).map(bool_to_exit),
         Some(Cmd::Check(args)) => check::run(&args).map(bool_to_exit),
+        Some(Cmd::Command(argv)) => capture::run_command(argv).map(|()| ExitCode::SUCCESS),
         Some(Cmd::Debug(sub)) => match sub {
             DebugCmd::Replay(args) => replay::run(&args).map(|()| ExitCode::SUCCESS),
             DebugCmd::Paint(args) => paint::run(&args).map(|()| ExitCode::SUCCESS),
@@ -95,7 +107,7 @@ fn main() -> ExitCode {
     match result {
         Ok(code) => code,
         Err(err) => {
-            eprintln!("tracer: {err:#}");
+            eprintln!("ptytrace: {err:#}");
             ExitCode::from(2)
         }
     }

@@ -1,11 +1,11 @@
 # Script DSL — v1 Grammar
 
 A line-oriented domain-specific language for declaring scripted terminal
-recordings. Compiles deterministically to an asciinema cast.
+recordings. Compiles deterministically to an asciinema-compatible trace.
 
-The DSL is the binary/file interface to the tracer library. It removes
-the need to write Rust to author a recording: scenes are `.script` files
-that `tracer run` consumes.
+The DSL is the binary/file interface to the ptytrace library. It removes
+the need to write Rust to author a recording: scripts are `.script` files
+that `ptytrace run` consumes.
 
 ## Design rationale
 
@@ -18,13 +18,13 @@ level. This is deliberate:
   associative. Atomic verbs introduce a denormalization (some
   statements are primitives, some are macros that expand into many).
 - **Test surface.** Fewer verb types means fewer code paths to test
-  and fewer ways for the tracer library to grow internal complexity.
+  and fewer ways for the ptytrace library to grow internal complexity.
 - **AI-editability.** When an LLM helps a user author a script,
   inserting a step between two primitives is a one-line edit.
   Splitting an atomic verb to insert is more error-prone.
 
 The contract is **visual equivalence**, not byte-exact event
-partitioning. Two scenes that produce the same vt100 screen sequence
+partitioning. Two scripts that produce the same vt100 screen sequence
 at the same playback timestamps are considered equivalent even if
 their trace event counts differ. The regression gate's
 frame-sequence hash is the load-bearing invariant; trace event
@@ -126,7 +126,7 @@ their own. Bytes become events when a Class B verb captures them.
 | Verb    | Form                                                     | Semantics                                                                                                                                                                                                                                                         |
 | ------- | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `Send`  | `Send <string-or-heredoc>`                               | Write raw bytes to PTY.                                                                                                                                                                                                                                           |
-| `Press` | `Press <Key> [N] [Dwell <duration>] [Settle <duration>]` | Send key bytes. Optional repeat count `N`; optional inter-press `Dwell` override (defaults to `SetPerKeyDwell`); optional wall-clock `Settle` window per repeat to capture incoming PTY bytes (TUI scenes where the child draws frames after each key need this). |
+| `Press` | `Press <Key> [N] [Dwell <duration>] [Settle <duration>]` | Send key bytes. Optional repeat count `N`; optional inter-press `Dwell` override (defaults to `SetPerKeyDwell`); optional wall-clock `Settle` window per repeat to capture incoming PTY bytes (TUI scripts where the child draws frames after each key need this). |
 | `Type`  | `Type <string-or-heredoc> [PerChar <duration>]`          | Per-character `Send`, with `PerChar` between characters (defaults to `SetPerCharDwell`).                                                                                                                                                                          |
 
 ### Class B — event-producing
@@ -135,7 +135,7 @@ their own. Bytes become events when a Class B verb captures them.
 | --------------- | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `WaitFor`       | `WaitFor /pattern/ [Timeout <duration>] [Label "..."] [Dwell <duration>]` | Block until `pattern` matches in PTY output (default timeout `2s`). Captured bytes (up to and including pattern end) become a trace event with the given `Dwell` (default `0`). Trailing bytes return to the drainer for the next event. Use `Dwell` when the matched event should advance virtual time before the next operation runs. |
 | `WaitForPrompt` | `WaitForPrompt [Timeout <duration>] [Dwell <duration>]`                   | Sugar for `WaitFor <SetPrompt regex>`. Same `Dwell` semantics.                                                                                                                                                                                                                                                                         |
-| `Sleep`         | `Sleep <duration> [Settle <duration>]`                                    | Advance virtual playback time by the first duration. Optional `Settle` is wall-clock time during which incoming PTY bytes are captured into the trace — needed for TUI scenes where the child draws frames asynchronously after a key press. Default settle is `0`.                                                                     |
+| `Sleep`         | `Sleep <duration> [Settle <duration>]`                                    | Advance virtual playback time by the first duration. Optional `Settle` is wall-clock time during which incoming PTY bytes are captured into the trace — needed for TUI scripts where the child draws frames asynchronously after a key press. Default settle is `0`.                                                                     |
 | `Mark`          | `Mark "label"`                                                            | Insert a named marker at current presentation time. Trace metadata; not in the trace.                                                                                                                                                                                                                                                   |
 | `Present`       | `Present <string-or-heredoc>`                                             | Synthetic output written into the trace as if from the child. One trace event with `Sleep`-extendable dwell.                                                                                                                                                                                                                             |
 | `PresentTyped`  | `PresentTyped <string-or-heredoc> [PerChar <duration>]`                   | Synthetic typed text — one trace event per UTF-8 char with `per_char` dwell between events. Like `Type` but bytes never reach the PTY. Used for explanatory comment lines that need the typed-animation feel without bash actually executing them. Default `PerChar` is `SetPerCharDwell`.                                              |
@@ -245,26 +245,27 @@ Sleep 800ms
 ## Library and CLI integration
 
 ```rust
-let trace = tracer::script::Script::read("demo.script")?.run()?;
-trace.write("demo.trace")?;
+let trace = ptytrace::script::Script::read("demo.script")?.run()?;
+trace.write("demo.ptytrace")?;
 ```
 
 ```bash
-tracer run demo.script --out demo.trace
-tracer run demo.script --out demo.gif         # chains through render
-tracer run demo.script \
+ptytrace run demo.script --out demo.ptytrace
+ptytrace run demo.script --out demo.gif         # chains through render
+ptytrace run demo.script \
     --out demo.gif \
-    --witness demo.gif.witness.json \
-    --contract demo.contract.json
+    --receipt demo.gif.witness.json \
+    --spec demo.contract.json \
+    --attestation-out demo.attestation.json
 ```
 
-When `--witness` is set, the witness's `script_sha256` field records the
+When `--receipt` is set, the witness's `script_sha256` field records the
 hash of the source script file — `output` is `g(f(script))` for
-`f = script.run` and `g = render`, and the witness now pins all three
-hashes (trace, output, script) plus optional `contract_sha256`. The field is
-provenance only: verification does not re-run the script (script
-execution depends on shells, docker images, and external state that
-the tracer does not pin).
+`f = script.run` and `g = ptyrender`, and the witness now pins all three
+hashes (trace, output, script) plus optional `contract_sha256` and
+`attestation_sha256`. The `script_sha256` field is provenance only:
+verification does not re-run the script (script execution depends on
+shells, docker images, and external state that ptytrace does not pin).
 
 ## Out of scope for v1
 
@@ -276,7 +277,7 @@ case.
 | ------------------------------------------- | ---------------------------------------------------------------- |
 | `Source "common.script"` includes            | Scripts are self-contained; revisit if codegen demands it         |
 | `Hide` / `Show` (suppress events from trace) | Not load-bearing for current use cases                           |
-| Loops, conditionals                         | Use external codegen if you need procedural scenes               |
+| Loops, conditionals                         | Use external codegen if you need procedural scripts              |
 | `OnTimeout: continue` recovery              | Halt-on-failure is the correct default                           |
 | Mid-script `Set*` verbs                      | Strict header/body separation; revisit only with a real use case |
 | Auto-detect cols/rows                       | Would introduce nondeterminism                                   |

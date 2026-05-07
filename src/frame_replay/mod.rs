@@ -1,12 +1,12 @@
 //! Trace → per-frame [`Frame`] replay.
 //!
-//! Drives a [`vt100::Parser`] through every `"o"` event in the cast,
+//! Drives a [`vt100::Parser`] through every `"o"` event in the trace,
 //! capturing screen state after each event. Terminal-default bg/fg
 //! and palette overrides come from a sibling [`OscTracker`] that
 //! sniffs the same bytes for OSC 10/11/4/110/111/104 sequences (vt100
 //! only handles OSC 0/1/2/52, so the rest are our responsibility).
 //!
-//! Pure function: identical cast bytes produce identical snapshots,
+//! Pure function: identical trace bytes produce identical snapshots,
 //! regardless of CPU scheduling, wall-clock, or thread interleaving.
 
 pub mod osc_tracker;
@@ -14,8 +14,8 @@ pub mod osc_tracker;
 use crate::color::{CellColor as SnapCellColor, HexColor, PaletteOverrides};
 use crate::encode::TimingEntry;
 use crate::frame::{Cell, Frame, Grid};
+use crate::pty::StubColors;
 use crate::trace::{EventKind, Trace};
-use crate::tracer::StubColors;
 
 pub use osc_tracker::OscTracker;
 
@@ -24,17 +24,17 @@ pub use osc_tracker::OscTracker;
 /// "next event" timestamp to subtract from.
 pub const TAIL_DWELL_MS: u32 = 0;
 
-/// Replay `cast` and emit one snapshot per `"o"` event plus the timing
+/// Replay `trace` and emit one snapshot per `"o"` event plus the timing
 /// manifest. `defaults` seeds the OSC tracker — [`StubColors::default`]
 /// mirrors what the recorder serves to OSC 10/11 query replies and is
-/// the right choice for casts produced by this crate.
+/// the right choice for traces produced by this crate.
 ///
 /// ```
-/// use tracer::trace::{Trace, TraceEvent, TraceHeader, EventKind};
-/// use tracer::tracer::StubColors;
-/// use tracer::frame_replay::replay;
+/// use ptytrace::trace::{Trace, TraceEvent, TraceHeader, EventKind};
+/// use ptytrace::pty::StubColors;
+/// use ptytrace::frame_replay::replay;
 ///
-/// let cast = Trace {
+/// let trace = Trace {
 ///     header: TraceHeader { version: 2, width: 80, height: 24, env: Default::default() },
 ///     events: vec![TraceEvent {
 ///         time_s: 0.0,
@@ -42,7 +42,7 @@ pub const TAIL_DWELL_MS: u32 = 0;
 ///         data: "hello".into(),
 ///     }],
 /// };
-/// let (snaps, timing) = replay(&cast, StubColors::default())?;
+/// let (snaps, timing) = replay(&trace, StubColors::default())?;
 /// assert_eq!(snaps.len(), 1);
 /// assert_eq!(timing.len(), 1);
 /// assert_eq!(snaps[0].row_text(0).unwrap(), "hello");
@@ -52,29 +52,29 @@ pub const TAIL_DWELL_MS: u32 = 0;
 /// # Errors
 /// Trace header has zero width or height (otherwise vt100 panics).
 pub fn replay(
-    cast: &Trace,
+    trace: &Trace,
     defaults: StubColors,
 ) -> anyhow::Result<(Vec<Frame>, Vec<TimingEntry>)> {
-    let cols = u16::try_from(cast.header.width)?;
-    let rows = u16::try_from(cast.header.height)?;
+    let cols = u16::try_from(trace.header.width)?;
+    let rows = u16::try_from(trace.header.height)?;
     if cols == 0 || rows == 0 {
         anyhow::bail!(
-            "cast header has zero dimension: {}x{}",
-            cast.header.width,
-            cast.header.height
+            "trace header has zero dimension: {}x{}",
+            trace.header.width,
+            trace.header.height
         );
     }
 
     let mut parser = vt100::Parser::new(rows, cols, 0);
     let mut osc = OscTracker::new(defaults);
 
-    let mut snapshots = Vec::with_capacity(cast.events.len());
-    let mut timing = Vec::with_capacity(cast.events.len());
+    let mut snapshots = Vec::with_capacity(trace.events.len());
+    let mut timing = Vec::with_capacity(trace.events.len());
 
     // Frame frame indices (1-based, 4-digit zero-padded) come from
-    // the original cast event index — preserves the previous TS
+    // the original trace event index — preserves the previous TS
     // implementation's filenames so paint/encode/golden checks line up.
-    for (i, event) in cast.events.iter().enumerate() {
+    for (i, event) in trace.events.iter().enumerate() {
         if !matches!(event.kind, EventKind::Output) {
             continue;
         }
@@ -86,12 +86,12 @@ pub fn replay(
         snapshots.push(snapshot);
 
         let frame = format!("{:04}", i + 1);
-        let next_t = cast.events.get(i + 1).map(|e| e.time_s);
+        let next_t = trace.events.get(i + 1).map(|e| e.time_s);
         let dwell_ms = match next_t {
             Some(t) => {
                 // Round + clamp to [1, u32::MAX]. Negative deltas can't
-                // happen for in-order cast events; saturate to 1 ms
-                // anyway in case of clock drift in malformed casts.
+                // happen for in-order trace events; saturate to 1 ms
+                // anyway in case of clock drift in malformed traces.
                 let delta = ((t - event.time_s) * 1000.0).round();
                 if delta < 1.0 {
                     1

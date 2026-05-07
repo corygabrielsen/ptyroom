@@ -1,12 +1,12 @@
 //! Trace specifications: post-hoc behavioral attestations.
 //!
 //! A [`Contract`] is a JSON sidecar carrying a list of [`Predicate`]s
-//! that are expected to hold against the cast's accumulated output
-//! text. [`Contract::check`] replays the cast in memory and reports
+//! that are expected to hold against the trace's accumulated output
+//! text. [`Contract::check`] replays the trace in memory and reports
 //! per-predicate pass/fail.
 //!
 //! This is the "C" half of the (B) reproducibility-receipt /
-//! (C) cast-as-spec split: B says *who produced* this artifact and
+//! (C) trace-as-spec split: B says *who produced* this artifact and
 //! that it is bit-exact; C says *what behavior* the artifact
 //! exhibits. The two compose — a receipt can carry a spec hash so
 //! verification covers both provenance and behavior.
@@ -22,14 +22,14 @@ use crate::trace::{EventKind, Trace};
 /// Current schema version.
 pub const SPEC_VERSION: u32 = 1;
 
-/// Behavioral attestation against a cast.
+/// Behavioral attestation against a trace.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
 pub struct Contract {
     /// Schema version; must equal [`SPEC_VERSION`].
     pub version: u32,
-    /// Predicates that must hold against the cast's accumulated output.
+    /// Predicates that must hold against the trace's accumulated output.
     pub predicates: Vec<Predicate>,
 }
 
@@ -78,7 +78,7 @@ impl Contract {
         Ok(())
     }
 
-    /// Replay `cast` and check each predicate against the
+    /// Replay `trace` and check each predicate against the
     /// UTF-8-lossy accumulation of all `"o"` (output) event bodies.
     ///
     /// Predicate semantics match record-time evaluation in
@@ -87,11 +87,11 @@ impl Contract {
     /// predicates that gated recording always passes verification.
     ///
     /// ```
-    /// use tracer::trace::{Trace, TraceEvent, TraceHeader, EventKind};
-    /// use tracer::observer::Predicate;
-    /// use tracer::contract::Contract;
+    /// use ptytrace::trace::{Trace, TraceEvent, TraceHeader, EventKind};
+    /// use ptytrace::observer::Predicate;
+    /// use ptytrace::contract::Contract;
     ///
-    /// let cast = Trace {
+    /// let trace = Trace {
     ///     header: TraceHeader { version: 2, width: 80, height: 24, env: Default::default() },
     ///     events: vec![TraceEvent {
     ///         time_s: 0.0,
@@ -102,13 +102,13 @@ impl Contract {
     /// let spec = Contract::new()
     ///     .with(Predicate::ContainsText { text: "hello".into() })
     ///     .with(Predicate::DoesNotContainText { text: "error".into() });
-    /// let report = spec.check(&cast);
+    /// let report = spec.check(&trace);
     /// assert!(report.all_passed());
     /// ```
     #[must_use]
-    pub fn check(&self, cast: &Trace) -> ContractReport {
+    pub fn check(&self, trace: &Trace) -> ContractReport {
         let mut accumulated = String::new();
-        for event in &cast.events {
+        for event in &trace.events {
             if matches!(event.kind, EventKind::Output) {
                 accumulated.push_str(&event.data);
             }
@@ -134,7 +134,7 @@ impl Default for Contract {
     }
 }
 
-/// Result of one predicate evaluated against a cast.
+/// Result of one predicate evaluated against a trace.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum CheckOutcome {
@@ -195,7 +195,7 @@ mod tests {
 
     use super::*;
 
-    fn cast_with(output: &str) -> Trace {
+    fn trace_with(output: &str) -> Trace {
         Trace {
             header: TraceHeader {
                 version: 2,
@@ -213,7 +213,7 @@ mod tests {
 
     #[test]
     fn passing_spec_reports_all_pass() {
-        let cast = cast_with("hello world");
+        let trace = trace_with("hello world");
         let spec = Contract::new()
             .with(Predicate::ContainsText {
                 text: "hello".into(),
@@ -221,18 +221,18 @@ mod tests {
             .with(Predicate::DoesNotContainText {
                 text: "error".into(),
             });
-        let report = spec.check(&cast);
+        let report = spec.check(&trace);
         assert!(report.all_passed());
         assert_eq!(report.failed_count(), 0);
     }
 
     #[test]
     fn failing_predicate_reports_fail() {
-        let cast = cast_with("hello world");
+        let trace = trace_with("hello world");
         let spec = Contract::new().with(Predicate::ContainsText {
             text: "missing".into(),
         });
-        let report = spec.check(&cast);
+        let report = spec.check(&trace);
         assert!(!report.all_passed());
         assert_eq!(report.failed_count(), 1);
         assert!(matches!(report.outcomes[0], CheckOutcome::Fail(_)));
@@ -242,8 +242,8 @@ mod tests {
     fn input_events_ignored() {
         // Input events shouldn't affect predicate evaluation —
         // predicates assert what the user *sees*, not what was typed.
-        let mut cast = cast_with("");
-        cast.events.push(TraceEvent {
+        let mut trace = trace_with("");
+        trace.events.push(TraceEvent {
             time_s: 1.0,
             kind: EventKind::Input,
             data: "secret".into(),
@@ -251,15 +251,15 @@ mod tests {
         let spec = Contract::new().with(Predicate::DoesNotContainText {
             text: "secret".into(),
         });
-        let report = spec.check(&cast);
+        let report = spec.check(&trace);
         assert!(report.all_passed());
     }
 
     #[test]
     fn empty_spec_passes_trivially() {
-        let cast = cast_with("anything");
+        let trace = trace_with("anything");
         let spec = Contract::new();
-        let report = spec.check(&cast);
+        let report = spec.check(&trace);
         assert!(report.all_passed());
     }
 }

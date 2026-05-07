@@ -1,6 +1,6 @@
 //! OSC state tracker for snapshot replay.
 //!
-//! Sniffs cast bytes for the OSC sequences that affect terminal default
+//! Sniffs trace bytes for the OSC sequences that affect terminal default
 //! colors and palette overrides, maintaining the running state needed
 //! to populate each per-frame [`Frame`]'s `bg`, `fg`, and `palette`
 //! fields. Independent of any particular terminal-emulator backend
@@ -27,9 +27,9 @@ use std::sync::OnceLock;
 use regex::bytes::Regex;
 
 use crate::color::HexColor;
-use crate::tracer::StubColors;
+use crate::pty::StubColors;
 
-/// Running OSC state observable while replaying a cast.
+/// Running OSC state observable while replaying a trace.
 #[derive(Debug, Clone)]
 pub struct OscTracker {
     bg: HexColor,

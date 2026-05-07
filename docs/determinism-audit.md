@@ -42,7 +42,7 @@ i + 1)`) — preserves a stable lexicographic ordering for
 - `paint_is_byte_stable` test asserts: two paints of the same
   frame produce identical pixel buffers. Live regression gate.
 - Parallelism (`par_iter` in `src/render.rs:execute` and
-  `src/bin/tracer/paint.rs`): each thread paints one
+  `src/bin/ptytrace/paint.rs`): each thread paints one
   frame to one PNG file. Snapshots are independent; PNG file
   paths derive from `entry.frame` (deterministic). No shared
   mutable state.
@@ -125,11 +125,11 @@ changed, can produce different output bytes:
 
 ```rust
 pub struct ToolIdentity {
-    pub name: String,                    // "tracer"
+    pub name: String,                    // "ptytrace"
     pub version: String,                 // CARGO_PKG_VERSION
     pub ffmpeg_version: String,          // first line of `ffmpeg -version`
     pub font_sha256: String,             // hash of bundled DejaVu Sans Mono
-    pub recorder_sha256: Option<String>, // SHA-256 of the tracer binary itself
+    pub recorder_sha256: Option<String>, // SHA-256 of the ptytrace binary itself
     pub ffmpeg_sha256:   Option<String>, // SHA-256 of the ffmpeg binary on PATH
 }
 ```
@@ -156,7 +156,7 @@ Both binary hashes are `Option<String>` for two reasons:
    existed continue to parse via `#[serde(default)]`.
 2. **Best-effort population:** if `std::env::current_exe()` fails,
    or PATH is unset / `ffmpeg` is not on it / the resolved file
-   is unreadable, the tracer still emits a witness — just
+   is unreadable, the ptytrace still emits a witness — just
    without that field. The verifier symmetrically skips comparison
    when either side lacks the hash (Scott-flat: `None` matches
    anything).
@@ -164,7 +164,7 @@ Both binary hashes are `Option<String>` for two reasons:
 When both sides have a given hash and they disagree, `Witness::verify`
 returns `EnvironmentDiffers { field: "tool.<name>_sha256", ... }`
 before the re-render even runs. For strict blockchain attestation,
-two nodes with different binary hashes (tracer OR ffmpeg) are
+two nodes with different binary hashes (ptytrace OR ffmpeg) are
 rejected up front instead of failing on `OutputDiffers` later.
 
 ## Empirical confirmation
@@ -179,8 +179,8 @@ These layer-level claims are continuously verified by:
   runs on every witness check)
 
 A script authored two ways — once as a Rust binary driving the
-`Tracer` API directly, once as a `.script` file consumed by
-`tracer run` — produces byte-identical casts (same
+`PtyTracer` API directly, once as a `.script` file consumed by
+`ptytrace run` — produces byte-identical traces (same
 SHA-256 across N=10), confirming that determinism survives the
 `.rs` → `.script` boundary.
 
@@ -192,7 +192,7 @@ SHA-256 across N=10), confirming that determinism survives the
 | Frame replay  | vt100 state machine + `BTreeMap`                                 | yes           |
 | Paint            | pure rasterization, byte-stability test                          | yes (test)    |
 | Encode (libx264) | pinned ffmpeg flags incl. `-threads 1`                           | yes           |
-| Encode (NVENC)   | non-deterministic by design; refused in verify                   | yes (2f802a8) |
+| Encode (NVENC)   | non-deterministic by design; refused in verify                   | yes           |
 | Encode (GIF)     | pinned palettegen + Bayer dither                                 | yes           |
 | Concat file      | deterministic input ordering                                     | yes           |
 | Trace write       | sorted env, ordered events                                       | yes           |
@@ -203,7 +203,7 @@ path, frame replay, paint, and trace serialization are all byte-
 stable by construction or by test. NVENC is opt-in, explicitly
 flagged non-portable, and **`Witness::verify` now refuses NVENC
 receipts for `.mp4` outputs up front with the
-`EncoderNotVerifiable { encoder }` outcome (commit 2f802a8)** —
+`EncoderNotVerifiable { encoder }` outcome** —
 no wasted re-render, clear failure mode. Tool identity captures
-every variance source including the tracer binary's own SHA-256
+every variance source including the ptytrace binary's own SHA-256
 and the resolved ffmpeg binary's SHA-256.

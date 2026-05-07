@@ -1,4 +1,4 @@
-//! Color types for tracer.
+//! Color types for ptytrace.
 //!
 //! [`HexColor`] is a 24-bit RGB color stored as a packed `u32` (`0x00RRGGBB`).
 //! Total parsers and total constructors — every public function returns either
@@ -232,9 +232,9 @@ impl<'de> Deserialize<'de> for CellColor {
 
 // ─────────────── PaletteOverrides ───────────────
 
-/// OSC 4 palette index → color overrides captured during a cast replay.
+/// OSC 4 palette index -> color overrides captured during trace replay.
 /// Stored as JSON objects with stringified integer keys (`{"4": "#aabbcc"}`)
-/// — that's how snapshot.ts emits them — so we wrap a plain `Vec` and parse.
+/// because JSON object keys are strings, so we wrap a plain `Vec` and parse.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PaletteOverrides(Vec<(u8, HexColor)>);
 

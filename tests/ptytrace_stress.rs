@@ -1,12 +1,12 @@
-//! Tracer-layer stress tests.
+//! PtyTracer-layer stress tests.
 //!
 //! These tests exercise the recorder's timing-sensitive primitives
 //! against a synthetic host child (`target/debug/stress-child` or the
 //! release equivalent, built from `src/bin/stress_child.rs`) and
 //! assert library-level correctness contracts directly — not through
-//! any application-layer scene.
+//! any application-layer script.
 //!
-//! Architectural rule: this file imports `tracer::*` only —
+//! Architectural rule: this file imports `ptytrace::*` only —
 //! it must not depend on any consumer crate. The recorder library is
 //! meant to be domain-generic, and these tests guard that seam.
 //! Consumer-layer integration coverage belongs in the consumer crate.
@@ -17,8 +17,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use tracer::trace::{EventKind, Trace};
-use tracer::tracer::{Tracer, TracerConfig};
+use ptytrace::pty::{PtyTracer, PtyTracerConfig};
+use ptytrace::trace::{EventKind, Trace};
 
 const PATTERN: &[u8] = b"PROMPT$ ";
 const TRAILING: &str = "payload-extra-bytes-here";
@@ -40,13 +40,13 @@ fn fixture_path() -> String {
     env!("CARGO_BIN_EXE_stress-child").to_string()
 }
 
-fn run_scene() -> anyhow::Result<Trace> {
-    let cfg = TracerConfig {
+fn run_trace() -> anyhow::Result<Trace> {
+    let cfg = PtyTracerConfig {
         container: None,
         max_runtime: Duration::from_secs(10),
-        ..TracerConfig::default()
+        ..PtyTracerConfig::default()
     };
-    let mut r = Tracer::spawn(cfg, &[fixture_path().as_str()])?;
+    let mut r = PtyTracer::spawn(cfg, &[fixture_path().as_str()])?;
     r.send_raw_wait_for(&[], ms(0), PATTERN, ms(2000), "wait_pattern")?;
     // Capture any leftover bytes that the wait_for event correctly
     // declined to absorb.
@@ -54,16 +54,17 @@ fn run_scene() -> anyhow::Result<Trace> {
     r.stop()
 }
 
-fn output_event_data(cast: &Trace) -> Vec<&str> {
-    cast.events
+fn output_event_data(trace: &Trace) -> Vec<&str> {
+    trace
+        .events
         .iter()
         .filter(|e| matches!(e.kind, EventKind::Output))
         .map(|e| e.data.as_str())
         .collect()
 }
 
-fn cast_string(cast: &Trace) -> String {
-    cast.to_string()
+fn trace_string(trace: &Trace) -> String {
+    trace.to_string()
 }
 
 fn distinct_count(runs: &[String]) -> usize {
@@ -77,7 +78,7 @@ fn fail_with_variants(label: &str, total: usize, runs: &[String]) -> ! {
     let first = iter.next().map_or("", std::string::String::as_str);
     let second = iter.next().map_or(first, std::string::String::as_str);
     panic!(
-        "{label}: {} distinct casts across {} runs.\n\
+        "{label}: {} distinct traces across {} runs.\n\
          \n--- variant A ---\n{}\n\
          \n--- variant B ---\n{}\n",
         runs.iter().collect::<HashSet<_>>().len(),
@@ -98,8 +99,8 @@ fn fail_with_variants(label: &str, total: usize, runs: &[String]) -> ! {
 /// at `pattern_end` deterministically puts them in the next event.
 #[test]
 fn wait_for_event_contains_only_up_to_pattern() {
-    let cast = run_scene().expect("run scene");
-    let events = output_event_data(&cast);
+    let trace = run_trace().expect("run trace");
+    let events = output_event_data(&trace);
     let pattern_str = std::str::from_utf8(PATTERN).expect("pattern utf8");
 
     assert_eq!(
@@ -118,8 +119,8 @@ fn wait_for_event_contains_only_up_to_pattern() {
     );
 }
 
-/// Stability under parallel load: same fixture, same scene, run across
-/// multiple threads. Asserts the cast is byte-identical across all runs.
+/// Stability under parallel load: same fixture, same trace path, run across
+/// multiple threads. Asserts the trace is byte-identical across all runs.
 /// Primarily a regression net for future races, not the load-bearing
 /// demonstration of the `wait_for` cutoff bug (the contract test above
 /// is that).
@@ -130,8 +131,8 @@ fn wait_for_byte_stable_under_parallel_load() {
             thread::spawn(|| {
                 let mut local: Vec<String> = Vec::with_capacity(PARALLEL_RUNS_PER_THREAD);
                 for _ in 0..PARALLEL_RUNS_PER_THREAD {
-                    let cast = run_scene().expect("run scene");
-                    local.push(cast_string(&cast));
+                    let trace = run_trace().expect("run trace");
+                    local.push(trace_string(&trace));
                 }
                 local
             })
@@ -173,8 +174,8 @@ fn wait_for_byte_stable_under_cpu_burn() {
 
     let mut runs: Vec<String> = Vec::with_capacity(CONTENTION_RUNS);
     for _ in 0..CONTENTION_RUNS {
-        let cast = run_scene().expect("run scene");
-        runs.push(cast_string(&cast));
+        let trace = run_trace().expect("run trace");
+        runs.push(trace_string(&trace));
     }
 
     stop.store(true, Ordering::Relaxed);

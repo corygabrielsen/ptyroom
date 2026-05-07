@@ -1,8 +1,8 @@
-//! asciinema v2 cast file format.
+//! asciinema v2-compatible trace file format.
 //!
-//! A cast is a JSONL file: line 0 is a [`TraceHeader`] object, lines 1..N
+//! A trace is a JSONL file: line 0 is a [`TraceHeader`] object, lines 1..N
 //! are 3-element arrays `[time_seconds, "o"|"i", data_string]`. The recorder
-//! emits casts whose timestamps are the cumulative sum of intent-based
+//! emits traces whose timestamps are the cumulative sum of intent-based
 //! `dwell_ms`, never wall-clock — this is what makes playback deterministic.
 //!
 //! Contract: <https://docs.asciinema.org/manual/asciicast/v2/>
@@ -16,7 +16,7 @@ pub struct TraceHeader {
     pub version: u32,
     pub width: u32,
     pub height: u32,
-    /// Subset of the env namespace baked into the cast for parity with
+    /// Subset of the env namespace baked into the trace for parity with
     /// asciinema's reference player. We only emit `TERM` and `SHELL`.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub env: std::collections::BTreeMap<String, String>,
@@ -66,7 +66,7 @@ impl<'de> Deserialize<'de> for TraceEvent {
             "i" => EventKind::Input,
             other => {
                 return Err(serde::de::Error::custom(format!(
-                    "unknown cast event kind: {other:?}"
+                    "unknown trace event kind: {other:?}"
                 )));
             }
         };
@@ -74,7 +74,7 @@ impl<'de> Deserialize<'de> for TraceEvent {
     }
 }
 
-/// In-memory cast: header + events, deterministic order.
+/// In-memory trace: header + events, deterministic order.
 #[derive(Debug, Clone)]
 pub struct Trace {
     pub header: TraceHeader,
@@ -82,13 +82,13 @@ pub struct Trace {
 }
 
 impl Trace {
-    /// Read a cast file from disk.
+    /// Read a trace file from disk.
     ///
     /// ```no_run
-    /// use tracer::trace::Trace;
+    /// use ptytrace::trace::Trace;
     ///
-    /// let cast = Trace::read("demo.cast")?;
-    /// println!("{}x{} cast with {} events", cast.header.width, cast.header.height, cast.events.len());
+    /// let trace = Trace::read("demo.ptytrace")?;
+    /// println!("{}x{} trace with {} events", trace.header.width, trace.header.height, trace.events.len());
     /// # Ok::<(), anyhow::Error>(())
     /// ```
     ///
@@ -99,13 +99,13 @@ impl Trace {
         Self::parse(&text)
     }
 
-    /// Parse a cast from its JSONL text.
+    /// Parse a trace from its JSONL text.
     ///
     /// # Errors
     /// Empty input, or JSON parse error on the header or any event line.
     pub fn parse(text: &str) -> anyhow::Result<Self> {
         let mut lines = text.lines().filter(|l| !l.is_empty());
-        let header_line = lines.next().ok_or_else(|| anyhow::anyhow!("empty cast"))?;
+        let header_line = lines.next().ok_or_else(|| anyhow::anyhow!("empty trace"))?;
         let header: TraceHeader = serde_json::from_str(header_line)?;
         let events = lines
             .map(serde_json::from_str)
@@ -113,7 +113,7 @@ impl Trace {
         Ok(Trace { header, events })
     }
 
-    /// Write the cast to `path`, creating parent directories as needed.
+    /// Write the trace to `path`, creating parent directories as needed.
     ///
     /// # Errors
     /// IO error creating the parent directory or writing the file.
@@ -126,7 +126,7 @@ impl Trace {
         Ok(())
     }
 
-    /// Convenience for scene binaries: write the cast and print a one-line
+    /// Convenience for callers: write the trace and print a one-line
     /// summary (`wrote PATH (BYTES bytes, N events)`).
     ///
     /// # Errors
@@ -146,7 +146,7 @@ impl Trace {
 }
 
 impl std::fmt::Display for Trace {
-    /// Emit the cast as JSONL text. Panics only if `serde_json` fails to
+    /// Emit the trace as JSONL text. Panics only if `serde_json` fails to
     /// serialize a struct that is, by construction, always serializable.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let header = serde_json::to_string(&self.header).map_err(|_| std::fmt::Error)?;
@@ -207,7 +207,7 @@ mod tests {
     }
 
     #[test]
-    fn cast_round_trip() {
+    fn trace_round_trip() {
         let c = Trace {
             header: TraceHeader {
                 version: 2,

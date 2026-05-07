@@ -109,7 +109,7 @@ pub fn encode(req: &EncodeRequest) -> anyhow::Result<()> {
     let concat_file = {
         use std::io::Write as _;
         let mut f = tempfile::Builder::new()
-            .prefix("tracer-concat-")
+            .prefix("ptytrace-concat-")
             .suffix(".txt")
             .tempfile()?;
         f.write_all(concat_text.as_bytes())?;
@@ -230,7 +230,7 @@ fn run_ffmpeg(cmd: &mut Command) -> anyhow::Result<()> {
     // opted into verbose mode. Pass `-loglevel error` so real errors
     // still reach stderr; if anything goes wrong we re-emit the
     // captured output below.
-    let verbose = std::env::var_os("TRACER_VERBOSE").is_some_and(|v| !v.is_empty());
+    let verbose = std::env::var_os("PTYTRACE_VERBOSE").is_some_and(|v| !v.is_empty());
     if verbose {
         eprintln!("$ {cmd:?}");
     } else {

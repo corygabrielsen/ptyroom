@@ -1,10 +1,10 @@
-//! Tracer library.
+//! PTY recording core.
 //!
 //! Spawns an interactive terminal process via PTY, drives it by sending
 //! scripted keystrokes/dwells, captures every byte written, and emits an
-//! asciinema v2 cast with deterministic timestamps.
+//! asciinema v2-compatible trace with deterministic timestamps.
 //!
-//! The cast's per-event timestamp is the cumulative sum of the *intended*
+//! The trace's per-event timestamp is the cumulative sum of the *intended*
 //! dwell, not wall-clock — playback is independent of the speed of the
 //! recording machine.
 
@@ -12,7 +12,7 @@ mod drainer;
 mod keys;
 mod live;
 mod osc;
-mod pty;
+mod process;
 
 pub use drainer::WatchHandle;
 pub use keys::Key;
@@ -31,7 +31,7 @@ use tempfile::NamedTempFile;
 use crate::recording::{DwellMs, TraceBuilder};
 use crate::trace::Trace;
 use drainer::Drainer;
-use pty::{PtyMaster, spawn as spawn_pty};
+use process::{PtyMaster, spawn as spawn_pty};
 
 /// Short fallback wall-clock window for inputs that do not have a stronger
 /// content-aware sync point. Text entry and shell commands use watches;
@@ -42,8 +42,8 @@ static CONTAINER_HOME_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Bash startup profile used by the Docker convenience launcher.
 ///
-/// The recorder core can spawn any argv via [`Tracer::spawn`]. This profile
-/// is only for [`Tracer::start`], which starts bash in the configured
+/// The recorder core can spawn any argv via [`PtyTracer::spawn`]. This profile
+/// is only for [`PtyTracer::start`], which starts bash in the configured
 /// container/image and needs a reproducible prompt and initial screen state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShellProfile {
@@ -58,14 +58,14 @@ pub struct ShellProfile {
     pub clear_on_start: bool,
     /// Optional verbatim rcfile bytes. When `Some`, the structured
     /// fields above are ignored and these bytes are written to the
-    /// rcfile as-is. Used by the scene DSL to pass through a heredoc
+    /// rcfile as-is. Used by the script DSL to pass through a heredoc
     /// `SetShellRcfile` block.
     pub raw_rcfile: Option<Vec<u8>>,
 }
 
 /// Bytes inserted into the presentation stream without touching the PTY.
 ///
-/// Presentation output is visible in the final cast, but it is marked
+/// Presentation output is visible in the final trace, but it is marked
 /// separately from child-process output in the raw evidence log. Use it for
 /// visual structure such as labels or blank prompt lines, not for state that
 /// the child process must observe.
@@ -143,7 +143,7 @@ impl Default for ShellProfile {
 }
 
 #[derive(Debug, Clone)]
-pub struct TracerConfig {
+pub struct PtyTracerConfig {
     /// Terminal columns.
     pub cols: u16,
     /// Terminal rows.
@@ -158,8 +158,8 @@ pub struct TracerConfig {
     /// this command is responsible for applying the desired shell profile.
     pub warm_command: Vec<String>,
     /// Parent directory under which each warm-container recording gets a
-    /// fresh `$HOME` (`<warm_home_root>/.tracer-home-<pid>-<seq>`).
-    /// The wrapper named in [`TracerConfig::warm_command`] is responsible
+    /// fresh `$HOME` (`<warm_home_root>/.ptytrace-home-<pid>-<seq>`).
+    /// The wrapper named in [`PtyTracerConfig::warm_command`] is responsible
     /// for `mkdir`-ing this path inside the container before exec-ing the
     /// shell. Default is `/tmp` (universally writable on POSIX); override
     /// to point at any path the in-container user can `mkdir` under.
@@ -172,13 +172,13 @@ pub struct TracerConfig {
     pub max_runtime: Duration,
 }
 
-impl Default for TracerConfig {
+impl Default for PtyTracerConfig {
     fn default() -> Self {
         Self {
             cols: 80,
             rows: 30,
             image: "bash:latest".into(),
-            container: std::env::var("TRACER_CONTAINER")
+            container: std::env::var("PTYTRACE_CONTAINER")
                 .ok()
                 .filter(|value| !value.is_empty()),
             warm_command: vec!["bash".into(), "-i".into()],
@@ -190,8 +190,8 @@ impl Default for TracerConfig {
     }
 }
 
-pub struct Tracer {
-    cfg: TracerConfig,
+pub struct PtyTracer {
+    cfg: PtyTracerConfig,
     pty: PtyMaster,
     drainer: Drainer,
     /// Hold the cold `docker run` rcfile alive — `Drop` unlinks it.
@@ -200,32 +200,32 @@ pub struct Tracer {
     started_at: Instant,
 }
 
-impl Tracer {
+impl PtyTracer {
     /// Spawn an arbitrary interactive process under a PTY.
     ///
     /// This is the reusable-library entry point: callers own the child process,
     /// environment, shell profile, and any domain-specific setup. The recorder
-    /// owns PTY IO, terminal geometry, OSC stubbing, and deterministic cast
+    /// owns PTY IO, terminal geometry, OSC stubbing, and deterministic trace
     /// timestamps.
     ///
     /// ```no_run
     /// use std::time::Duration;
-    /// use tracer::tracer::{Tracer, TracerConfig};
+    /// use ptytrace::pty::{PtyTracer, PtyTracerConfig};
     ///
-    /// let mut rec = Tracer::spawn(TracerConfig::default(), &["bash"])?;
+    /// let mut rec = PtyTracer::spawn(PtyTracerConfig::default(), &["bash"])?;
     /// rec.send_raw_wait_for(
     ///     &[], Duration::ZERO,
     ///     b"$ ", Duration::from_secs(2),
     ///     "prompt",
     /// )?;
     /// rec.type_text("echo hello", Duration::from_millis(35))?;
-    /// rec.stop()?.write("hello.cast")?;
+    /// rec.stop()?.write("hello.ptytrace")?;
     /// # Ok::<(), anyhow::Error>(())
     /// ```
     ///
     /// # Errors
     /// Empty argv, or `forkpty` / `execvp(argv[0])` failure.
-    pub fn spawn(cfg: TracerConfig, argv: &[&str]) -> anyhow::Result<Self> {
+    pub fn spawn(cfg: PtyTracerConfig, argv: &[&str]) -> anyhow::Result<Self> {
         let pty = spawn_pty(argv, cfg.cols, cfg.rows).context("spawn process")?;
         Ok(Self::from_pty(cfg, pty, None))
     }
@@ -242,7 +242,7 @@ impl Tracer {
     ///
     /// # Errors
     /// rcfile write fails, or `forkpty` / `execvp("docker")` fails.
-    pub fn start(cfg: TracerConfig) -> anyhow::Result<Self> {
+    pub fn start(cfg: PtyTracerConfig) -> anyhow::Result<Self> {
         if cfg.container.is_some() && cfg.warm_command.is_empty() {
             anyhow::bail!("warm recorder requires at least one warm_command arg");
         }
@@ -259,7 +259,7 @@ impl Tracer {
             let seq = CONTAINER_HOME_SEQ.fetch_add(1, Ordering::Relaxed);
             let home = cfg
                 .warm_home_root
-                .join(format!(".tracer-home-{}-{seq}", std::process::id()))
+                .join(format!(".ptytrace-home-{}-{seq}", std::process::id()))
                 .to_string_lossy()
                 .into_owned();
             home_env = format!("HOME={home}");
@@ -310,7 +310,7 @@ impl Tracer {
         Ok(Self::from_pty(cfg, pty, rcfile))
     }
 
-    fn from_pty(cfg: TracerConfig, pty: PtyMaster, rcfile: Option<NamedTempFile>) -> Self {
+    fn from_pty(cfg: PtyTracerConfig, pty: PtyMaster, rcfile: Option<NamedTempFile>) -> Self {
         let drainer = Drainer::start(pty.fd(), cfg.stubs);
         Self {
             cfg,
@@ -347,7 +347,7 @@ impl Tracer {
     /// Send a single key, dwell `dwell` after.
     ///
     /// # Errors
-    /// As [`Tracer::dwell`].
+    /// As [`PtyTracer::dwell`].
     pub fn key(&mut self, key: Key, dwell: Duration) -> anyhow::Result<()> {
         self.send_and_capture(key.bytes(), dwell, DEFAULT_SETTLE)
     }
@@ -359,7 +359,7 @@ impl Tracer {
     /// the program emits a reliable marker.
     ///
     /// # Errors
-    /// As [`Tracer::dwell`].
+    /// As [`PtyTracer::dwell`].
     pub fn key_settle(
         &mut self,
         key: Key,
@@ -372,7 +372,7 @@ impl Tracer {
     /// Send a key `repeat` times, with `dwell` between each.
     ///
     /// # Errors
-    /// As [`Tracer::dwell`].
+    /// As [`PtyTracer::dwell`].
     pub fn keys(&mut self, key: Key, dwell: Duration, repeat: usize) -> anyhow::Result<()> {
         for _ in 0..repeat {
             self.key(key, dwell)?;
@@ -380,10 +380,10 @@ impl Tracer {
         Ok(())
     }
 
-    /// Send repeated raw key bytes as one live burst while advancing cast time
+    /// Send repeated raw key bytes as one live burst while advancing trace time
     /// as if each key happened at `dwell` cadence.
     ///
-    /// This is the virtual-time form of [`Tracer::keys`]: useful when the
+    /// This is the virtual-time form of [`PtyTracer::keys`]: useful when the
     /// child program can process queued input deterministically and the demo
     /// does not need host sleeps between individual keys.
     ///
@@ -409,10 +409,10 @@ impl Tracer {
         Ok(())
     }
 
-    /// Add presentation output directly to the cast without touching the PTY.
+    /// Add presentation output directly to the trace without touching the PTY.
     ///
     /// This is the low-level presentation-time escape hatch. The output is
-    /// visible in the cast and explicitly marked as presentation output in
+    /// visible in the trace and explicitly marked as presentation output in
     /// the raw evidence log.
     ///
     /// # Errors
@@ -430,7 +430,7 @@ impl Tracer {
         Ok(())
     }
 
-    /// Advance cast presentation time without waiting on the child process.
+    /// Advance trace presentation time without waiting on the child process.
     ///
     /// # Errors
     /// Recording exceeded `max_runtime`.
@@ -438,7 +438,7 @@ impl Tracer {
         self.push_presentation_output(Vec::new(), dwell)
     }
 
-    /// Type text in the cast without sending it to the shell.
+    /// Type text in the trace without sending it to the shell.
     ///
     /// # Errors
     /// Recording exceeded `max_runtime`.
@@ -458,7 +458,7 @@ impl Tracer {
     /// after each byte sequence.
     ///
     /// # Errors
-    /// As [`Tracer::dwell`].
+    /// As [`PtyTracer::dwell`].
     pub fn type_text(&mut self, text: &str, per_char: Duration) -> anyhow::Result<()> {
         if text.is_empty() {
             return Ok(());
@@ -527,7 +527,7 @@ impl Tracer {
     /// Send raw bytes (escape sequences, control codes) with the given dwell.
     ///
     /// # Errors
-    /// As [`Tracer::dwell`].
+    /// As [`PtyTracer::dwell`].
     pub fn send_raw(&mut self, bytes: &[u8], dwell: Duration) -> anyhow::Result<()> {
         self.send_and_capture(bytes, dwell, DEFAULT_SETTLE)
     }
@@ -562,7 +562,7 @@ impl Tracer {
     ///
     /// Trace time is **not** advanced by waiting; bytes that arrive
     /// during the wait are folded into the next `dwell`/`key` event.
-    /// Combine with a small explicit `dwell` for cast-side visible
+    /// Combine with a small explicit `dwell` for trace-side visible
     /// time:
     ///
     /// ```ignore
@@ -570,10 +570,10 @@ impl Tracer {
     /// r.type_text("vim", per_char)?;
     /// r.key(Key::Enter, ms(0))?;
     /// alt_in.wait(STARTUP_TIMEOUT).expect("alt-screen entry");
-    /// r.dwell(STARTUP_VISIBLE, ms(0))?;   // small cast-time buffer
+    /// r.dwell(STARTUP_VISIBLE, ms(0))?;   // small trace-time buffer
     /// ```
     ///
-    /// When `TRACER_PROFILE=1` is set in the environment,
+    /// When `PTYTRACE_PROFILE=1` is set in the environment,
     /// `WatchHandle::wait` logs the pattern + elapsed time to stderr.
     /// Use this to tune timeouts: run the demo once with the env var,
     /// observe actual wait times, then bump the timeout constants down
@@ -599,8 +599,8 @@ impl Tracer {
     }
 
     /// Capture bytes after a real-time settle. Records observed bytes
-    /// into the cast at zero playback dwell (so wait-style polls don't
-    /// inflate the cast's virtual time), and returns them for caller
+    /// into the trace at zero playback dwell (so wait-style polls don't
+    /// inflate the trace's virtual time), and returns them for caller
     /// inspection (e.g. regex matching).
     ///
     /// # Errors
@@ -617,7 +617,7 @@ impl Tracer {
     }
 
     /// Block until `pattern` matches in PTY output. Captured bytes up
-    /// to and including the pattern's match-end become a single cast
+    /// to and including the pattern's match-end become a single trace
     /// event with the given `dwell`. Trailing bytes (after the pattern)
     /// are pushed back to the drainer for the next operation.
     ///
@@ -729,7 +729,7 @@ impl Tracer {
     fn check_runtime(&self) -> anyhow::Result<()> {
         if self.started_at.elapsed() > self.cfg.max_runtime {
             anyhow::bail!(
-                "recording exceeded max_runtime={}ms (child hung or scene too long?)",
+                "recording exceeded max_runtime={}ms (child hung or script too long?)",
                 self.cfg.max_runtime.as_millis(),
             );
         }
@@ -737,18 +737,18 @@ impl Tracer {
     }
 
     /// Terminate the child and stop the drainer. The recorder is consumed —
-    /// call `write_cast` afterwards via `into_cast`.
+    /// call [`Trace::write`] on the returned trace afterwards.
     ///
     /// # Errors
-    /// `finish_synthetic` failed to assemble the recorded cast.
+    /// `finish_synthetic` failed to assemble the recorded trace.
     pub fn stop(mut self) -> anyhow::Result<Trace> {
-        let cast = self
+        let trace = self
             .recording
             .finish_synthetic(self.cfg.cols, self.cfg.rows)?
-            .into_cast();
+            .into_trace();
         self.pty.terminate_child();
         // Drop fields in order: drainer joins, _rcfile unlinks.
-        Ok(cast)
+        Ok(trace)
     }
 }
 
@@ -800,7 +800,7 @@ fn escape_bytes(bytes: &[u8]) -> String {
 fn build_rcfile(profile: &ShellProfile) -> std::io::Result<NamedTempFile> {
     use std::io::Write;
     let mut f = tempfile::Builder::new()
-        .prefix("tracer-rc-")
+        .prefix("ptytrace-rc-")
         .suffix(".rc")
         .tempfile()?;
     if let Some(raw) = &profile.raw_rcfile {
@@ -841,7 +841,7 @@ mod tests {
 
     #[test]
     fn config_defaults_are_generic() {
-        let cfg = TracerConfig::default();
+        let cfg = PtyTracerConfig::default();
         assert_eq!(cfg.cols, 80);
         assert_eq!(cfg.rows, 30);
         assert_eq!(cfg.image, "bash:latest");

@@ -2,8 +2,8 @@
 
 use std::path::PathBuf;
 
-use tracer::contract::Contract;
-use tracer::trace::Trace;
+use ptytrace::contract::Contract;
+use ptytrace::trace::Trace;
 
 #[derive(clap::Args)]
 pub struct Args {

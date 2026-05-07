@@ -1,23 +1,27 @@
 
 [package]
-name = "tracer"
+name = "ptytrace"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
-description = "Deterministic terminal-session tracer with virtual time and verifiable artifacts. Drives any interactive process under a PTY and emits asciinema-shaped traces, painted PNG frames, and encoded GIF/MP4."
-repository = "https://github.com/corygabrielsen/tracer"
+description = "Deterministic PTY session recorder with virtual time and verifiable artifacts. Drives any interactive process under a PTY and emits asciinema-shaped traces, painted PNG frames, and encoded GIF/MP4."
+repository = "https://github.com/corygabrielsen/ptytrace"
 readme = "README.md"
 keywords = ["terminal", "pty", "trace", "asciinema", "cli"]
 categories = ["command-line-utilities", "development-tools"]
 
 [lib]
-name = "tracer"
+name = "ptytrace"
 path = "src/lib.rs"
 
 # Generic pipeline binaries:
-# - The unified CLI is at src/bin/tracer/main.rs (binary name "tracer",
+# - The unified CLI is at src/bin/ptytrace/main.rs (binary name "ptytrace",
 #   auto-discovered from the dir).
+# - The top-level renderer is at src/bin/ptyrender/main.rs (binary
+#   name "ptyrender", auto-discovered from the dir).
+# - The composed capture+render CLI is at src/bin/ptyrecord/main.rs
+#   (binary name "ptyrecord", auto-discovered from the dir).
 # - stress-child is explicit because the test integration uses the
 #   hyphenated form via env!("CARGO_BIN_EXE_stress-child").
 
@@ -28,6 +32,7 @@ path = "src/bin/stress_child.rs"
 [dependencies]
 ab_glyph = "0.2"
 anyhow = "1"
+base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 nix = { version = "0.31", features = ["poll", "term"] }

@@ -1,17 +1,17 @@
 use std::time::Duration;
 
-use tracer::tracer::{Tracer, TracerConfig};
+use ptytrace::pty::{PtyTracer, PtyTracerConfig};
 
 fn ms(n: u64) -> Duration {
     Duration::from_millis(n)
 }
 
 fn main() -> anyhow::Result<()> {
-    let mut recorder = Tracer::spawn(
-        TracerConfig {
+    let mut recorder = PtyTracer::spawn(
+        PtyTracerConfig {
             cols: 80,
             rows: 24,
-            ..TracerConfig::default()
+            ..PtyTracerConfig::default()
         },
         &[
             "env",
@@ -31,6 +31,6 @@ fn main() -> anyhow::Result<()> {
     recorder.send_raw_wait_for(b"\n", ms(300), b"$ ", Duration::from_secs(2), "echo prompt")?;
     recorder.push_presentation_output("\r\n# presentation-only note\r\n", ms(100))?;
 
-    recorder.stop()?.write("assets/generic_shell.cast")?;
+    recorder.stop()?.write("assets/generic_shell.ptytrace")?;
     Ok(())
 }

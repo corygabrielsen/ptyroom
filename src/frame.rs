@@ -1,9 +1,9 @@
-//! Frame data: per-frame terminal state captured by `snapshot.ts`.
+//! Frame data: per-frame terminal state captured by trace replay.
 //!
-//! Each `Frame` encodes the state visible after one cast event:
+//! Each `Frame` encodes the state visible after one trace event:
 //! terminal-default bg/fg, the OSC 4 palette overrides, and a `cols × rows`
 //! grid of [`Cell`]s. `Frame::load` reads the JSON written by
-//! `renderer/snapshot.ts`.
+//! `ptytrace debug replay`.
 //!
 //! Invariants enforced by the constructors:
 //! - `grid` is rectangular: every row has the same `cols`

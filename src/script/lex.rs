@@ -1,4 +1,4 @@
-//! Lexer for scene files.
+//! Lexer for script files.
 //!
 //! Line-oriented: each statement is one logical line, except heredocs
 //! (which span the lines from `<<NAME` through the matching `NAME`
@@ -52,7 +52,7 @@ pub fn lex(source: &str) -> anyhow::Result<Vec<Line>> {
         }
 
         let (verb, rest) = split_verb(trimmed)
-            .ok_or_else(|| anyhow!("scene:{lineno}: line does not start with a verb"))?;
+            .ok_or_else(|| anyhow!("script:{lineno}: line does not start with a verb"))?;
         let mut args = Vec::new();
         let mut chars = rest.chars().peekable();
 
@@ -67,22 +67,22 @@ pub fn lex(source: &str) -> anyhow::Result<Vec<Line>> {
             }
             let token = match c {
                 '"' => parse_string(&mut chars)
-                    .with_context(|| format!("scene:{lineno}: in string"))?,
+                    .with_context(|| format!("script:{lineno}: in string"))?,
                 '/' => {
-                    parse_regex(&mut chars).with_context(|| format!("scene:{lineno}: in regex"))?
+                    parse_regex(&mut chars).with_context(|| format!("script:{lineno}: in regex"))?
                 }
                 '<' => {
                     let name = parse_heredoc_marker(&mut chars)
-                        .with_context(|| format!("scene:{lineno}: in heredoc marker"))?;
+                        .with_context(|| format!("script:{lineno}: in heredoc marker"))?;
                     let (content, lines_consumed) = read_heredoc(&raw_lines[i + 1..], &name)
-                        .with_context(|| format!("scene:{lineno}: heredoc {name}"))?;
+                        .with_context(|| format!("script:{lineno}: heredoc {name}"))?;
                     i += lines_consumed;
                     Token::Heredoc(content)
                 }
                 c if c.is_ascii_digit() => parse_number_or_duration(&mut chars)
-                    .with_context(|| format!("scene:{lineno}: in number"))?,
+                    .with_context(|| format!("script:{lineno}: in number"))?,
                 c if is_ident_start(c) => parse_ident(&mut chars),
-                _ => bail!("scene:{lineno}: unexpected character {c:?}"),
+                _ => bail!("script:{lineno}: unexpected character {c:?}"),
             };
             args.push(token);
         }
