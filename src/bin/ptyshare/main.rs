@@ -59,6 +59,10 @@ fn main() -> anyhow::Result<()> {
     let listener = TcpListener::bind(args.listen)?;
     let bound_addr = listener.local_addr()?;
     eprintln!("[ptyshare listening on {bound_addr}]");
+    eprintln!("[connect with: ptyconnect {bound_addr}]");
+    if args.allow_unauthenticated_public_bind && !bound_addr.ip().is_loopback() {
+        eprintln!("[warning: unauthenticated public ptyshare bind]");
+    }
     let out = args.out.unwrap_or_else(|| default_trace_path(bound_addr));
     let summary = run(
         &listener,
@@ -73,9 +77,12 @@ fn main() -> anyhow::Result<()> {
         },
     )?;
     println!(
-        "wrote {} ({} events)",
+        "wrote {} ({} events, {} client(s), {} disconnect(s), {} backlog drop(s))",
         summary.trace_path.display(),
-        summary.events
+        summary.events,
+        summary.clients_accepted,
+        summary.clients_disconnected,
+        summary.clients_dropped_for_backlog
     );
     Ok(())
 }

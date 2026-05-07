@@ -185,6 +185,7 @@ should be paired with SSH, WireGuard, or another authenticated tunnel
 before crossing a machine boundary. Client output is nonblocking with a
 bounded backlog: a slow observer can be disconnected, but it cannot stop
 the PTY owner, recorder, or other clients from making progress.
+The byte-level contract is in [`ptyshare-protocol.md`](ptyshare-protocol.md).
 
 ## Future Package Split
 

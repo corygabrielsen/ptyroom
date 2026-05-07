@@ -237,6 +237,8 @@ through SSH, WireGuard, or another authenticated tunnel.
 
 `ptyconnect` works interactively and in pipelines: after piped stdin
 closes, it keeps reading the shared session until the server closes.
+The raw stream contract is documented in
+[`docs/ptyshare-protocol.md`](docs/ptyshare-protocol.md).
 
 The `ptytrace` binary also exposes named subcommands:
 

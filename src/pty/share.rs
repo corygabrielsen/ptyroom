@@ -65,6 +65,9 @@ pub struct ShareSummary {
     pub listen_addr: SocketAddr,
     pub trace_path: PathBuf,
     pub events: usize,
+    pub clients_accepted: usize,
+    pub clients_disconnected: usize,
+    pub clients_dropped_for_backlog: usize,
 }
 
 /// Run a shared PTY session using an already-bound listener.
@@ -90,6 +93,7 @@ pub fn run(listener: &TcpListener, opts: ShareOpts) -> anyhow::Result<ShareSumma
         None
     };
     let mut clients: Vec<Client> = Vec::new();
+    let mut stats = ShareStats::default();
     let mut builder = TraceBuilder::new();
     let started = Instant::now();
     let mut last_event = started;
@@ -107,10 +111,10 @@ pub fn run(listener: &TcpListener, opts: ShareOpts) -> anyhow::Result<ShareSumma
             &clients,
         )?;
 
-        process_client_revents(pty_fd, &mut clients, &poll_state.client_revents)?;
+        process_client_revents(pty_fd, &mut clients, &poll_state.client_revents, &mut stats)?;
 
         if poll_state.listener_readable {
-            accept_ready_clients(listener, &mut clients)?;
+            stats.accepted += accept_ready_clients(listener, &mut clients)?;
         }
 
         if poll_state
@@ -130,7 +134,7 @@ pub fn run(listener: &TcpListener, opts: ShareOpts) -> anyhow::Result<ShareSumma
                         let stdout_borrow = unsafe { BorrowedFd::borrow_raw(stdout_fd) };
                         let _ = write(stdout_borrow, bytes);
                     }
-                    broadcast(&mut clients, bytes);
+                    broadcast(&mut clients, bytes, &mut stats);
                     let now = Instant::now();
                     let dwell = DwellMs::from_duration(now.saturating_duration_since(last_event));
                     builder.record_output(bytes.to_vec(), dwell)?;
@@ -157,7 +161,17 @@ pub fn run(listener: &TcpListener, opts: ShareOpts) -> anyhow::Result<ShareSumma
         listen_addr,
         trace_path: opts.out,
         events,
+        clients_accepted: stats.accepted,
+        clients_disconnected: stats.disconnected,
+        clients_dropped_for_backlog: stats.dropped_for_backlog,
     })
+}
+
+#[derive(Debug, Default)]
+struct ShareStats {
+    accepted: usize,
+    disconnected: usize,
+    dropped_for_backlog: usize,
 }
 
 #[derive(Debug)]
@@ -226,13 +240,18 @@ fn poll_share_fds(
     })
 }
 
-fn accept_ready_clients(listener: &TcpListener, clients: &mut Vec<Client>) -> anyhow::Result<()> {
+fn accept_ready_clients(
+    listener: &TcpListener,
+    clients: &mut Vec<Client>,
+) -> anyhow::Result<usize> {
+    let mut accepted = 0;
     loop {
         match listener.accept() {
             Ok((stream, _addr)) => {
                 clients.push(Client::new(stream)?);
+                accepted += 1;
             }
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => return Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => return Ok(accepted),
             Err(err) => return Err(err).context("accept ptyshare client"),
         }
     }
@@ -242,6 +261,7 @@ fn process_client_revents(
     pty_fd: i32,
     clients: &mut Vec<Client>,
     revents: &[PollFlags],
+    stats: &mut ShareStats,
 ) -> anyhow::Result<()> {
     let mut kept = Vec::with_capacity(clients.len());
     for (idx, mut client) in clients.drain(..).enumerate() {
@@ -258,6 +278,7 @@ fn process_client_revents(
             kept.push(client);
         } else {
             client.disconnect();
+            stats.disconnected += 1;
         }
     }
     *clients = kept;
@@ -277,14 +298,18 @@ fn drain_local_input(stdin_fd: i32, pty_fd: i32, buf: &mut [u8]) -> anyhow::Resu
     }
 }
 
-fn broadcast(clients: &mut Vec<Client>, bytes: &[u8]) {
+fn broadcast(clients: &mut Vec<Client>, bytes: &[u8], stats: &mut ShareStats) {
     let mut kept = Vec::with_capacity(clients.len());
     for mut client in clients.drain(..) {
-        let keep = client.enqueue(bytes) && client.flush_pending();
-        if keep {
+        if !client.enqueue(bytes) {
+            client.disconnect();
+            stats.disconnected += 1;
+            stats.dropped_for_backlog += 1;
+        } else if client.flush_pending() {
             kept.push(client);
         } else {
             client.disconnect();
+            stats.disconnected += 1;
         }
     }
     *clients = kept;
@@ -420,6 +445,8 @@ fn resolve_argv(argv: Vec<String>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::ErrorKind;
+
     use super::*;
     use crate::trace::Trace;
 
@@ -486,6 +513,7 @@ mod tests {
         let mut client = connect_with_retry(addr);
         client.write_all(b"hello\n").unwrap();
         let summary = handle.join().unwrap().unwrap();
+        assert_eq!(summary.clients_accepted, 1);
         let trace = Trace::read(summary.trace_path).unwrap();
         assert!(
             trace
@@ -493,6 +521,85 @@ mod tests {
                 .iter()
                 .any(|event| event.data.contains("got:hello"))
         );
+    }
+
+    #[test]
+    fn share_broadcasts_client_driven_output_to_all_clients() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("shared-broadcast.ptytrace");
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn({
+            let out = out.clone();
+            move || {
+                run(
+                    &listener,
+                    ShareOpts {
+                        argv: vec![
+                            "sh".into(),
+                            "-lc".into(),
+                            "read line; printf 'broadcast:%s\\n' \"$line\"".into(),
+                        ],
+                        out,
+                        local_output: false,
+                        local_input: false,
+                        max_runtime: Duration::from_secs(5),
+                        ..ShareOpts::default()
+                    },
+                )
+            }
+        });
+
+        let mut writer = connect_with_retry(addr);
+        let mut observer = connect_with_retry(addr);
+        writer.write_all(b"hello\n").unwrap();
+
+        assert_contains_from_stream(&mut writer, "broadcast:hello");
+        assert_contains_from_stream(&mut observer, "broadcast:hello");
+        let summary = handle.join().unwrap().unwrap();
+        assert_eq!(summary.clients_accepted, 2);
+        assert_eq!(summary.clients_dropped_for_backlog, 0);
+    }
+
+    #[test]
+    fn disconnected_client_does_not_stop_remaining_client() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("shared-disconnect.ptytrace");
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn({
+            let out = out.clone();
+            move || {
+                run(
+                    &listener,
+                    ShareOpts {
+                        argv: vec![
+                            "sh".into(),
+                            "-lc".into(),
+                            "read first; printf 'first:%s\\n' \"$first\"; read second; printf 'second:%s\\n' \"$second\"".into(),
+                        ],
+                        out,
+                        local_output: false,
+                        local_input: false,
+                        max_runtime: Duration::from_secs(5),
+                        ..ShareOpts::default()
+                    },
+                )
+            }
+        });
+
+        let mut transient = connect_with_retry(addr);
+        let mut survivor = connect_with_retry(addr);
+        transient.write_all(b"alpha\n").unwrap();
+        assert_contains_from_stream(&mut survivor, "first:alpha");
+        drop(transient);
+
+        survivor.write_all(b"omega\n").unwrap();
+        assert_contains_from_stream(&mut survivor, "second:omega");
+        let summary = handle.join().unwrap().unwrap();
+        assert_eq!(summary.clients_accepted, 2);
+        assert!(summary.clients_disconnected >= 1);
+        assert_eq!(summary.clients_dropped_for_backlog, 0);
     }
 
     #[test]
@@ -504,10 +611,13 @@ mod tests {
         let mut client = Client::new(stream).unwrap();
         assert!(client.enqueue(&vec![b'x'; MAX_CLIENT_BACKLOG_BYTES]));
         let mut clients = vec![client];
+        let mut stats = ShareStats::default();
 
-        broadcast(&mut clients, b"y");
+        broadcast(&mut clients, b"y", &mut stats);
 
         assert!(clients.is_empty());
+        assert_eq!(stats.disconnected, 1);
+        assert_eq!(stats.dropped_for_backlog, 1);
     }
 
     fn connect_with_retry(addr: SocketAddr) -> TcpStream {
@@ -523,6 +633,33 @@ mod tests {
                     std::thread::sleep(Duration::from_millis(10));
                 }
                 Err(err) => panic!("connect to ptyshare test server failed: {err}"),
+            }
+        }
+    }
+
+    fn assert_contains_from_stream(stream: &mut TcpStream, needle: &str) {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut bytes = Vec::new();
+        let mut buf = [0_u8; 256];
+        loop {
+            match stream.read(&mut buf) {
+                Ok(0) => panic!("stream closed before seeing {needle:?}"),
+                Ok(n) => {
+                    bytes.extend_from_slice(&buf[..n]);
+                    if String::from_utf8_lossy(&bytes).contains(needle) {
+                        return;
+                    }
+                }
+                Err(err) if err.kind() == ErrorKind::Interrupted => {}
+                Err(err) if matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                    panic!(
+                        "timed out waiting for {needle:?}; saw {:?}",
+                        String::from_utf8_lossy(&bytes)
+                    );
+                }
+                Err(err) => panic!("read from ptyshare client stream failed: {err}"),
             }
         }
     }
