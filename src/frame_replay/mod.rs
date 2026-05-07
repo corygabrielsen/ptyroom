@@ -15,7 +15,7 @@ use crate::color::{CellColor as SnapCellColor, HexColor, PaletteOverrides};
 use crate::encode::TimingEntry;
 use crate::frame::{Cell, Frame, Grid};
 use crate::pty::StubColors;
-use crate::trace::{EventKind, Trace};
+use crate::trace::{EventKind, Trace, TraceHeader};
 
 pub use osc_tracker::OscTracker;
 
@@ -55,18 +55,7 @@ pub fn replay(
     trace: &Trace,
     defaults: StubColors,
 ) -> anyhow::Result<(Vec<Frame>, Vec<TimingEntry>)> {
-    let cols = u16::try_from(trace.header.width)?;
-    let rows = u16::try_from(trace.header.height)?;
-    if cols == 0 || rows == 0 {
-        anyhow::bail!(
-            "trace header has zero dimension: {}x{}",
-            trace.header.width,
-            trace.header.height
-        );
-    }
-
-    let mut parser = vt100::Parser::new(rows, cols, 0);
-    let mut osc = OscTracker::new(defaults);
+    let mut state = ReplayState::from_header(&trace.header, defaults)?;
 
     let mut snapshots = Vec::with_capacity(trace.events.len());
     let mut timing = Vec::with_capacity(trace.events.len());
@@ -78,11 +67,7 @@ pub fn replay(
         if !matches!(event.kind, EventKind::Output) {
             continue;
         }
-        let bytes = event.data.as_bytes();
-        parser.process(bytes);
-        osc.observe(bytes);
-
-        let snapshot = capture(&parser, &osc);
+        let snapshot = state.process_output(event.data.as_bytes());
         snapshots.push(snapshot);
 
         let frame = format!("{:04}", i + 1);
@@ -110,6 +95,51 @@ pub fn replay(
     }
 
     Ok((snapshots, timing))
+}
+
+/// Incremental trace replay state.
+///
+/// This is the shared terminal model used by both batch rendering and
+/// live `.ptyrecord` stitching. Feeding the same output bytes through
+/// this state yields the same frames as [`replay`].
+pub struct ReplayState {
+    parser: vt100::Parser,
+    osc: OscTracker,
+}
+
+impl ReplayState {
+    /// Build replay state for a trace header.
+    ///
+    /// # Errors
+    /// Header dimensions do not fit in `u16` or either dimension is zero.
+    pub fn from_header(header: &TraceHeader, defaults: StubColors) -> anyhow::Result<Self> {
+        let cols = u16::try_from(header.width)?;
+        let rows = u16::try_from(header.height)?;
+        Self::new(cols, rows, defaults)
+    }
+
+    /// Build replay state for explicit terminal geometry.
+    ///
+    /// # Errors
+    /// Either dimension is zero.
+    pub fn new(cols: u16, rows: u16, defaults: StubColors) -> anyhow::Result<Self> {
+        if cols == 0 || rows == 0 {
+            anyhow::bail!("trace header has zero dimension: {cols}x{rows}");
+        }
+
+        Ok(Self {
+            parser: vt100::Parser::new(rows, cols, 0),
+            osc: OscTracker::new(defaults),
+        })
+    }
+
+    /// Apply one output chunk and return the resulting visible frame.
+    #[must_use]
+    pub fn process_output(&mut self, bytes: &[u8]) -> Frame {
+        self.parser.process(bytes);
+        self.osc.observe(bytes);
+        capture(&self.parser, &self.osc)
+    }
 }
 
 fn capture(parser: &vt100::Parser, osc: &OscTracker) -> Frame {

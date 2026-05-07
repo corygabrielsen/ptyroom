@@ -28,6 +28,12 @@ Schema v1 embeds MP4 media so browser components can provide native
 playback controls and time-synchronized selectable text. Use `ptyrender`
 directly when you need a standalone GIF.
 
+During live command recording, `ptyrecord` feeds each captured output
+event through the same replay state as `ptyrender` and paints PNG frames
+immediately. At session end it encodes the already-painted frame set,
+then computes the witness from the trace and output hashes without
+re-rendering the terminal session.
+
 ## Schema v1
 
 ```json

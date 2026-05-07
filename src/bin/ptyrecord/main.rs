@@ -11,9 +11,10 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
-use ptytrace::pty::{CaptureOpts, capture};
-use ptytrace::ptyrecord::PtyRecord;
-use ptytrace::witness::Witness;
+use ptytrace::encode::{EncodeRequest, Mp4Encoder, encode};
+use ptytrace::pty::{CaptureOpts, capture_with_sink};
+use ptytrace::ptyrecord::{LiveFrameStitcher, LiveStitchConfig, PtyRecord};
+use ptytrace::witness::{RenderOptions, Witness};
 use tempfile::TempDir;
 
 #[derive(Parser)]
@@ -133,34 +134,57 @@ fn main() -> anyhow::Result<()> {
     ensure_parent(&trace_path)?;
     ensure_parent(&media_path)?;
 
-    eprintln!("[recording → {}]", trace_path.display());
-    let trace = capture(CaptureOpts {
-        argv: args.command,
-        cols: None,
-        rows: None,
-        max_runtime: Duration::from_secs(args.max_secs),
-    })?;
+    let frames_dir = work.path().join(format!("{stem}-frames"));
+    let mut stitcher = LiveFrameStitcher::new(
+        &frames_dir,
+        LiveStitchConfig {
+            font_size_px: args.font_size,
+            padding_px: args.padding,
+        },
+    );
+
+    eprintln!(
+        "[recording → {}; live-stitching frames → {}]",
+        trace_path.display(),
+        frames_dir.display()
+    );
+    let trace = capture_with_sink(
+        CaptureOpts {
+            argv: args.command,
+            cols: None,
+            rows: None,
+            max_runtime: Duration::from_secs(args.max_secs),
+        },
+        &mut stitcher,
+    )?;
     trace.write_with_summary(&trace_path)?;
 
-    let mut render = ptytrace::render(&trace_path)?
-        .font_size(args.font_size)
-        .padding(args.padding)
-        .fps(args.fps);
-    if let Some(width) = args.width {
-        render = render.width(width);
+    let prepared_frames = stitcher.finish()?;
+    if prepared_frames.timing.is_empty() {
+        anyhow::bail!("ptyrecord captured no terminal output; cannot encode media");
     }
+    encode(&EncodeRequest {
+        frames_dir: prepared_frames.frames_dir,
+        timing: prepared_frames.timing,
+        out_path: media_path.clone(),
+        fps: args.fps,
+        mp4_encoder: Mp4Encoder::Libx264,
+        width: args.width,
+    })?;
 
-    let witness = if args.no_witness {
-        render.to_path(&media_path)?;
-        None
-    } else {
-        let witness = render.to_path_with_receipt(&media_path)?;
-        if let Some(witness_out) = &args.witness_out {
-            ensure_parent(witness_out)?;
-            witness.write(witness_out)?;
-        }
-        Some(witness)
-    };
+    let witness = (!args.no_witness)
+        .then(|| {
+            Witness::from_rendered_output(
+                &trace_path,
+                &media_path,
+                RenderOptions::libx264(args.font_size, args.padding, args.width, args.fps),
+            )
+        })
+        .transpose()?;
+    if let (Some(witness), Some(witness_out)) = (&witness, &args.witness_out) {
+        ensure_parent(witness_out)?;
+        witness.write(witness_out)?;
+    }
 
     let record = PtyRecord::from_paths(&trace_path, &media_path, witness.as_ref())?;
     record.write(&out)?;

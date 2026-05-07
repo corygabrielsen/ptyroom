@@ -16,7 +16,7 @@ mod process;
 
 pub use drainer::WatchHandle;
 pub use keys::Key;
-pub use live::{CaptureOpts, capture};
+pub use live::{CaptureEvent, CaptureOpts, CaptureSink, capture, capture_with_sink};
 pub use osc::StubColors;
 
 use std::os::fd::BorrowedFd;

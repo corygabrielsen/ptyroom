@@ -46,9 +46,10 @@ $ ptytrace htop
 wrote recording-1778082000.ptytrace
 ```
 
-`ptyrecord` is the composed workflow. It captures the command, renders
-the trace to browser-controllable MP4, and writes one `.ptyrecord`
-bundle containing the `.ptytrace`, media, witness, and selectable text:
+`ptyrecord` is the composed workflow. It captures the command, paints
+frames while the session is still running, encodes those stitched
+frames to browser-controllable MP4, and writes one `.ptyrecord` bundle
+containing the `.ptytrace`, media, witness, and selectable text:
 
 ```bash
 $ ptyrecord --out deploy.ptyrecord ssh deploy@example.com

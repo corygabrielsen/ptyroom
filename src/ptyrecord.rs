@@ -7,14 +7,17 @@
 //! - selectable text projections derived from replaying the trace.
 
 use std::path::Path;
+use std::path::PathBuf;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::{Deserialize, Serialize};
 
+use crate::encode::TimingEntry;
 use crate::frame::Frame;
-use crate::frame_replay::replay;
-use crate::pty::StubColors;
+use crate::frame_replay::{ReplayState, TAIL_DWELL_MS, replay};
+use crate::paint::{FONT_BYTES, PaintConfig, Painter};
+use crate::pty::{CaptureEvent, CaptureSink, StubColors};
 use crate::trace::{EventKind, Trace};
 use crate::witness::{Witness, sha256_hex};
 
@@ -63,6 +66,110 @@ pub struct Transcript {
 pub struct TextFrame {
     pub time_s: f64,
     pub rows: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LiveStitchConfig {
+    pub font_size_px: f32,
+    pub padding_px: u32,
+}
+
+impl Default for LiveStitchConfig {
+    fn default() -> Self {
+        Self {
+            font_size_px: 14.0,
+            padding_px: 12,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StitchedFrames {
+    pub frames_dir: PathBuf,
+    pub timing: Vec<TimingEntry>,
+}
+
+/// Capture sink that paints output frames while live recording is still
+/// running.
+///
+/// It shares [`ReplayState`] with the batch renderer, so the PNG frames
+/// and timing it prepares are equivalent to `replay(trace)` followed by
+/// `paint`.
+pub struct LiveFrameStitcher {
+    frames_dir: PathBuf,
+    cfg: LiveStitchConfig,
+    replay: Option<ReplayState>,
+    painter: Option<Painter<'static>>,
+    timing: Vec<TimingEntry>,
+    next_frame_index: usize,
+}
+
+impl LiveFrameStitcher {
+    #[must_use]
+    pub fn new(frames_dir: impl Into<PathBuf>, cfg: LiveStitchConfig) -> Self {
+        Self {
+            frames_dir: frames_dir.into(),
+            cfg,
+            replay: None,
+            painter: None,
+            timing: Vec::new(),
+            next_frame_index: 1,
+        }
+    }
+
+    /// Finalize the prepared frame set.
+    ///
+    /// # Errors
+    /// The stitcher was never started by the capture loop.
+    pub fn finish(mut self) -> anyhow::Result<StitchedFrames> {
+        if self.replay.is_none() {
+            anyhow::bail!("live stitcher was not started");
+        }
+        if let Some(last) = self.timing.last_mut() {
+            last.dwell_ms = TAIL_DWELL_MS;
+        }
+        Ok(StitchedFrames {
+            frames_dir: self.frames_dir,
+            timing: self.timing,
+        })
+    }
+}
+
+impl CaptureSink for LiveFrameStitcher {
+    fn start(&mut self, cols: u16, rows: u16) -> anyhow::Result<()> {
+        std::fs::create_dir_all(&self.frames_dir)?;
+        self.replay = Some(ReplayState::new(cols, rows, StubColors::default())?);
+        self.painter = Some(Painter::new(
+            FONT_BYTES,
+            PaintConfig {
+                font_size_px: self.cfg.font_size_px,
+                padding_px: self.cfg.padding_px,
+                cell_w_px: None,
+                cell_h_px: None,
+            },
+        )?);
+        Ok(())
+    }
+
+    fn output(&mut self, event: &CaptureEvent) -> anyhow::Result<()> {
+        let replay = self
+            .replay
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("live stitcher output before start"))?;
+        let painter = self
+            .painter
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("live stitcher missing painter"))?;
+        let frame = replay.process_output(&event.output);
+        let frame_name = format!("{:04}", self.next_frame_index);
+        self.next_frame_index += 1;
+        painter.save_png(&frame, self.frames_dir.join(format!("{frame_name}.png")))?;
+        self.timing.push(TimingEntry {
+            frame: frame_name,
+            dwell_ms: event.dwell_ms,
+        });
+        Ok(())
+    }
 }
 
 impl PtyRecord {
@@ -370,8 +477,12 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{PtyRecord, plain_output_text};
+    use super::{LiveFrameStitcher, LiveStitchConfig, PtyRecord, plain_output_text};
+    use crate::frame_replay::replay;
+    use crate::paint::{FONT_BYTES, PaintConfig, Painter};
+    use crate::pty::{CaptureEvent, CaptureSink, StubColors};
     use crate::trace::{EventKind, Trace, TraceEvent, TraceHeader};
+    use crate::witness::sha256_hex;
 
     fn tiny_trace() -> Trace {
         Trace {
@@ -426,6 +537,84 @@ mod tests {
                 .iter()
                 .any(|row| row.contains("world"))
         );
+    }
+
+    #[test]
+    fn live_stitcher_matches_batch_replay_frames() {
+        let tmp = TempDir::new().unwrap();
+        let live_dir = tmp.path().join("live");
+        let batch_dir = tmp.path().join("batch");
+        std::fs::create_dir(&batch_dir).unwrap();
+
+        let mut stitcher = LiveFrameStitcher::new(
+            &live_dir,
+            LiveStitchConfig {
+                font_size_px: 14.0,
+                padding_px: 12,
+            },
+        );
+        stitcher.start(20, 4).unwrap();
+        stitcher
+            .output(&CaptureEvent {
+                time_s: 0.0,
+                output: b"hello".to_vec(),
+                dwell_ms: 120,
+            })
+            .unwrap();
+        stitcher
+            .output(&CaptureEvent {
+                time_s: 0.120,
+                output: b" world".to_vec(),
+                dwell_ms: 250,
+            })
+            .unwrap();
+        let prepared_frames = stitcher.finish().unwrap();
+
+        let trace = Trace {
+            header: TraceHeader {
+                version: 2,
+                width: 20,
+                height: 4,
+                env: std::collections::BTreeMap::default(),
+            },
+            events: vec![
+                TraceEvent {
+                    time_s: 0.0,
+                    kind: EventKind::Output,
+                    data: "hello".into(),
+                },
+                TraceEvent {
+                    time_s: 0.120,
+                    kind: EventKind::Output,
+                    data: " world".into(),
+                },
+            ],
+        };
+        let (frames, timing) = replay(&trace, StubColors::default()).unwrap();
+        let painter = Painter::new(
+            FONT_BYTES,
+            PaintConfig {
+                font_size_px: 14.0,
+                padding_px: 12,
+                cell_w_px: None,
+                cell_h_px: None,
+            },
+        )
+        .unwrap();
+        for (frame, entry) in frames.iter().zip(&timing) {
+            painter
+                .save_png(frame, batch_dir.join(format!("{}.png", entry.frame)))
+                .unwrap();
+        }
+
+        assert_eq!(prepared_frames.timing.len(), timing.len());
+        assert_eq!(prepared_frames.timing[0].dwell_ms, timing[0].dwell_ms);
+        assert_eq!(prepared_frames.timing[1].dwell_ms, timing[1].dwell_ms);
+        for entry in &timing {
+            let live_png = std::fs::read(live_dir.join(format!("{}.png", entry.frame))).unwrap();
+            let batch_png = std::fs::read(batch_dir.join(format!("{}.png", entry.frame))).unwrap();
+            assert_eq!(sha256_hex(&live_png), sha256_hex(&batch_png));
+        }
     }
 
     #[test]

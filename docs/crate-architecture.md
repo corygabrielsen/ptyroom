@@ -157,6 +157,12 @@ must preserve the same algebra: the trace remains the durable artifact,
 rendering remains repeatable from that artifact, and the `.ptyrecord`
 bundle is just a portable packaging layer.
 
+The first live optimization is frame stitching: `ptyrecord` feeds live
+capture output into the shared `ReplayState` and paints frames during
+the session, then only encodes and bundles at the end. This removes the
+post-session replay/paint pass without changing the trace or witness
+algebra.
+
 ## Current CLI Shape
 
 The current crate installs three user-facing binaries:

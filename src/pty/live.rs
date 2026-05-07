@@ -46,6 +46,46 @@ pub struct CaptureOpts {
     pub max_runtime: Duration,
 }
 
+/// Output event observed during live capture.
+#[derive(Debug, Clone)]
+pub struct CaptureEvent {
+    /// Event timestamp in the trace timeline.
+    pub time_s: f64,
+    /// Output bytes read from the PTY.
+    pub output: Vec<u8>,
+    /// Dwell attached to this event in the recorder timeline.
+    pub dwell_ms: u32,
+}
+
+/// Hook for consumers that want to process live capture output before
+/// the full trace is finalized.
+pub trait CaptureSink {
+    /// Called after terminal geometry is resolved and before raw mode
+    /// starts.
+    ///
+    /// # Errors
+    /// Consumer-specific initialization failed.
+    fn start(&mut self, cols: u16, rows: u16) -> Result<()>;
+
+    /// Called for every non-empty PTY output event.
+    ///
+    /// # Errors
+    /// Consumer-specific processing failed.
+    fn output(&mut self, event: &CaptureEvent) -> Result<()>;
+}
+
+struct NullSink;
+
+impl CaptureSink for NullSink {
+    fn start(&mut self, _cols: u16, _rows: u16) -> Result<()> {
+        Ok(())
+    }
+
+    fn output(&mut self, _event: &CaptureEvent) -> Result<()> {
+        Ok(())
+    }
+}
+
 impl Default for CaptureOpts {
     fn default() -> Self {
         Self {
@@ -84,9 +124,23 @@ impl Default for CaptureOpts {
 /// Never under normal use. The internal `100u16` timeout literal is
 /// fed to a const conversion that cannot fail.
 pub fn capture(opts: CaptureOpts) -> Result<Trace> {
+    capture_with_sink(opts, &mut NullSink)
+}
+
+/// Record a live terminal session and feed each output event to `sink`
+/// as it is captured.
+///
+/// This is the live-stitching entry point used by `ptyrecord`: capture
+/// remains authoritative for the final trace, while the sink can render
+/// frames or stream media concurrently with the user's session.
+///
+/// # Errors
+/// Same as [`capture`], plus sink initialization or output errors.
+pub fn capture_with_sink(opts: CaptureOpts, sink: &mut impl CaptureSink) -> Result<Trace> {
     let argv = resolve_argv(opts.argv);
     let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
     let (cols, rows) = resolve_geometry(opts.cols, opts.rows);
+    sink.start(cols, rows)?;
 
     let mut pty = process::spawn(&argv_refs, cols, rows)?;
     let pty_fd = pty.fd();
@@ -102,6 +156,7 @@ pub fn capture(opts: CaptureOpts) -> Result<Trace> {
     let mut builder = TraceBuilder::new();
     let started = Instant::now();
     let mut last_event = started;
+    let mut trace_time_ms = 0_u64;
     let mut buf = [0u8; 4096];
 
     loop {
@@ -162,9 +217,16 @@ pub fn capture(opts: CaptureOpts) -> Result<Trace> {
                         let now = Instant::now();
                         let dwell =
                             DwellMs::from_duration(now.saturating_duration_since(last_event));
+                        let event = CaptureEvent {
+                            time_s: ms_to_seconds(trace_time_ms),
+                            output: bytes.to_vec(),
+                            dwell_ms: dwell.get(),
+                        };
+                        sink.output(&event).context("capture sink output")?;
                         builder
                             .record_output(bytes.to_vec(), dwell)
                             .context("record_output")?;
+                        trace_time_ms = trace_time_ms.saturating_add(u64::from(dwell.get()));
                         last_event = now;
                     }
                     Err(Errno::EINTR) => {}
@@ -180,6 +242,12 @@ pub fn capture(opts: CaptureOpts) -> Result<Trace> {
     pty.terminate_child();
     let recording = builder.finish_screen(cols, rows)?;
     Ok(recording.into_trace())
+}
+
+fn ms_to_seconds(ms: u64) -> f64 {
+    #[allow(clippy::cast_precision_loss)]
+    let n = ms as f64;
+    n / 1000.0
 }
 
 fn resolve_argv(argv: Vec<String>) -> Vec<String> {

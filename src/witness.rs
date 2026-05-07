@@ -156,6 +156,18 @@ pub struct RenderOptions {
 }
 
 impl RenderOptions {
+    /// Browser-compatible deterministic MP4 render options.
+    #[must_use]
+    pub fn libx264(font_size: f32, padding: u32, width: Option<u32>, fps: u32) -> Self {
+        Self {
+            font_size,
+            padding,
+            width,
+            fps,
+            mp4_encoder: "libx264".into(),
+        }
+    }
+
     /// Parse the encoder string back into the typed enum.
     ///
     /// # Errors
@@ -268,6 +280,43 @@ impl std::fmt::Display for VerifyOutcome {
 }
 
 impl Witness {
+    /// Build a witness for an already-rendered output file.
+    ///
+    /// This is used by live `.ptyrecord` stitching: frames are painted
+    /// during capture and encoded once, so producing the witness must
+    /// not re-run the renderer just to learn hashes.
+    ///
+    /// # Errors
+    /// Trace or output file cannot be read, or tool identity cannot be
+    /// captured.
+    pub fn from_rendered_output(
+        trace_path: impl AsRef<Path>,
+        output_path: impl AsRef<Path>,
+        render: RenderOptions,
+    ) -> anyhow::Result<Self> {
+        let trace_bytes = std::fs::read(trace_path.as_ref()).context("read trace for receipt")?;
+        let output_path = output_path.as_ref();
+        let output_bytes =
+            std::fs::read(output_path).context("read rendered output for receipt")?;
+        let output_filename = output_path
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or_default()
+            .to_string();
+
+        Ok(Self {
+            version: WITNESS_VERSION,
+            tool: ToolIdentity::current()?,
+            trace_sha256: sha256_hex(&trace_bytes),
+            render,
+            output_sha256: sha256_hex(&output_bytes),
+            output_filename,
+            contract_sha256: None,
+            script_sha256: None,
+            attestation_sha256: None,
+        })
+    }
+
     /// Read a receipt from disk.
     ///
     /// # Errors
