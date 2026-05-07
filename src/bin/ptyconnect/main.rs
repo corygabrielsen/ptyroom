@@ -181,6 +181,8 @@ struct ViewportRenderer {
     stdout_fd: RawFd,
     parser: vt100::Parser,
     size: TerminalSize,
+    previous_screen: Option<vt100::Screen>,
+    previous_local_size: Option<TerminalSize>,
 }
 
 impl ViewportRenderer {
@@ -191,25 +193,38 @@ impl ViewportRenderer {
             stdout_fd,
             parser: vt100::Parser::new(size.rows, size.cols, 0),
             size,
+            previous_screen: None,
+            previous_local_size: None,
         })
     }
 
     fn process_output(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
         self.parser.process(bytes);
-        self.redraw()
+        self.redraw(false)
     }
 
     fn resize(&mut self, stdout_fd: RawFd, size: TerminalSize) -> anyhow::Result<()> {
+        let mut force_full = false;
         if self.size != size {
             self.parser.screen_mut().set_size(size.rows, size.cols);
             self.size = size;
+            force_full = true;
         }
         self.stdout_fd = stdout_fd;
-        self.redraw()
+        self.redraw(force_full)
     }
 
-    fn redraw(&mut self) -> anyhow::Result<()> {
-        let frame = render_viewport(self.parser.screen(), terminal_size(self.stdout_fd));
+    fn redraw(&mut self, force_full: bool) -> anyhow::Result<()> {
+        let local_size = terminal_size(self.stdout_fd);
+        let frame = render_viewport(
+            self.parser.screen(),
+            self.previous_screen.as_ref(),
+            local_size,
+            self.previous_local_size,
+            force_full,
+        );
+        self.previous_screen = Some(self.parser.screen().clone());
+        self.previous_local_size = local_size;
         write_all(self.stdout_fd, &frame)
     }
 }
@@ -223,7 +238,47 @@ impl Drop for ViewportRenderer {
     }
 }
 
-fn render_viewport(screen: &vt100::Screen, local_size: Option<TerminalSize>) -> Vec<u8> {
+fn render_viewport(
+    screen: &vt100::Screen,
+    previous_screen: Option<&vt100::Screen>,
+    local_size: Option<TerminalSize>,
+    previous_local_size: Option<TerminalSize>,
+    force_full: bool,
+) -> Vec<u8> {
+    if should_render_full(
+        screen,
+        previous_screen,
+        local_size,
+        previous_local_size,
+        force_full,
+    ) {
+        return render_viewport_full(screen, local_size);
+    }
+
+    let previous = previous_screen.expect("should_render_full requires previous screen");
+    screen.state_diff(previous)
+}
+
+fn should_render_full(
+    screen: &vt100::Screen,
+    previous_screen: Option<&vt100::Screen>,
+    local_size: Option<TerminalSize>,
+    previous_local_size: Option<TerminalSize>,
+    force_full: bool,
+) -> bool {
+    let Some(previous) = previous_screen else {
+        return true;
+    };
+    let (rows, cols) = screen.size();
+    let local = local_size.unwrap_or(TerminalSize { cols, rows });
+    force_full
+        || previous.size() != screen.size()
+        || previous_local_size != local_size
+        || local.cols < cols
+        || local.rows < rows
+}
+
+fn render_viewport_full(screen: &vt100::Screen, local_size: Option<TerminalSize>) -> Vec<u8> {
     let (rows, cols) = screen.size();
     let local = local_size.unwrap_or(TerminalSize { cols, rows });
     let rows = rows.min(local.rows);
@@ -465,6 +520,7 @@ mod tests {
     use super::{
         Args, OutputSink, ServerEvent, ServerStream, TerminalSize, ViewportRenderer,
         encode_resize_control, relay_fds, relay_fds_with_output, render_viewport,
+        render_viewport_full,
     };
 
     #[test]
@@ -640,11 +696,75 @@ mod tests {
         let mut parser = vt100::Parser::new(2, 5, 0);
         parser.process(b"hello\r\nworld");
 
-        let rendered = render_viewport(parser.screen(), Some(TerminalSize { cols: 3, rows: 1 }));
+        let rendered =
+            render_viewport_full(parser.screen(), Some(TerminalSize { cols: 3, rows: 1 }));
         let text = String::from_utf8_lossy(&rendered);
 
         assert!(text.contains("hel"));
         assert!(!text.contains("world"));
+    }
+
+    #[test]
+    fn viewport_renderer_uses_diff_without_clearing_when_size_is_stable() {
+        let mut previous = vt100::Parser::new(2, 8, 0);
+        previous.process(b"hello");
+        let mut parser = vt100::Parser::new(2, 8, 0);
+        parser.process(b"hello!");
+        let current = parser.screen().clone();
+
+        let rendered = render_viewport(
+            &current,
+            Some(previous.screen()),
+            Some(TerminalSize { cols: 8, rows: 2 }),
+            Some(TerminalSize { cols: 8, rows: 2 }),
+            false,
+        );
+
+        assert!(!contains_bytes(&rendered, b"\x1b[2J"));
+        assert!(contains_bytes(&rendered, b"!"));
+    }
+
+    #[test]
+    fn viewport_renderer_clears_when_local_size_changes() {
+        let mut previous = vt100::Parser::new(2, 8, 0);
+        previous.process(b"hello");
+        let mut current = vt100::Parser::new(2, 8, 0);
+        current.process(b"hello!");
+
+        let rendered = render_viewport(
+            current.screen(),
+            Some(previous.screen()),
+            Some(TerminalSize { cols: 10, rows: 4 }),
+            Some(TerminalSize { cols: 8, rows: 2 }),
+            false,
+        );
+
+        assert!(contains_bytes(&rendered, b"\x1b[2J"));
+    }
+
+    #[test]
+    fn viewport_renderer_clears_when_screen_exceeds_local_size() {
+        let mut previous = vt100::Parser::new(2, 8, 0);
+        previous.process(b"hello");
+        let mut current = vt100::Parser::new(2, 8, 0);
+        current.process(b"hello!");
+
+        let rendered = render_viewport(
+            current.screen(),
+            Some(previous.screen()),
+            Some(TerminalSize { cols: 4, rows: 1 }),
+            Some(TerminalSize { cols: 4, rows: 1 }),
+            false,
+        );
+
+        assert!(contains_bytes(&rendered, b"\x1b[2J"));
+        assert!(!String::from_utf8_lossy(&rendered).contains("hello!"));
+    }
+
+    fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
     }
 
     fn server_data_frame(payload: &[u8]) -> Vec<u8> {
