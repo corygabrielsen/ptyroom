@@ -82,12 +82,11 @@ fn relay_fds_with_output(
     let mut stdin_open = true;
     let mut last_size = None;
     let mut server_stream = ServerStream::default();
+    let reports_size = output.reports_size();
     send_resize_if_changed(stream_fd, stdout_fd, &mut last_size)?;
 
     loop {
-        if stdin_open {
-            send_resize_if_changed(stream_fd, stdout_fd, &mut last_size)?;
-        }
+        send_resize_if_changed(stream_fd, stdout_fd, &mut last_size)?;
         let stream_borrow = unsafe { BorrowedFd::borrow_raw(stream_fd) };
         let mut fds = Vec::with_capacity(2);
         let stdin_index = stdin_open.then(|| {
@@ -115,7 +114,9 @@ fn relay_fds_with_output(
             match read(stdin_borrow, &mut buf) {
                 Ok(0) => {
                     stdin_open = false;
-                    let _ = stream.shutdown(Shutdown::Write);
+                    if !reports_size {
+                        let _ = stream.shutdown(Shutdown::Write);
+                    }
                 }
                 Ok(n) => write_all(stream_fd, &buf[..n])?,
                 Err(Errno::EINTR) => {}
@@ -169,6 +170,10 @@ impl OutputSink {
             Self::Raw => Ok(()),
             Self::Viewport(renderer) => renderer.resize(stdout_fd, size),
         }
+    }
+
+    fn reports_size(&self) -> bool {
+        matches!(self, Self::Viewport(_))
     }
 }
 
@@ -448,17 +453,18 @@ impl Drop for RawModeGuard {
 
 #[cfg(test)]
 mod tests {
-    use std::io::{Read as _, Write as _};
+    use std::io::{ErrorKind, Read as _, Write as _};
     use std::net::{TcpListener, TcpStream};
     use std::os::fd::AsRawFd;
     use std::thread;
 
     use clap::{CommandFactory, Parser};
+    use nix::pty::{Winsize, openpty};
     use nix::unistd::{pipe, read as nix_read, write as nix_write};
 
     use super::{
-        Args, ServerEvent, ServerStream, TerminalSize, encode_resize_control, relay_fds,
-        render_viewport,
+        Args, OutputSink, ServerEvent, ServerStream, TerminalSize, ViewportRenderer,
+        encode_resize_control, relay_fds, relay_fds_with_output, render_viewport,
     };
 
     #[test]
@@ -505,6 +511,59 @@ mod tests {
             }
         }
         assert_eq!(output, b"pong");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn viewport_relay_keeps_write_side_open_after_stdin_eof() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            let mut input = Vec::new();
+            let mut buf = [0_u8; 128];
+            while !input.windows(b"ping".len()).any(|window| window == b"ping") {
+                let n = socket.read(&mut buf).unwrap();
+                assert_ne!(n, 0, "client half-closed before sending piped input");
+                input.extend_from_slice(&buf[..n]);
+            }
+
+            socket
+                .set_read_timeout(Some(std::time::Duration::from_millis(100)))
+                .unwrap();
+            for _ in 0..3 {
+                match socket.read(&mut buf[..1]) {
+                    Err(err)
+                        if matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+                    {
+                        return;
+                    }
+                    Ok(0) => panic!("viewport client half-closed after stdin EOF"),
+                    Ok(_) => {}
+                    Err(err) => panic!("unexpected socket read error: {err}"),
+                }
+            }
+        });
+        let stream = TcpStream::connect(addr).unwrap();
+        let (stdin_r, stdin_w) = pipe().unwrap();
+        nix_write(&stdin_w, b"ping").unwrap();
+        drop(stdin_w);
+        let winsize = Winsize {
+            ws_row: 24,
+            ws_col: 80,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        let pty = openpty(Some(&winsize), None).unwrap();
+        let stdout_fd = pty.slave.as_raw_fd();
+        let mut output =
+            OutputSink::Viewport(Box::new(ViewportRenderer::enter(stdout_fd).unwrap()));
+
+        relay_fds_with_output(&stream, stdin_r.as_raw_fd(), stdout_fd, &mut output).unwrap();
+
         server.join().unwrap();
     }
 

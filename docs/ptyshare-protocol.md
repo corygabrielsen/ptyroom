@@ -39,7 +39,9 @@ ESC P ptyshare;data;<byte-len> ESC \ <byte-len raw PTY output bytes>
   `.ptytrace` resize events whenever the canonical PTY size changes.
 
 When a client joins, `ptyshare` first sends the current size control
-frame, then a bounded replay of recent data frames. This keeps late
+frame, then a bounded replay of recent complete data frames. The replay
+buffer evicts whole frames, never arbitrary bytes, so late joiners do not
+start in the middle of a length-delimited payload. This keeps late
 joiners from seeing a blank terminal until the next output event while
 preserving the same framing rules as live output.
 

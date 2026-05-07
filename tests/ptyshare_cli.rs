@@ -90,6 +90,90 @@ fn two_ptyconnect_clients_both_receive_shared_command_output() {
     assert!(trace_path.exists());
 }
 
+#[test]
+fn ptyconnect_late_join_decodes_replayed_output() {
+    let tmp = tempfile::tempdir().unwrap();
+    let trace_path = tmp.path().join("shared-late.ptytrace");
+    let (share, addr) = spawn_ptyshare(&[
+        "--listen",
+        "127.0.0.1:0",
+        "--no-local-input",
+        "--no-local-output",
+        "--max-secs",
+        "5",
+        "--out",
+        trace_path.to_str().unwrap(),
+        "sh",
+        "-lc",
+        "printf 'ready\\n'; read line; printf 'late:%s\\n' \"$line\"",
+    ]);
+    std::thread::sleep(Duration::from_millis(200));
+
+    let late = spawn_ptyconnect_with_input(&addr, b"hello\n");
+    let late_output = wait_with_timeout(late, Duration::from_secs(5));
+
+    assert!(
+        late_output.status.success(),
+        "ptyconnect failed: {}",
+        String::from_utf8_lossy(&late_output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&late_output.stdout);
+    assert!(
+        stdout.contains("ready") && stdout.contains("late:hello"),
+        "ptyconnect stdout was {stdout:?}"
+    );
+    let share_output = wait_with_timeout(share, Duration::from_secs(5));
+    assert!(
+        share_output.status.success(),
+        "ptyshare failed: {}",
+        String::from_utf8_lossy(&share_output.stderr)
+    );
+    assert!(trace_path.exists());
+}
+
+#[test]
+fn child_output_can_contain_ptyshare_control_lookalike() {
+    let tmp = tempfile::tempdir().unwrap();
+    let trace_path = tmp.path().join("shared-spoof.ptytrace");
+    let (share, addr) = spawn_ptyshare(&[
+        "--listen",
+        "127.0.0.1:0",
+        "--no-local-input",
+        "--no-local-output",
+        "--max-secs",
+        "5",
+        "--out",
+        trace_path.to_str().unwrap(),
+        "sh",
+        "-lc",
+        "printf 'before\\033Pptyshare;size;1;1\\033\\\\after\\n'; sleep 0.5",
+    ]);
+
+    let observer = spawn_ptyconnect_with_input(&addr, b"");
+    let observer_output = wait_with_timeout(observer, Duration::from_secs(5));
+
+    assert!(
+        observer_output.status.success(),
+        "ptyconnect failed: {}",
+        String::from_utf8_lossy(&observer_output.stderr)
+    );
+    assert!(
+        contains_bytes(
+            &observer_output.stdout,
+            b"before\x1bPptyshare;size;1;1\x1b\\after"
+        ),
+        "ptyconnect stdout was {:?}",
+        String::from_utf8_lossy(&observer_output.stdout)
+    );
+    let share_output = wait_with_timeout(share, Duration::from_secs(5));
+    assert!(
+        share_output.status.success(),
+        "ptyshare failed: {}",
+        String::from_utf8_lossy(&share_output.stderr)
+    );
+    assert!(trace_path.exists());
+}
+
 fn spawn_ptyshare(args: &[&str]) -> (Child, String) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_ptyshare"))
         .args(args)
@@ -116,6 +200,12 @@ fn spawn_ptyshare(args: &[&str]) -> (Child, String) {
         .to_string();
 
     (child, addr)
+}
+
+fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
 }
 
 fn spawn_ptyconnect_with_input(addr: &str, input: &[u8]) -> Child {

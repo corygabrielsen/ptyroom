@@ -117,7 +117,7 @@ pub fn run(listener: &TcpListener, opts: ShareOpts) -> anyhow::Result<ShareSumma
     };
     let mut last_size_check = Instant::now();
     let mut clients: Vec<Client> = Vec::new();
-    let mut join_replay = VecDeque::new();
+    let mut join_replay = JoinReplay::default();
     let mut stats = ShareStats::default();
     let mut builder = TraceBuilder::new();
     let started = Instant::now();
@@ -270,7 +270,7 @@ fn poll_share_fds(
 fn accept_ready_clients(
     listener: &TcpListener,
     clients: &mut Vec<Client>,
-    join_replay: &VecDeque<u8>,
+    join_replay: &JoinReplay,
     current_size: TerminalSize,
 ) -> anyhow::Result<usize> {
     let mut accepted = 0;
@@ -279,7 +279,7 @@ fn accept_ready_clients(
             Ok((stream, _addr)) => {
                 let mut client = Client::new(stream)?;
                 client.enqueue(&encode_size_control(current_size));
-                client.enqueue_deque(join_replay);
+                client.enqueue_replay(join_replay);
                 clients.push(client);
                 accepted += 1;
             }
@@ -434,11 +434,31 @@ fn encode_output_frame(bytes: &[u8]) -> Vec<u8> {
     frame
 }
 
-fn remember_for_late_joiners(replay: &mut VecDeque<u8>, bytes: &[u8]) {
-    replay.extend(bytes.iter().copied());
-    let excess = replay.len().saturating_sub(MAX_JOIN_REPLAY_BYTES);
-    if excess > 0 {
-        drop(replay.drain(..excess));
+#[derive(Debug, Default)]
+struct JoinReplay {
+    frames: VecDeque<Vec<u8>>,
+    bytes: usize,
+}
+
+impl JoinReplay {
+    fn remember(&mut self, frame: &[u8]) {
+        self.frames.push_back(frame.to_vec());
+        self.bytes = self.bytes.saturating_add(frame.len());
+        while self.bytes > MAX_JOIN_REPLAY_BYTES {
+            let Some(dropped) = self.frames.pop_front() else {
+                self.bytes = 0;
+                break;
+            };
+            self.bytes = self.bytes.saturating_sub(dropped.len());
+        }
+    }
+
+    fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    fn frames(&self) -> impl Iterator<Item = &[u8]> {
+        self.frames.iter().map(Vec::as_slice)
     }
 }
 
@@ -487,11 +507,13 @@ impl Client {
         true
     }
 
-    fn enqueue_deque(&mut self, bytes: &VecDeque<u8>) -> bool {
-        if bytes.len() > MAX_CLIENT_BACKLOG_BYTES.saturating_sub(self.pending.len()) {
+    fn enqueue_replay(&mut self, replay: &JoinReplay) -> bool {
+        if replay.bytes() > MAX_CLIENT_BACKLOG_BYTES.saturating_sub(self.pending.len()) {
             return false;
         }
-        self.pending.extend(bytes.iter().copied());
+        for frame in replay.frames() {
+            self.pending.extend(frame.iter().copied());
+        }
         true
     }
 
@@ -688,7 +710,7 @@ fn finish_share_run(
 struct PtyOutputSinks<'a> {
     local_output: bool,
     stdout_fd: i32,
-    join_replay: &'a mut VecDeque<u8>,
+    join_replay: &'a mut JoinReplay,
     clients: &'a mut Vec<Client>,
     stats: &'a mut ShareStats,
 }
@@ -731,7 +753,7 @@ fn handle_pty_output(
         let _ = write(stdout_borrow, bytes);
     }
     let client_frame = encode_output_frame(bytes);
-    remember_for_late_joiners(join_replay, &client_frame);
+    join_replay.remember(&client_frame);
     broadcast(clients, &client_frame, stats);
     let now = Instant::now();
     let dwell = DwellMs::from_duration(now.saturating_duration_since(*last_event));
@@ -1112,6 +1134,42 @@ mod tests {
         expected.extend_from_slice(payload);
 
         assert_eq!(encode_output_frame(payload), expected);
+    }
+
+    #[test]
+    fn join_replay_evicts_whole_frames() {
+        let mut replay = JoinReplay::default();
+        let first_payload = vec![b'a'; MAX_JOIN_REPLAY_BYTES - 128];
+        let first = encode_output_frame(&first_payload);
+        let second = encode_output_frame(&vec![b'b'; 256]);
+
+        replay.remember(&first);
+        replay.remember(&second);
+
+        let frames = replay
+            .frames()
+            .map(<[u8]>::to_vec)
+            .collect::<Vec<Vec<u8>>>();
+        assert_eq!(frames, vec![second]);
+        assert!(replay.bytes() <= MAX_JOIN_REPLAY_BYTES);
+    }
+
+    #[test]
+    fn client_replay_enqueue_preserves_frame_boundaries() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let _peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        let mut client = Client::new(stream).unwrap();
+        let mut replay = JoinReplay::default();
+        let first = encode_output_frame(b"one");
+        let second = encode_output_frame(b"two");
+        replay.remember(&first);
+        replay.remember(&second);
+
+        assert!(client.enqueue_replay(&replay));
+
+        let queued = client.pending.iter().copied().collect::<Vec<_>>();
+        assert_eq!(queued, [first, second].concat());
     }
 
     fn connect_with_retry(addr: SocketAddr) -> TcpStream {

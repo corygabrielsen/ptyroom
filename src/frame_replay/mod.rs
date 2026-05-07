@@ -24,8 +24,9 @@ pub use osc_tracker::OscTracker;
 /// "next event" timestamp to subtract from.
 pub const TAIL_DWELL_MS: u32 = 0;
 
-/// Replay `trace` and emit one snapshot per `"o"` event plus the timing
-/// manifest. `defaults` seeds the OSC tracker — [`StubColors::default`]
+/// Replay `trace` and emit one snapshot per visible event plus the timing
+/// manifest. Output and resize events are visible; input events are not.
+/// `defaults` seeds the OSC tracker — [`StubColors::default`]
 /// mirrors what the recorder serves to OSC 10/11 query replies and is
 /// the right choice for traces produced by this crate.
 ///
@@ -57,38 +58,46 @@ pub fn replay(
 ) -> anyhow::Result<(Vec<Frame>, Vec<TimingEntry>)> {
     let mut state = ReplayState::from_header(&trace.header, defaults)?;
 
-    let output_events: Vec<_> = trace
+    let visible_events: Vec<_> = trace
         .events
         .iter()
         .enumerate()
-        .filter(|(_, event)| matches!(event.kind, EventKind::Output))
+        .filter(|(_, event)| is_visible_event(event.kind))
         .collect();
-    let mut snapshots = Vec::with_capacity(output_events.len());
-    let mut timing = Vec::with_capacity(output_events.len());
+    let mut snapshots = Vec::with_capacity(visible_events.len());
+    let mut timing = Vec::with_capacity(visible_events.len());
 
     // Frame indices (1-based, 4-digit zero-padded) come from
     // the original trace event index — preserves the previous TS
     // implementation's filenames so paint/encode/golden checks line up.
-    let mut output_idx = 0;
+    let mut visible_idx = 0;
     for (i, event) in trace.events.iter().enumerate() {
         match event.kind {
             EventKind::Output => {
                 let snapshot = state.process_output(event.data.as_bytes());
-                snapshots.push(snapshot);
-
-                let frame = format!("{:04}", i + 1);
-                let next_t = output_events
-                    .get(output_idx + 1)
-                    .map(|(_, next_event)| next_event.time_s);
-                timing.push(TimingEntry {
-                    frame,
-                    dwell_ms: dwell_until_next_output(event.time_s, next_t),
-                });
-                output_idx += 1;
+                push_visible_frame(
+                    &mut snapshots,
+                    &mut timing,
+                    snapshot,
+                    &visible_events,
+                    &mut visible_idx,
+                    i,
+                    event.time_s,
+                );
             }
             EventKind::Resize => {
                 let (cols, rows) = parse_resize_event(&event.data)?;
                 state.resize(cols, rows)?;
+                let snapshot = state.snapshot();
+                push_visible_frame(
+                    &mut snapshots,
+                    &mut timing,
+                    snapshot,
+                    &visible_events,
+                    &mut visible_idx,
+                    i,
+                    event.time_s,
+                );
             }
             EventKind::Input => {}
         }
@@ -97,8 +106,33 @@ pub fn replay(
     Ok((snapshots, timing))
 }
 
-fn dwell_until_next_output(time_s: f64, next_output_time_s: Option<f64>) -> u32 {
-    match next_output_time_s {
+fn is_visible_event(kind: EventKind) -> bool {
+    matches!(kind, EventKind::Output | EventKind::Resize)
+}
+
+fn push_visible_frame(
+    snapshots: &mut Vec<Frame>,
+    timing: &mut Vec<TimingEntry>,
+    snapshot: Frame,
+    visible_events: &[(usize, &crate::trace::TraceEvent)],
+    visible_idx: &mut usize,
+    event_idx: usize,
+    time_s: f64,
+) {
+    snapshots.push(snapshot);
+    let frame = format!("{:04}", event_idx + 1);
+    let next_t = visible_events
+        .get(*visible_idx + 1)
+        .map(|(_, next_event)| next_event.time_s);
+    timing.push(TimingEntry {
+        frame,
+        dwell_ms: dwell_until_next_visible_event(time_s, next_t),
+    });
+    *visible_idx += 1;
+}
+
+fn dwell_until_next_visible_event(time_s: f64, next_visible_time_s: Option<f64>) -> u32 {
+    match next_visible_time_s {
         Some(t) => {
             // Round + clamp to [1, u32::MAX]. Negative deltas can't
             // happen for in-order trace events; saturate to 1 ms
@@ -172,6 +206,11 @@ impl ReplayState {
     pub fn process_output(&mut self, bytes: &[u8]) -> Frame {
         self.parser.process(bytes);
         self.osc.observe(bytes);
+        self.snapshot()
+    }
+
+    #[must_use]
+    pub fn snapshot(&self) -> Frame {
         capture(&self.parser, &self.osc)
     }
 
@@ -326,8 +365,49 @@ mod tests {
 
         let (snapshots, timing) = replay(&trace, StubColors::default()).unwrap();
 
-        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots.len(), 2);
         assert_eq!(snapshots[0].cols(), 4);
-        assert_eq!(timing[0].frame, "0002");
+        assert_eq!(snapshots[1].cols(), 4);
+        assert_eq!(timing[0].frame, "0001");
+        assert_eq!(timing[0].dwell_ms, 100);
+        assert_eq!(timing[1].frame, "0002");
+    }
+
+    #[test]
+    fn resize_between_outputs_is_a_visible_timing_boundary() {
+        let trace = Trace {
+            header: TraceHeader {
+                version: 2,
+                width: 10,
+                height: 2,
+                env: std::collections::BTreeMap::default(),
+            },
+            events: vec![
+                TraceEvent {
+                    time_s: 0.0,
+                    kind: EventKind::Output,
+                    data: "abcdef".into(),
+                },
+                TraceEvent {
+                    time_s: 0.5,
+                    kind: EventKind::Resize,
+                    data: "4x2".into(),
+                },
+                TraceEvent {
+                    time_s: 1.0,
+                    kind: EventKind::Output,
+                    data: "Z".into(),
+                },
+            ],
+        };
+
+        let (snapshots, timing) = replay(&trace, StubColors::default()).unwrap();
+
+        assert_eq!(snapshots.len(), 3);
+        assert_eq!(snapshots[0].cols(), 10);
+        assert_eq!(snapshots[1].cols(), 4);
+        assert_eq!(timing[0].dwell_ms, 500);
+        assert_eq!(timing[1].dwell_ms, 500);
+        assert_eq!(timing[2].dwell_ms, TAIL_DWELL_MS);
     }
 }
