@@ -165,23 +165,26 @@ algebra.
 
 ## Current CLI Shape
 
-The current crate installs three user-facing binaries:
+The current crate installs five user-facing binaries:
 
 - `ptytrace`: the raw primitive plus named low-level subcommands.
 - `ptyrender`: the renderer that turns a trace into GIF/MP4 media and
   optional witnesses.
 - `ptyrecord`: the composed command recorder that captures, renders MP4,
   and writes a `.ptyrecord` bundle.
-- `ptyshare`: host one shared PTY over TCP, broadcast output to clients,
-  interleave client input, and write the output trace.
+- `ptyshare`: host one shared PTY over TCP, interleave host and client
+  input, broadcast output to clients, and write the output trace.
 - `ptyconnect`: attach a local terminal to a `ptyshare` TCP session.
 
 `ptytrace render` remains available as the low-level subcommand form of
 `ptyrender`.
 
 `ptyshare` is transport plumbing, not a trust primitive. It defaults to
-loopback and should be paired with SSH, WireGuard, or another
-authenticated tunnel before crossing a machine boundary.
+loopback, refuses non-loopback binds without an explicit unsafe flag, and
+should be paired with SSH, WireGuard, or another authenticated tunnel
+before crossing a machine boundary. Client output is nonblocking with a
+bounded backlog: a slow observer can be disconnected, but it cannot stop
+the PTY owner, recorder, or other clients from making progress.
 
 ## Future Package Split
 

@@ -10,20 +10,23 @@
 //! SSH, `WireGuard`, or another authenticated tunnel in front when the
 //! session crosses a machine boundary.
 
-use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::collections::VecDeque;
+use std::io::{self, IsTerminal, Read, Write};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::os::fd::{AsRawFd, BorrowedFd};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow};
 use nix::errno::Errno;
 use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
+use nix::sys::termios::{SetArg, Termios, cfmakeraw, tcgetattr, tcsetattr};
 use nix::unistd::{read, write};
 
 use super::process;
 use crate::recording::{DwellMs, TraceBuilder};
+
+const MAX_CLIENT_BACKLOG_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct ShareOpts {
@@ -39,6 +42,8 @@ pub struct ShareOpts {
     pub max_runtime: Duration,
     /// Also tee PTY output to the share host's stdout.
     pub local_output: bool,
+    /// Also forward the share host's stdin into the PTY.
+    pub local_input: bool,
 }
 
 impl Default for ShareOpts {
@@ -50,6 +55,7 @@ impl Default for ShareOpts {
             out: PathBuf::from("shared.ptytrace"),
             max_runtime: Duration::from_hours(1),
             local_output: true,
+            local_input: true,
         }
     }
 }
@@ -74,9 +80,16 @@ pub fn run(listener: &TcpListener, opts: ShareOpts) -> anyhow::Result<ShareSumma
     let mut pty = process::spawn(&argv_refs, opts.cols, opts.rows)?;
     let pty_fd = pty.fd();
     let listener_fd = listener.as_raw_fd();
+    let stdin = io::stdin();
+    let stdin_fd = stdin.as_raw_fd();
     let stdout_fd = std::io::stdout().as_raw_fd();
-    let (input_tx, input_rx) = mpsc::channel::<Vec<u8>>();
-    let mut clients: Vec<TcpStream> = Vec::new();
+    let mut local_stdin_open = opts.local_input;
+    let _raw_mode = if opts.local_input && stdin.is_terminal() {
+        RawModeGuard::enter(stdin_fd).ok()
+    } else {
+        None
+    };
+    let mut clients: Vec<Client> = Vec::new();
     let mut builder = TraceBuilder::new();
     let started = Instant::now();
     let mut last_event = started;
@@ -87,51 +100,51 @@ pub fn run(listener: &TcpListener, opts: ShareOpts) -> anyhow::Result<ShareSumma
             break;
         }
 
-        let listener_borrow = unsafe { BorrowedFd::borrow_raw(listener_fd) };
-        let pty_borrow = unsafe { BorrowedFd::borrow_raw(pty_fd) };
-        let mut fds = [
-            PollFd::new(listener_borrow, PollFlags::POLLIN),
-            PollFd::new(pty_borrow, PollFlags::POLLIN),
-        ];
-        match poll(&mut fds, PollTimeout::from(50_u16)) {
-            Ok(_) | Err(Errno::EINTR) => {}
-            Err(err) => return Err(anyhow!("poll shared PTY: {err}")),
+        let poll_state = poll_share_fds(
+            listener_fd,
+            pty_fd,
+            local_stdin_open.then_some(stdin_fd),
+            &clients,
+        )?;
+
+        process_client_revents(pty_fd, &mut clients, &poll_state.client_revents)?;
+
+        if poll_state.listener_readable {
+            accept_ready_clients(listener, &mut clients)?;
         }
 
-        if fds[0]
-            .revents()
-            .is_some_and(|rev| rev.intersects(PollFlags::POLLIN))
+        if poll_state
+            .stdin_revents
+            .intersects(PollFlags::POLLIN | PollFlags::POLLHUP)
         {
-            accept_ready_clients(listener, &input_tx, &mut clients)?;
+            local_stdin_open = drain_local_input(stdin_fd, pty_fd, &mut buf)?;
         }
 
-        drain_client_input(pty_fd, &input_rx)?;
-
-        if let Some(rev) = fds[1].revents() {
-            if rev.intersects(PollFlags::POLLIN) {
-                let pty_borrow = unsafe { BorrowedFd::borrow_raw(pty_fd) };
-                match read(pty_borrow, &mut buf) {
-                    Ok(0) | Err(Errno::EIO) => break,
-                    Ok(n) => {
-                        let bytes = &buf[..n];
-                        if opts.local_output {
-                            let stdout_borrow = unsafe { BorrowedFd::borrow_raw(stdout_fd) };
-                            let _ = write(stdout_borrow, bytes);
-                        }
-                        broadcast(&mut clients, bytes);
-                        let now = Instant::now();
-                        let dwell =
-                            DwellMs::from_duration(now.saturating_duration_since(last_event));
-                        builder.record_output(bytes.to_vec(), dwell)?;
-                        last_event = now;
+        if poll_state.pty_revents.intersects(PollFlags::POLLIN) {
+            let pty_borrow = unsafe { BorrowedFd::borrow_raw(pty_fd) };
+            match read(pty_borrow, &mut buf) {
+                Ok(0) | Err(Errno::EIO) => break,
+                Ok(n) => {
+                    let bytes = &buf[..n];
+                    if opts.local_output {
+                        let stdout_borrow = unsafe { BorrowedFd::borrow_raw(stdout_fd) };
+                        let _ = write(stdout_borrow, bytes);
                     }
-                    Err(Errno::EINTR) => {}
-                    Err(err) => return Err(anyhow!("read shared PTY: {err}")),
+                    broadcast(&mut clients, bytes);
+                    let now = Instant::now();
+                    let dwell = DwellMs::from_duration(now.saturating_duration_since(last_event));
+                    builder.record_output(bytes.to_vec(), dwell)?;
+                    last_event = now;
                 }
+                Err(Errno::EINTR) => {}
+                Err(err) => return Err(anyhow!("read shared PTY: {err}")),
             }
-            if rev.intersects(PollFlags::POLLHUP | PollFlags::POLLERR | PollFlags::POLLNVAL) {
-                break;
-            }
+        }
+        if poll_state
+            .pty_revents
+            .intersects(PollFlags::POLLHUP | PollFlags::POLLERR | PollFlags::POLLNVAL)
+        {
+            break;
         }
     }
 
@@ -147,18 +160,77 @@ pub fn run(listener: &TcpListener, opts: ShareOpts) -> anyhow::Result<ShareSumma
     })
 }
 
-fn accept_ready_clients(
-    listener: &TcpListener,
-    input_tx: &mpsc::Sender<Vec<u8>>,
-    clients: &mut Vec<TcpStream>,
-) -> anyhow::Result<()> {
+#[derive(Debug)]
+struct PollState {
+    listener_readable: bool,
+    pty_revents: PollFlags,
+    stdin_revents: PollFlags,
+    client_revents: Vec<PollFlags>,
+}
+
+fn poll_share_fds(
+    listener_fd: i32,
+    pty_fd: i32,
+    stdin_fd: Option<i32>,
+    clients: &[Client],
+) -> anyhow::Result<PollState> {
+    let listener_borrow = unsafe { BorrowedFd::borrow_raw(listener_fd) };
+    let pty_borrow = unsafe { BorrowedFd::borrow_raw(pty_fd) };
+    let mut fds = Vec::with_capacity(2 + usize::from(stdin_fd.is_some()) + clients.len());
+    fds.push(PollFd::new(listener_borrow, PollFlags::POLLIN));
+    fds.push(PollFd::new(pty_borrow, PollFlags::POLLIN));
+
+    let stdin_index = stdin_fd.map(|fd| {
+        let idx = fds.len();
+        let stdin_borrow = unsafe { BorrowedFd::borrow_raw(fd) };
+        fds.push(PollFd::new(stdin_borrow, PollFlags::POLLIN));
+        idx
+    });
+
+    let client_start = fds.len();
+    for client in clients {
+        let client_borrow = unsafe { BorrowedFd::borrow_raw(client.stream.as_raw_fd()) };
+        fds.push(PollFd::new(client_borrow, client.poll_flags()));
+    }
+
+    match poll(&mut fds, PollTimeout::from(50_u16)) {
+        Ok(_) => {}
+        Err(Errno::EINTR) => {
+            return Ok(PollState {
+                listener_readable: false,
+                pty_revents: PollFlags::empty(),
+                stdin_revents: PollFlags::empty(),
+                client_revents: vec![PollFlags::empty(); clients.len()],
+            });
+        }
+        Err(err) => return Err(anyhow!("poll shared PTY: {err}")),
+    }
+
+    let listener_readable = fds[0]
+        .revents()
+        .is_some_and(|rev| rev.intersects(PollFlags::POLLIN));
+    let pty_revents = fds[1].revents().unwrap_or_else(PollFlags::empty);
+    let stdin_revents = stdin_index
+        .and_then(|idx| fds[idx].revents())
+        .unwrap_or_else(PollFlags::empty);
+    let client_revents = fds[client_start..]
+        .iter()
+        .map(|fd| fd.revents().unwrap_or_else(PollFlags::empty))
+        .collect();
+
+    Ok(PollState {
+        listener_readable,
+        pty_revents,
+        stdin_revents,
+        client_revents,
+    })
+}
+
+fn accept_ready_clients(listener: &TcpListener, clients: &mut Vec<Client>) -> anyhow::Result<()> {
     loop {
         match listener.accept() {
             Ok((stream, _addr)) => {
-                stream.set_nodelay(true)?;
-                let reader = stream.try_clone()?;
-                clients.push(stream);
-                spawn_client_reader(reader, input_tx.clone());
+                clients.push(Client::new(stream)?);
             }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => return Ok(()),
             Err(err) => return Err(err).context("accept ptyshare client"),
@@ -166,35 +238,154 @@ fn accept_ready_clients(
     }
 }
 
-fn spawn_client_reader(mut stream: TcpStream, input_tx: mpsc::Sender<Vec<u8>>) {
-    std::thread::spawn(move || {
-        let mut buf = [0_u8; 4096];
-        loop {
-            match stream.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    if input_tx.send(buf[..n].to_vec()).is_err() {
-                        break;
-                    }
-                }
-                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(_) => break,
-            }
+fn process_client_revents(
+    pty_fd: i32,
+    clients: &mut Vec<Client>,
+    revents: &[PollFlags],
+) -> anyhow::Result<()> {
+    let mut kept = Vec::with_capacity(clients.len());
+    for (idx, mut client) in clients.drain(..).enumerate() {
+        let rev = revents.get(idx).copied().unwrap_or_else(PollFlags::empty);
+        let mut keep =
+            !rev.intersects(PollFlags::POLLHUP | PollFlags::POLLERR | PollFlags::POLLNVAL);
+        if keep && rev.intersects(PollFlags::POLLIN) {
+            keep = client.drain_input_to_pty(pty_fd)?;
         }
-    });
+        if keep && (rev.intersects(PollFlags::POLLOUT) || client.has_pending()) {
+            keep = client.flush_pending();
+        }
+        if keep {
+            kept.push(client);
+        } else {
+            client.disconnect();
+        }
+    }
+    *clients = kept;
+    Ok(())
 }
 
-fn drain_client_input(pty_fd: i32, input_rx: &mpsc::Receiver<Vec<u8>>) -> anyhow::Result<()> {
-    loop {
-        match input_rx.try_recv() {
-            Ok(bytes) => write_all(pty_fd, &bytes)?,
-            Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => return Ok(()),
+fn drain_local_input(stdin_fd: i32, pty_fd: i32, buf: &mut [u8]) -> anyhow::Result<bool> {
+    let stdin_borrow = unsafe { BorrowedFd::borrow_raw(stdin_fd) };
+    match read(stdin_borrow, buf) {
+        Ok(0) | Err(Errno::EIO) => Ok(false),
+        Ok(n) => {
+            write_all(pty_fd, &buf[..n])?;
+            Ok(true)
         }
+        Err(Errno::EINTR) => Ok(true),
+        Err(err) => Err(anyhow!("read local stdin: {err}")),
     }
 }
 
-fn broadcast(clients: &mut Vec<TcpStream>, bytes: &[u8]) {
-    clients.retain_mut(|client| client.write_all(bytes).is_ok());
+fn broadcast(clients: &mut Vec<Client>, bytes: &[u8]) {
+    let mut kept = Vec::with_capacity(clients.len());
+    for mut client in clients.drain(..) {
+        let keep = client.enqueue(bytes) && client.flush_pending();
+        if keep {
+            kept.push(client);
+        } else {
+            client.disconnect();
+        }
+    }
+    *clients = kept;
+}
+
+#[derive(Debug)]
+struct Client {
+    stream: TcpStream,
+    pending: VecDeque<u8>,
+}
+
+impl Client {
+    fn new(stream: TcpStream) -> io::Result<Self> {
+        stream.set_nodelay(true)?;
+        stream.set_nonblocking(true)?;
+        Ok(Self {
+            stream,
+            pending: VecDeque::new(),
+        })
+    }
+
+    fn poll_flags(&self) -> PollFlags {
+        let mut flags = PollFlags::POLLIN;
+        if self.has_pending() {
+            flags |= PollFlags::POLLOUT;
+        }
+        flags
+    }
+
+    fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
+    fn enqueue(&mut self, bytes: &[u8]) -> bool {
+        if bytes.len() > MAX_CLIENT_BACKLOG_BYTES.saturating_sub(self.pending.len()) {
+            return false;
+        }
+        self.pending.extend(bytes.iter().copied());
+        true
+    }
+
+    fn flush_pending(&mut self) -> bool {
+        while !self.pending.is_empty() {
+            let (front, back) = self.pending.as_slices();
+            let chunk = if front.is_empty() { back } else { front };
+            if chunk.is_empty() {
+                return true;
+            }
+            match self.stream.write(chunk) {
+                Ok(0) => return false,
+                Ok(n) => {
+                    drop(self.pending.drain(..n));
+                }
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => return true,
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
+                Err(_) => return false,
+            }
+        }
+        true
+    }
+
+    fn drain_input_to_pty(&mut self, pty_fd: i32) -> anyhow::Result<bool> {
+        let mut buf = [0_u8; 4096];
+        loop {
+            match self.stream.read(&mut buf) {
+                Ok(0) => return Ok(false),
+                Ok(n) => write_all(pty_fd, &buf[..n])?,
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => return Ok(true),
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
+                Err(_) => return Ok(false),
+            }
+        }
+    }
+
+    fn disconnect(&self) {
+        let _ = self.stream.shutdown(Shutdown::Both);
+    }
+}
+
+struct RawModeGuard {
+    fd: i32,
+    original: Termios,
+}
+
+impl RawModeGuard {
+    fn enter(fd: i32) -> anyhow::Result<Self> {
+        let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+        let original = tcgetattr(borrowed)?;
+        let mut raw = original.clone();
+        cfmakeraw(&mut raw);
+        let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+        tcsetattr(borrowed, SetArg::TCSAFLUSH, &raw)?;
+        Ok(Self { fd, original })
+    }
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        let borrowed = unsafe { BorrowedFd::borrow_raw(self.fd) };
+        let _ = tcsetattr(borrowed, SetArg::TCSAFLUSH, &self.original);
+    }
 }
 
 fn write_all(fd: i32, mut bytes: &[u8]) -> anyhow::Result<()> {
@@ -235,6 +426,7 @@ mod tests {
     #[test]
     fn default_share_opts_bind_a_trace_name() {
         assert_eq!(ShareOpts::default().out, PathBuf::from("shared.ptytrace"));
+        assert!(ShareOpts::default().local_input);
     }
 
     #[test]
@@ -301,6 +493,21 @@ mod tests {
                 .iter()
                 .any(|event| event.data.contains("got:hello"))
         );
+    }
+
+    #[test]
+    fn broadcast_drops_clients_that_exceed_backlog_limit() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let _peer = TcpStream::connect(addr).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        let mut client = Client::new(stream).unwrap();
+        assert!(client.enqueue(&vec![b'x'; MAX_CLIENT_BACKLOG_BYTES]));
+        let mut clients = vec![client];
+
+        broadcast(&mut clients, b"y");
+
+        assert!(clients.is_empty());
     }
 
     fn connect_with_retry(addr: SocketAddr) -> TcpStream {

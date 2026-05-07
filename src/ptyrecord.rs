@@ -482,7 +482,7 @@ mod tests {
     use crate::paint::{FONT_BYTES, PaintConfig, Painter};
     use crate::pty::{CaptureEvent, CaptureSink, StubColors};
     use crate::trace::{EventKind, Trace, TraceEvent, TraceHeader};
-    use crate::witness::sha256_hex;
+    use crate::witness::{RenderOptions, ToolIdentity, WITNESS_VERSION, Witness, sha256_hex};
 
     fn tiny_trace() -> Trace {
         Trace {
@@ -537,6 +537,23 @@ mod tests {
                 .iter()
                 .any(|row| row.contains("world"))
         );
+    }
+
+    #[test]
+    fn from_paths_rejects_witness_media_hash_mismatch() {
+        let tmp = TempDir::new().unwrap();
+        let trace_path = tmp.path().join("demo.ptytrace");
+        let media_path = tmp.path().join("demo.mp4");
+        tiny_trace().write(&trace_path).unwrap();
+        std::fs::write(&media_path, b"fake media").unwrap();
+        let trace_sha256 = sha256_hex(&std::fs::read(&trace_path).unwrap());
+        let witness = fake_witness(trace_sha256, "not-the-media-hash".into());
+
+        let err = PtyRecord::from_paths(&trace_path, &media_path, Some(&witness))
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("witness output hash does not match embedded media"));
     }
 
     #[test]
@@ -669,6 +686,27 @@ mod tests {
         std::fs::write(&media_path, b"fake media").unwrap();
         let record = PtyRecord::from_paths(&trace_path, &media_path, None).unwrap();
         (tmp, serde_json::to_value(record).unwrap())
+    }
+
+    fn fake_witness(trace_sha256: String, output_sha256: String) -> Witness {
+        Witness {
+            version: WITNESS_VERSION,
+            tool: ToolIdentity {
+                name: "ptytrace-test".into(),
+                version: "0".into(),
+                ffmpeg_version: "ffmpeg test".into(),
+                font_sha256: "font".into(),
+                recorder_sha256: None,
+                ffmpeg_sha256: None,
+            },
+            trace_sha256,
+            render: RenderOptions::libx264(14.0, 12, None, 30),
+            output_sha256,
+            output_filename: "demo.mp4".into(),
+            contract_sha256: None,
+            script_sha256: None,
+            attestation_sha256: None,
+        }
     }
 
     #[test]

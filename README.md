@@ -226,11 +226,17 @@ ptyconnect 127.0.0.1:7000                                 # attach to ptyshare
 ```
 
 `ptyshare` / `ptyconnect` are the first collaborative PTY primitive.
-The host owns one PTY, client input bytes are interleaved into that PTY,
-PTY output is broadcast to all clients, and the host writes the same
-output stream to a `.ptytrace`. The transport is intentionally small and
-does not provide authentication or encryption; bind loopback and use
-SSH, WireGuard, or another authenticated tunnel for remote sharing.
+The host owns one PTY; host stdin and client input bytes are interleaved
+into that PTY; PTY output is broadcast to all clients and written to a
+`.ptytrace`. Slow clients get a bounded output backlog and are
+disconnected rather than being allowed to stall the shared session.
+The transport is intentionally small and does not provide authentication
+or encryption; non-loopback binds require
+`--allow-unauthenticated-public-bind`, and remote sharing should go
+through SSH, WireGuard, or another authenticated tunnel.
+
+`ptyconnect` works interactively and in pipelines: after piped stdin
+closes, it keeps reading the shared session until the server closes.
 
 The `ptytrace` binary also exposes named subcommands:
 

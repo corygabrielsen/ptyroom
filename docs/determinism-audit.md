@@ -30,8 +30,9 @@ arrow (recording) is wall-clock dependent by design; see
 - Frame frame names use the trace event index (`format!("{:04}",
 i + 1)`) — preserves a stable lexicographic ordering for
   downstream concat.
-- `dwell_ms` rounding clamps to `[1, u32::MAX]`; deterministic given
-  input timestamps.
+- `dwell_ms` is computed from the next `Output` event, ignoring
+  non-visible input events between frames, then rounded and clamped to
+  `[1, u32::MAX]`; deterministic given input timestamps.
 - No HashMap usage anywhere in the module.
 - Output: deterministic given trace bytes + `StubColors`.
 

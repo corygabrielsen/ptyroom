@@ -280,11 +280,16 @@ impl std::fmt::Display for VerifyOutcome {
 }
 
 impl Witness {
-    /// Build a witness for an already-rendered output file.
+    /// Build a witness claim for an already-rendered output file.
     ///
     /// This is used by live `.ptyrecord` stitching: frames are painted
     /// during capture and encoded once, so producing the witness must
     /// not re-run the renderer just to learn hashes.
+    ///
+    /// This constructor records the caller-provided render options; it
+    /// does not prove the existing media was produced by those options.
+    /// Use [`Self::verify`] later, or [`Self::from_verified_rendered_output`]
+    /// when the constructor itself must perform that proof.
     ///
     /// # Errors
     /// Trace or output file cannot be read, or tool identity cannot be
@@ -315,6 +320,32 @@ impl Witness {
             script_sha256: None,
             attestation_sha256: None,
         })
+    }
+
+    /// Build a witness for an already-rendered output file, then
+    /// immediately re-render the trace and require the receipt to verify.
+    ///
+    /// This is the safer public constructor when avoiding a second render
+    /// is not important. Live recorders can use [`Self::from_rendered_output`]
+    /// and leave verification to the consumer.
+    ///
+    /// # Errors
+    /// Trace or output file cannot be read, tool identity cannot be
+    /// captured, re-rendering fails, or the rendered output does not match
+    /// the witness claim.
+    pub fn from_verified_rendered_output(
+        trace_path: impl AsRef<Path>,
+        output_path: impl AsRef<Path>,
+        render: RenderOptions,
+    ) -> anyhow::Result<Self> {
+        let trace_path = trace_path.as_ref();
+        let witness = Self::from_rendered_output(trace_path, output_path, render)?;
+        let outcome = witness.verify(trace_path)?;
+        if matches!(outcome, VerifyOutcome::Match) {
+            Ok(witness)
+        } else {
+            anyhow::bail!("rendered output does not verify: {outcome}");
+        }
     }
 
     /// Read a receipt from disk.

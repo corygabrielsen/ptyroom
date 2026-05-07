@@ -57,21 +57,26 @@ pub fn replay(
 ) -> anyhow::Result<(Vec<Frame>, Vec<TimingEntry>)> {
     let mut state = ReplayState::from_header(&trace.header, defaults)?;
 
-    let mut snapshots = Vec::with_capacity(trace.events.len());
-    let mut timing = Vec::with_capacity(trace.events.len());
+    let output_events: Vec<_> = trace
+        .events
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| matches!(event.kind, EventKind::Output))
+        .collect();
+    let mut snapshots = Vec::with_capacity(output_events.len());
+    let mut timing = Vec::with_capacity(output_events.len());
 
     // Frame frame indices (1-based, 4-digit zero-padded) come from
     // the original trace event index — preserves the previous TS
     // implementation's filenames so paint/encode/golden checks line up.
-    for (i, event) in trace.events.iter().enumerate() {
-        if !matches!(event.kind, EventKind::Output) {
-            continue;
-        }
+    for (output_idx, (i, event)) in output_events.iter().copied().enumerate() {
         let snapshot = state.process_output(event.data.as_bytes());
         snapshots.push(snapshot);
 
         let frame = format!("{:04}", i + 1);
-        let next_t = trace.events.get(i + 1).map(|e| e.time_s);
+        let next_t = output_events
+            .get(output_idx + 1)
+            .map(|(_, next_event)| next_event.time_s);
         let dwell_ms = match next_t {
             Some(t) => {
                 // Round + clamp to [1, u32::MAX]. Negative deltas can't
@@ -211,4 +216,47 @@ fn palette_overrides(osc: &OscTracker) -> PaletteOverrides {
         p.set(*idx, *color);
     }
     p
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::trace::TraceEvent;
+
+    #[test]
+    fn dwell_uses_next_output_event_not_next_trace_event() {
+        let trace = Trace {
+            header: TraceHeader {
+                version: 2,
+                width: 20,
+                height: 4,
+                env: std::collections::BTreeMap::default(),
+            },
+            events: vec![
+                TraceEvent {
+                    time_s: 0.0,
+                    kind: EventKind::Output,
+                    data: "hello".into(),
+                },
+                TraceEvent {
+                    time_s: 0.1,
+                    kind: EventKind::Input,
+                    data: "ignored for frame timing".into(),
+                },
+                TraceEvent {
+                    time_s: 1.0,
+                    kind: EventKind::Output,
+                    data: " world".into(),
+                },
+            ],
+        };
+
+        let (_, timing) = replay(&trace, StubColors::default()).unwrap();
+
+        assert_eq!(timing.len(), 2);
+        assert_eq!(timing[0].frame, "0001");
+        assert_eq!(timing[0].dwell_ms, 1000);
+        assert_eq!(timing[1].frame, "0003");
+        assert_eq!(timing[1].dwell_ms, TAIL_DWELL_MS);
+    }
 }

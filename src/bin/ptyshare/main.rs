@@ -4,6 +4,7 @@ use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
 use std::time::Duration;
 
+use anyhow::anyhow;
 use clap::Parser;
 use ptytrace::pty::share::{ShareOpts, run};
 
@@ -13,8 +14,9 @@ use ptytrace::pty::share::{ShareOpts, run};
     about = "ptyshare — host a collaborative recorded PTY session",
     long_about = "Host a command under a PTY, accept TCP clients, interleave client\n\
                   input into the PTY, broadcast output to every client, and write\n\
-                  a `.ptytrace` recording. This transport has no built-in auth or\n\
-                  encryption; bind loopback and use SSH/WireGuard for remote use."
+                  a `.ptytrace` recording. The host terminal is also connected by\n\
+                  default. This transport has no built-in auth or encryption;\n\
+                  bind loopback and use SSH/WireGuard for remote use."
 )]
 struct Args {
     /// Address to listen on. Defaults to loopback with an OS-assigned port.
@@ -35,6 +37,12 @@ struct Args {
     /// Do not tee PTY output to the host's stdout.
     #[arg(long)]
     no_local_output: bool,
+    /// Do not forward the host's stdin into the PTY.
+    #[arg(long)]
+    no_local_input: bool,
+    /// Allow binding a no-auth/no-encryption session outside loopback.
+    #[arg(long)]
+    allow_unauthenticated_public_bind: bool,
     /// Command to run under the shared PTY. Empty uses `$SHELL` or `bash`.
     #[arg(
         value_name = "COMMAND",
@@ -47,6 +55,7 @@ struct Args {
 
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+    validate_listen_addr(args.listen, args.allow_unauthenticated_public_bind)?;
     let listener = TcpListener::bind(args.listen)?;
     let bound_addr = listener.local_addr()?;
     eprintln!("[ptyshare listening on {bound_addr}]");
@@ -60,6 +69,7 @@ fn main() -> anyhow::Result<()> {
             out,
             max_runtime: Duration::from_secs(args.max_secs),
             local_output: !args.no_local_output,
+            local_input: !args.no_local_input,
         },
     )?;
     println!(
@@ -74,13 +84,23 @@ fn default_trace_path(addr: SocketAddr) -> PathBuf {
     PathBuf::from(format!("ptyshare-{}-{}.ptytrace", addr.ip(), addr.port()))
 }
 
+fn validate_listen_addr(addr: SocketAddr, allow_public: bool) -> anyhow::Result<()> {
+    if addr.ip().is_loopback() || allow_public {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "refusing to bind unauthenticated ptyshare session to {addr}; \
+         use --allow-unauthenticated-public-bind only behind a trusted network boundary"
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     use clap::{CommandFactory, Parser};
 
-    use super::{Args, default_trace_path};
+    use super::{Args, default_trace_path, validate_listen_addr};
 
     #[test]
     fn default_trace_path_mentions_bound_port() {
@@ -98,6 +118,31 @@ mod tests {
 
         assert_eq!(args.command, ["bash", "-l"]);
         assert_eq!(args.listen.port(), 7000);
+    }
+
+    #[test]
+    fn parses_local_input_and_public_bind_flags() {
+        let args = Args::try_parse_from([
+            "ptyshare",
+            "--no-local-input",
+            "--allow-unauthenticated-public-bind",
+            "--listen",
+            "0.0.0.0:7000",
+        ])
+        .unwrap();
+
+        assert!(args.no_local_input);
+        assert!(args.allow_unauthenticated_public_bind);
+    }
+
+    #[test]
+    fn rejects_public_bind_without_explicit_allow() {
+        let addr = "0.0.0.0:7000".parse().unwrap();
+
+        let err = validate_listen_addr(addr, false).unwrap_err().to_string();
+
+        assert!(err.contains("refusing to bind"));
+        assert!(validate_listen_addr(addr, true).is_ok());
     }
 
     #[test]
