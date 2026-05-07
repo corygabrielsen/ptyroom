@@ -221,7 +221,16 @@ Raw and composed command forms:
 ptytrace <command...>                                      # command → trace
 ptyrender <trace> <out.gif|out.mp4> [--receipt R]          # trace → media
 ptyrecord [--out OUT.ptyrecord] <command...>               # command → trace + MP4 bundle
+ptyshare [--listen 127.0.0.1:0] [--out S.ptytrace] [cmd]   # host shared PTY
+ptyconnect 127.0.0.1:7000                                 # attach to ptyshare
 ```
+
+`ptyshare` / `ptyconnect` are the first collaborative PTY primitive.
+The host owns one PTY, client input bytes are interleaved into that PTY,
+PTY output is broadcast to all clients, and the host writes the same
+output stream to a `.ptytrace`. The transport is intentionally small and
+does not provide authentication or encryption; bind loopback and use
+SSH, WireGuard, or another authenticated tunnel for remote sharing.
 
 The `ptytrace` binary also exposes named subcommands:
 

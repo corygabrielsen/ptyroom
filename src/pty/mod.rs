@@ -13,6 +13,7 @@ mod keys;
 mod live;
 mod osc;
 mod process;
+pub mod share;
 
 pub use drainer::WatchHandle;
 pub use keys::Key;

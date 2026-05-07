@@ -172,9 +172,16 @@ The current crate installs three user-facing binaries:
   optional witnesses.
 - `ptyrecord`: the composed command recorder that captures, renders MP4,
   and writes a `.ptyrecord` bundle.
+- `ptyshare`: host one shared PTY over TCP, broadcast output to clients,
+  interleave client input, and write the output trace.
+- `ptyconnect`: attach a local terminal to a `ptyshare` TCP session.
 
 `ptytrace render` remains available as the low-level subcommand form of
 `ptyrender`.
+
+`ptyshare` is transport plumbing, not a trust primitive. It defaults to
+loopback and should be paired with SSH, WireGuard, or another
+authenticated tunnel before crossing a machine boundary.
 
 ## Future Package Split
 
