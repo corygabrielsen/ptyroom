@@ -14,8 +14,9 @@ use ptytrace::pty::share::{ShareOpts, run};
     about = "ptyshare — host a collaborative recorded PTY session",
     long_about = "Host a command under a PTY, accept TCP clients, interleave client\n\
                   input into the PTY, broadcast output to every client, and write\n\
-                  a `.ptytrace` recording. The host terminal is also connected by\n\
-                  default. This transport has no built-in auth or encryption;\n\
+                  a `.ptytrace` recording. The shared PTY is resized to the\n\
+                  smallest known attached rendering terminal. The host terminal is also\n\
+                  connected by default. This transport has no built-in auth or encryption;\n\
                   bind loopback and use SSH/WireGuard for remote use."
 )]
 struct Args {

@@ -42,7 +42,8 @@ impl DwellMs {
 
 #[derive(Debug, Clone)]
 struct Step {
-    output: Vec<u8>,
+    kind: EventKind,
+    data: String,
     dwell: DwellMs,
 }
 
@@ -85,7 +86,10 @@ impl TraceBuilder {
     /// counted.
     #[must_use]
     pub fn event_count(&self) -> usize {
-        self.steps.iter().filter(|s| !s.output.is_empty()).count()
+        self.steps
+            .iter()
+            .filter(|s| matches!(s.kind, EventKind::Output))
+            .count()
     }
 
     /// Record a causal `(input, output)` pair. `dwell` is the
@@ -122,7 +126,8 @@ impl TraceBuilder {
         // The parameter stays in the API for caller record-keeping
         // and for future "i" event emission if ever wanted.
         let _ = input.into();
-        self.record_inner(output.into(), dwell, predicate)
+        let output = output.into();
+        self.record_inner(&output, dwell, predicate)
     }
 
     /// Record output observed without a corresponding input.
@@ -134,7 +139,8 @@ impl TraceBuilder {
         output: impl Into<Vec<u8>>,
         dwell: DwellMs,
     ) -> anyhow::Result<()> {
-        self.record_inner(output.into(), dwell, None)
+        let output = output.into();
+        self.record_inner(&output, dwell, None)
     }
 
     /// Record synthetic presentation output not produced by the child.
@@ -148,7 +154,26 @@ impl TraceBuilder {
         output: impl Into<Vec<u8>>,
         dwell: DwellMs,
     ) -> anyhow::Result<()> {
-        self.record_inner(output.into(), dwell, None)
+        let output = output.into();
+        self.record_inner(&output, dwell, None)
+    }
+
+    /// Record a terminal resize event.
+    ///
+    /// The data format is asciicast v2's `COLSxROWS` resize payload.
+    ///
+    /// # Errors
+    /// Either dimension is zero.
+    pub fn record_resize(&mut self, cols: u16, rows: u16, dwell: DwellMs) -> anyhow::Result<()> {
+        if cols == 0 || rows == 0 {
+            anyhow::bail!("record_resize requires nonzero dimensions: {cols}x{rows}");
+        }
+        self.steps.push(Step {
+            kind: EventKind::Resize,
+            data: format!("{cols}x{rows}"),
+            dwell,
+        });
+        Ok(())
     }
 
     /// Add `dwell` to the most recently recorded step's dwell time.
@@ -178,7 +203,7 @@ impl TraceBuilder {
 
     fn record_inner(
         &mut self,
-        output: Vec<u8>,
+        output: &[u8],
         dwell: DwellMs,
         predicate: Option<Predicate>,
     ) -> anyhow::Result<()> {
@@ -188,8 +213,8 @@ impl TraceBuilder {
             return self.record_beat(dwell);
         }
 
-        self.accumulated_text
-            .push_str(&String::from_utf8_lossy(&output));
+        let data = String::from_utf8_lossy(output).into_owned();
+        self.accumulated_text.push_str(&data);
 
         if let Some(pred) = predicate
             && !pred.check(&self.accumulated_text)
@@ -199,7 +224,11 @@ impl TraceBuilder {
             );
         }
 
-        self.steps.push(Step { output, dwell });
+        self.steps.push(Step {
+            kind: EventKind::Output,
+            data,
+            dwell,
+        });
         Ok(())
     }
 
@@ -239,13 +268,11 @@ impl TraceBuilder {
         let mut events = Vec::new();
         let mut t_ms: u64 = 0;
         for step in &self.steps {
-            if !step.output.is_empty() {
-                events.push(TraceEvent {
-                    time_s: ms_to_seconds(t_ms),
-                    kind: EventKind::Output,
-                    data: String::from_utf8_lossy(&step.output).into_owned(),
-                });
-            }
+            events.push(TraceEvent {
+                time_s: ms_to_seconds(t_ms),
+                kind: step.kind,
+                data: step.data.clone(),
+            });
             t_ms = t_ms.saturating_add(u64::from(step.dwell.get()));
         }
 
@@ -312,6 +339,24 @@ mod tests {
         let rec = b.finish_synthetic(80, 24).unwrap();
         // Second event timestamp = first dwell (10) + beat (5) = 15ms.
         assert!((rec.trace().events[1].time_s - 0.015).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn record_resize_emits_asciicast_resize_event() {
+        let mut b = TraceBuilder::new();
+        b.record_output(b"first".to_vec(), DwellMs::new(50))
+            .unwrap();
+        b.record_resize(100, 30, DwellMs::new(25)).unwrap();
+        b.record_output(b"second".to_vec(), DwellMs::new(10))
+            .unwrap();
+
+        let rec = b.finish_synthetic(80, 24).unwrap();
+
+        assert_eq!(rec.trace().events.len(), 3);
+        assert_eq!(rec.trace().events[1].kind, EventKind::Resize);
+        assert!((rec.trace().events[1].time_s - 0.05).abs() < f64::EPSILON);
+        assert_eq!(rec.trace().events[1].data, "100x30");
+        assert!((rec.trace().events[2].time_s - 0.075).abs() < f64::EPSILON);
     }
 
     #[test]

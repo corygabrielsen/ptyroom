@@ -19,15 +19,70 @@ when `ptyshare` should be a headless relay driven only by clients.
 
 ## Byte Streams
 
-There is no framing layer yet.
+Client-to-host is a raw terminal input byte stream with reserved
+`ptyshare` DCS control frames for terminal geometry.
 
-- Client to host: raw terminal input bytes.
-- Host to client: raw PTY output bytes.
-- Recording: PTY output bytes only, written as `.ptytrace` output events.
+Host-to-client is a framed stream. Control frames still use the reserved
+`ptyshare` DCS namespace, but PTY output is sent as length-delimited data
+so child output can contain arbitrary escape sequences without being
+mistaken for trusted transport control:
 
-This means `ptyconnect` can be simple: relay stdin to the socket and the
-socket to stdout. After piped stdin closes, it half-closes the socket
-write side and continues reading output until `ptyshare` closes.
+```text
+ESC P ptyshare;data;<byte-len> ESC \ <byte-len raw PTY output bytes>
+```
+
+- Client to host: raw terminal input bytes, except reserved
+  `ptyshare` DCS control frames.
+- Host to client: `ptyshare` DCS control frames plus length-delimited
+  data frames carrying raw PTY output bytes.
+- Recording: PTY output bytes as `.ptytrace` output events, with
+  `.ptytrace` resize events whenever the canonical PTY size changes.
+
+When a client joins, `ptyshare` first sends the current size control
+frame, then a bounded replay of recent data frames. This keeps late
+joiners from seeing a blank terminal until the next output event while
+preserving the same framing rules as live output.
+
+This means `ptyconnect` can be simple but not byte-blind: relay stdin to
+the socket, parse host-to-client frames, and write only decoded PTY output
+bytes to stdout. After piped stdin closes, it half-closes the socket write
+side and continues reading output until `ptyshare` closes.
+
+## Terminal Geometry
+
+`ptyshare` owns one canonical PTY size. `ptyconnect` reports its local
+terminal size using a reserved client-to-server DCS control frame:
+
+```text
+ESC P ptyshare;resize;<cols>;<rows> ESC \
+```
+
+`ptyshare` strips this frame from the input stream, records the client's
+latest size, and resizes the child PTY to the smallest known attached
+rendering terminal size. The host terminal also participates in this
+calculation when local output is enabled and the host stdout is a
+terminal. If no rendering terminal has reported a size, `ptyshare` uses
+the configured initial size.
+
+Whenever a client joins or the canonical size changes, `ptyshare` sends a
+reserved server-to-client DCS control frame:
+
+```text
+ESC P ptyshare;size;<cols>;<rows> ESC \
+```
+
+Interactive `ptyconnect` clients use that frame to resize a local
+`vt100` screen model. They render the model into the local terminal's
+alternate screen, clearing unused space so larger terminals see a stable
+canvas instead of stale raw-output artifacts. Non-terminal stdout keeps
+pipeline behavior: `ptyconnect` strips `ptyshare` control frames and
+writes raw PTY output bytes.
+
+This is the first tmux-like geometry rule: no connected rendering
+`ptyconnect` client should be smaller than the logical PTY it is
+rendering. Larger clients get blank space outside the canonical shared
+screen, and removing the smallest client allows the session to grow to
+the next smallest active renderer.
 
 ## Scheduling
 
@@ -45,7 +100,8 @@ the TCP stream and attach that identity through an attestation.
 
 ## Backpressure
 
-Client output is nonblocking. Each client has a bounded output backlog.
+Client output is nonblocking. Each client has a bounded output backlog,
+including any replay bytes queued when it joins.
 If a client stops reading and its backlog exceeds the limit, `ptyshare`
 disconnects that client instead of blocking:
 
@@ -90,7 +146,7 @@ provenance or attestation layer.
 - Encrypted transport.
 - Multi-host conflict resolution.
 - Replayable client input logs.
-- Terminal resize propagation.
+- Rich per-client status bars or scrollback.
 - File transfer or side channels.
 
 Those are compatible future layers, but they are not part of the current

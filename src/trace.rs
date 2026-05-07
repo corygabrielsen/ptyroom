@@ -1,7 +1,7 @@
 //! asciinema v2-compatible trace file format.
 //!
 //! A trace is a JSONL file: line 0 is a [`TraceHeader`] object, lines 1..N
-//! are 3-element arrays `[time_seconds, "o"|"i", data_string]`. The recorder
+//! are 3-element arrays `[time_seconds, "o"|"i"|"r", data_string]`. The recorder
 //! emits traces whose timestamps are the cumulative sum of intent-based
 //! `dwell_ms`, never wall-clock — this is what makes playback deterministic.
 //!
@@ -26,6 +26,7 @@ pub struct TraceHeader {
 pub enum EventKind {
     Output,
     Input,
+    Resize,
 }
 
 impl EventKind {
@@ -34,6 +35,7 @@ impl EventKind {
         match self {
             EventKind::Output => "o",
             EventKind::Input => "i",
+            EventKind::Resize => "r",
         }
     }
 }
@@ -64,6 +66,7 @@ impl<'de> Deserialize<'de> for TraceEvent {
         let kind = match kind_str.as_str() {
             "o" => EventKind::Output,
             "i" => EventKind::Input,
+            "r" => EventKind::Resize,
             other => {
                 return Err(serde::de::Error::custom(format!(
                     "unknown trace event kind: {other:?}"
@@ -198,6 +201,19 @@ mod tests {
         assert!((ev.time_s - 2.5).abs() < 1e-9);
         assert_eq!(ev.kind, EventKind::Input);
         assert_eq!(ev.data, "x");
+    }
+
+    #[test]
+    fn resize_event_serializes_with_r_kind() {
+        let ev = TraceEvent {
+            time_s: 1.0,
+            kind: EventKind::Resize,
+            data: "100x30".into(),
+        };
+
+        let s = serde_json::to_string(&ev).unwrap();
+
+        assert_eq!(s, r#"[1.0,"r","100x30"]"#);
     }
 
     #[test]

@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow};
 use nix::errno::Errno;
+use nix::libc;
 use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use nix::sys::termios::{SetArg, Termios, cfmakeraw, tcgetattr, tcsetattr};
 use nix::unistd::{read, write};
@@ -27,6 +28,11 @@ use super::process;
 use crate::recording::{DwellMs, TraceBuilder};
 
 const MAX_CLIENT_BACKLOG_BYTES: usize = 1024 * 1024;
+const MAX_JOIN_REPLAY_BYTES: usize = 256 * 1024;
+const MAX_CONTROL_BYTES: usize = 1024;
+const SIZE_CHECK_INTERVAL: Duration = Duration::from_millis(250);
+const CONTROL_PREFIX: &[u8] = b"\x1bPptyshare;";
+const CONTROL_SUFFIX: &[u8] = b"\x1b\\";
 
 #[derive(Debug, Clone)]
 pub struct ShareOpts {
@@ -70,6 +76,12 @@ pub struct ShareSummary {
     pub clients_dropped_for_backlog: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TerminalSize {
+    cols: u16,
+    rows: u16,
+}
+
 /// Run a shared PTY session using an already-bound listener.
 ///
 /// # Errors
@@ -85,14 +97,27 @@ pub fn run(listener: &TcpListener, opts: ShareOpts) -> anyhow::Result<ShareSumma
     let listener_fd = listener.as_raw_fd();
     let stdin = io::stdin();
     let stdin_fd = stdin.as_raw_fd();
-    let stdout_fd = std::io::stdout().as_raw_fd();
+    let stdout = std::io::stdout();
+    let stdout_fd = stdout.as_raw_fd();
     let mut local_stdin_open = opts.local_input;
     let _raw_mode = if opts.local_input && stdin.is_terminal() {
         RawModeGuard::enter(stdin_fd).ok()
     } else {
         None
     };
+    let initial_size = TerminalSize {
+        cols: opts.cols,
+        rows: opts.rows,
+    };
+    let mut current_size = initial_size;
+    let mut host_size = if opts.local_output && stdout.is_terminal() {
+        terminal_size(stdout_fd)
+    } else {
+        None
+    };
+    let mut last_size_check = Instant::now();
     let mut clients: Vec<Client> = Vec::new();
+    let mut join_replay = VecDeque::new();
     let mut stats = ShareStats::default();
     let mut builder = TraceBuilder::new();
     let started = Instant::now();
@@ -102,6 +127,10 @@ pub fn run(listener: &TcpListener, opts: ShareOpts) -> anyhow::Result<ShareSumma
     loop {
         if started.elapsed() > opts.max_runtime {
             break;
+        }
+        if opts.local_output && last_size_check.elapsed() >= SIZE_CHECK_INTERVAL {
+            host_size = terminal_size(stdout_fd);
+            last_size_check = Instant::now();
         }
 
         let poll_state = poll_share_fds(
@@ -114,57 +143,55 @@ pub fn run(listener: &TcpListener, opts: ShareOpts) -> anyhow::Result<ShareSumma
         process_client_revents(pty_fd, &mut clients, &poll_state.client_revents, &mut stats)?;
 
         if poll_state.listener_readable {
-            stats.accepted += accept_ready_clients(listener, &mut clients)?;
+            stats.accepted +=
+                accept_ready_clients(listener, &mut clients, &join_replay, current_size)?;
         }
 
-        if poll_state
-            .stdin_revents
-            .intersects(PollFlags::POLLIN | PollFlags::POLLHUP)
-        {
-            local_stdin_open = drain_local_input(stdin_fd, pty_fd, &mut buf)?;
+        if let Some(size) = sync_pty_size(
+            &mut pty,
+            &mut current_size,
+            initial_size,
+            host_size,
+            &clients,
+        )? {
+            record_resize_event(&mut builder, &mut last_event, size)?;
+            broadcast_control(&mut clients, &encode_size_control(size), &mut stats);
         }
 
-        if poll_state.pty_revents.intersects(PollFlags::POLLIN) {
-            let pty_borrow = unsafe { BorrowedFd::borrow_raw(pty_fd) };
-            match read(pty_borrow, &mut buf) {
-                Ok(0) | Err(Errno::EIO) => break,
-                Ok(n) => {
-                    let bytes = &buf[..n];
-                    if opts.local_output {
-                        let stdout_borrow = unsafe { BorrowedFd::borrow_raw(stdout_fd) };
-                        let _ = write(stdout_borrow, bytes);
-                    }
-                    broadcast(&mut clients, bytes, &mut stats);
-                    let now = Instant::now();
-                    let dwell = DwellMs::from_duration(now.saturating_duration_since(last_event));
-                    builder.record_output(bytes.to_vec(), dwell)?;
-                    last_event = now;
-                }
-                Err(Errno::EINTR) => {}
-                Err(err) => return Err(anyhow!("read shared PTY: {err}")),
-            }
-        }
-        if poll_state
-            .pty_revents
-            .intersects(PollFlags::POLLHUP | PollFlags::POLLERR | PollFlags::POLLNVAL)
-        {
+        local_stdin_open = maybe_drain_local_input(
+            poll_state.stdin_revents,
+            local_stdin_open,
+            stdin_fd,
+            pty_fd,
+            &mut buf,
+        )?;
+
+        if !handle_pty_revents(
+            poll_state.pty_revents,
+            pty_fd,
+            &mut buf,
+            PtyOutputSinks {
+                local_output: opts.local_output,
+                stdout_fd,
+                join_replay: &mut join_replay,
+                clients: &mut clients,
+                stats: &mut stats,
+            },
+            &mut builder,
+            &mut last_event,
+        )? {
             break;
         }
     }
 
-    pty.terminate_child();
-    let recording = builder.finish_screen(opts.cols, opts.rows)?;
-    let trace = recording.into_trace();
-    let events = trace.events.len();
-    write_trace(&trace, &opts.out)?;
-    Ok(ShareSummary {
+    finish_share_run(
+        &mut pty,
+        builder,
+        initial_size,
+        opts.out,
         listen_addr,
-        trace_path: opts.out,
-        events,
-        clients_accepted: stats.accepted,
-        clients_disconnected: stats.disconnected,
-        clients_dropped_for_backlog: stats.dropped_for_backlog,
-    })
+        &stats,
+    )
 }
 
 #[derive(Debug, Default)]
@@ -243,12 +270,17 @@ fn poll_share_fds(
 fn accept_ready_clients(
     listener: &TcpListener,
     clients: &mut Vec<Client>,
+    join_replay: &VecDeque<u8>,
+    current_size: TerminalSize,
 ) -> anyhow::Result<usize> {
     let mut accepted = 0;
     loop {
         match listener.accept() {
             Ok((stream, _addr)) => {
-                clients.push(Client::new(stream)?);
+                let mut client = Client::new(stream)?;
+                client.enqueue(&encode_size_control(current_size));
+                client.enqueue_deque(join_replay);
+                clients.push(client);
                 accepted += 1;
             }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => return Ok(accepted),
@@ -266,10 +298,9 @@ fn process_client_revents(
     let mut kept = Vec::with_capacity(clients.len());
     for (idx, mut client) in clients.drain(..).enumerate() {
         let rev = revents.get(idx).copied().unwrap_or_else(PollFlags::empty);
-        let mut keep =
-            !rev.intersects(PollFlags::POLLHUP | PollFlags::POLLERR | PollFlags::POLLNVAL);
-        if keep && rev.intersects(PollFlags::POLLIN) {
-            keep = client.drain_input_to_pty(pty_fd)?;
+        let mut keep = !rev.intersects(PollFlags::POLLERR | PollFlags::POLLNVAL);
+        if keep && client.input_open && rev.intersects(PollFlags::POLLIN | PollFlags::POLLHUP) {
+            client.input_open = client.drain_input_to_pty(pty_fd)?;
         }
         if keep && (rev.intersects(PollFlags::POLLOUT) || client.has_pending()) {
             keep = client.flush_pending();
@@ -298,6 +329,72 @@ fn drain_local_input(stdin_fd: i32, pty_fd: i32, buf: &mut [u8]) -> anyhow::Resu
     }
 }
 
+fn maybe_drain_local_input(
+    revents: PollFlags,
+    open: bool,
+    stdin_fd: i32,
+    pty_fd: i32,
+    buf: &mut [u8],
+) -> anyhow::Result<bool> {
+    if open && revents.intersects(PollFlags::POLLIN | PollFlags::POLLHUP) {
+        drain_local_input(stdin_fd, pty_fd, buf)
+    } else {
+        Ok(open)
+    }
+}
+
+fn sync_pty_size(
+    pty: &mut process::PtyMaster,
+    current: &mut TerminalSize,
+    fallback: TerminalSize,
+    host_size: Option<TerminalSize>,
+    clients: &[Client],
+) -> anyhow::Result<Option<TerminalSize>> {
+    let desired = desired_session_size(fallback, host_size, clients);
+    if desired == *current {
+        return Ok(None);
+    }
+    pty.resize(desired.cols, desired.rows)?;
+    *current = desired;
+    Ok(Some(desired))
+}
+
+fn desired_session_size(
+    fallback: TerminalSize,
+    host_size: Option<TerminalSize>,
+    clients: &[Client],
+) -> TerminalSize {
+    let mut sizes = host_size
+        .into_iter()
+        .chain(clients.iter().filter_map(|client| client.size));
+    let Some(mut desired) = sizes.next() else {
+        return fallback;
+    };
+    for size in sizes {
+        desired.cols = desired.cols.min(size.cols);
+        desired.rows = desired.rows.min(size.rows);
+    }
+    desired
+}
+
+fn terminal_size(fd: i32) -> Option<TerminalSize> {
+    let mut size = libc::winsize {
+        ws_row: 0,
+        ws_col: 0,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    let rc = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut size) };
+    if rc == 0 && size.ws_col > 0 && size.ws_row > 0 {
+        Some(TerminalSize {
+            cols: size.ws_col,
+            rows: size.ws_row,
+        })
+    } else {
+        None
+    }
+}
+
 fn broadcast(clients: &mut Vec<Client>, bytes: &[u8], stats: &mut ShareStats) {
     let mut kept = Vec::with_capacity(clients.len());
     for mut client in clients.drain(..) {
@@ -315,10 +412,43 @@ fn broadcast(clients: &mut Vec<Client>, bytes: &[u8], stats: &mut ShareStats) {
     *clients = kept;
 }
 
+fn broadcast_control(clients: &mut Vec<Client>, bytes: &[u8], stats: &mut ShareStats) {
+    broadcast(clients, bytes, stats);
+}
+
+fn encode_size_control(size: TerminalSize) -> Vec<u8> {
+    let mut frame = Vec::new();
+    frame.extend_from_slice(CONTROL_PREFIX);
+    frame.extend_from_slice(format!("size;{};{}", size.cols, size.rows).as_bytes());
+    frame.extend_from_slice(CONTROL_SUFFIX);
+    frame
+}
+
+fn encode_output_frame(bytes: &[u8]) -> Vec<u8> {
+    let mut frame =
+        Vec::with_capacity(CONTROL_PREFIX.len() + 24 + CONTROL_SUFFIX.len() + bytes.len());
+    frame.extend_from_slice(CONTROL_PREFIX);
+    frame.extend_from_slice(format!("data;{}", bytes.len()).as_bytes());
+    frame.extend_from_slice(CONTROL_SUFFIX);
+    frame.extend_from_slice(bytes);
+    frame
+}
+
+fn remember_for_late_joiners(replay: &mut VecDeque<u8>, bytes: &[u8]) {
+    replay.extend(bytes.iter().copied());
+    let excess = replay.len().saturating_sub(MAX_JOIN_REPLAY_BYTES);
+    if excess > 0 {
+        drop(replay.drain(..excess));
+    }
+}
+
 #[derive(Debug)]
 struct Client {
     stream: TcpStream,
     pending: VecDeque<u8>,
+    input_pending: Vec<u8>,
+    input_open: bool,
+    size: Option<TerminalSize>,
 }
 
 impl Client {
@@ -328,11 +458,17 @@ impl Client {
         Ok(Self {
             stream,
             pending: VecDeque::new(),
+            input_pending: Vec::new(),
+            input_open: true,
+            size: None,
         })
     }
 
     fn poll_flags(&self) -> PollFlags {
-        let mut flags = PollFlags::POLLIN;
+        let mut flags = PollFlags::empty();
+        if self.input_open {
+            flags |= PollFlags::POLLIN;
+        }
         if self.has_pending() {
             flags |= PollFlags::POLLOUT;
         }
@@ -344,6 +480,14 @@ impl Client {
     }
 
     fn enqueue(&mut self, bytes: &[u8]) -> bool {
+        if bytes.len() > MAX_CLIENT_BACKLOG_BYTES.saturating_sub(self.pending.len()) {
+            return false;
+        }
+        self.pending.extend(bytes.iter().copied());
+        true
+    }
+
+    fn enqueue_deque(&mut self, bytes: &VecDeque<u8>) -> bool {
         if bytes.len() > MAX_CLIENT_BACKLOG_BYTES.saturating_sub(self.pending.len()) {
             return false;
         }
@@ -375,8 +519,14 @@ impl Client {
         let mut buf = [0_u8; 4096];
         loop {
             match self.stream.read(&mut buf) {
-                Ok(0) => return Ok(false),
-                Ok(n) => write_all(pty_fd, &buf[..n])?,
+                Ok(0) => {
+                    self.flush_pending_input_as_raw(pty_fd)?;
+                    return Ok(false);
+                }
+                Ok(n) => {
+                    self.input_pending.extend_from_slice(&buf[..n]);
+                    self.flush_pending_input(pty_fd)?;
+                }
                 Err(err) if err.kind() == io::ErrorKind::WouldBlock => return Ok(true),
                 Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
                 Err(_) => return Ok(false),
@@ -384,9 +534,93 @@ impl Client {
         }
     }
 
+    fn flush_pending_input(&mut self, pty_fd: i32) -> anyhow::Result<()> {
+        loop {
+            if self.input_pending.is_empty() {
+                return Ok(());
+            }
+            let Some(start) = find_subslice(&self.input_pending, CONTROL_PREFIX) else {
+                let keep = prefix_overlap(&self.input_pending, CONTROL_PREFIX);
+                let write_len = self.input_pending.len().saturating_sub(keep);
+                if write_len > 0 {
+                    write_all(pty_fd, &self.input_pending[..write_len])?;
+                    self.input_pending.drain(..write_len);
+                }
+                return Ok(());
+            };
+            if start > 0 {
+                write_all(pty_fd, &self.input_pending[..start])?;
+                self.input_pending.drain(..start);
+                continue;
+            }
+
+            let suffix_search_start = CONTROL_PREFIX.len();
+            let Some(end_rel) =
+                find_subslice(&self.input_pending[suffix_search_start..], CONTROL_SUFFIX)
+            else {
+                if self.input_pending.len() > MAX_CONTROL_BYTES {
+                    write_all(pty_fd, &self.input_pending[..1])?;
+                    self.input_pending.drain(..1);
+                    continue;
+                }
+                return Ok(());
+            };
+            let payload_start = CONTROL_PREFIX.len();
+            let payload_end = suffix_search_start + end_rel;
+            let payload = self.input_pending[payload_start..payload_end].to_vec();
+            self.apply_control(&payload);
+            self.input_pending
+                .drain(..payload_end + CONTROL_SUFFIX.len());
+        }
+    }
+
+    fn flush_pending_input_as_raw(&mut self, pty_fd: i32) -> anyhow::Result<()> {
+        if !self.input_pending.is_empty() {
+            write_all(pty_fd, &self.input_pending)?;
+            self.input_pending.clear();
+        }
+        Ok(())
+    }
+
+    fn apply_control(&mut self, payload: &[u8]) {
+        let Ok(text) = std::str::from_utf8(payload) else {
+            return;
+        };
+        let mut parts = text.split(';');
+        if parts.next() != Some("resize") {
+            return;
+        }
+        let Some(cols) = parts.next().and_then(|value| value.parse::<u16>().ok()) else {
+            return;
+        };
+        let Some(rows) = parts.next().and_then(|value| value.parse::<u16>().ok()) else {
+            return;
+        };
+        if cols > 0 && rows > 0 && parts.next().is_none() {
+            self.size = Some(TerminalSize { cols, rows });
+        }
+    }
+
     fn disconnect(&self) {
         let _ = self.stream.shutdown(Shutdown::Both);
     }
+}
+
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+fn prefix_overlap(haystack: &[u8], prefix: &[u8]) -> usize {
+    let max = haystack.len().min(prefix.len().saturating_sub(1));
+    (1..=max)
+        .rev()
+        .find(|&len| haystack[haystack.len() - len..] == prefix[..len])
+        .unwrap_or(0)
 }
 
 struct RawModeGuard {
@@ -431,6 +665,105 @@ fn write_trace(trace: &crate::trace::Trace, path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn finish_share_run(
+    pty: &mut process::PtyMaster,
+    builder: TraceBuilder,
+    initial_size: TerminalSize,
+    out: PathBuf,
+    listen_addr: SocketAddr,
+    stats: &ShareStats,
+) -> anyhow::Result<ShareSummary> {
+    pty.terminate_child();
+    let (trace_path, events) = finish_share_trace(builder, initial_size, out)?;
+    Ok(ShareSummary {
+        listen_addr,
+        trace_path,
+        events,
+        clients_accepted: stats.accepted,
+        clients_disconnected: stats.disconnected,
+        clients_dropped_for_backlog: stats.dropped_for_backlog,
+    })
+}
+
+struct PtyOutputSinks<'a> {
+    local_output: bool,
+    stdout_fd: i32,
+    join_replay: &'a mut VecDeque<u8>,
+    clients: &'a mut Vec<Client>,
+    stats: &'a mut ShareStats,
+}
+
+fn handle_pty_revents(
+    revents: PollFlags,
+    pty_fd: i32,
+    buf: &mut [u8],
+    sinks: PtyOutputSinks<'_>,
+    builder: &mut TraceBuilder,
+    last_event: &mut Instant,
+) -> anyhow::Result<bool> {
+    if revents.intersects(PollFlags::POLLIN) {
+        let pty_borrow = unsafe { BorrowedFd::borrow_raw(pty_fd) };
+        match read(pty_borrow, buf) {
+            Ok(0) | Err(Errno::EIO) => return Ok(false),
+            Ok(n) => handle_pty_output(&buf[..n], sinks, builder, last_event)?,
+            Err(Errno::EINTR) => {}
+            Err(err) => return Err(anyhow!("read shared PTY: {err}")),
+        }
+    }
+    Ok(!revents.intersects(PollFlags::POLLHUP | PollFlags::POLLERR | PollFlags::POLLNVAL))
+}
+
+fn handle_pty_output(
+    bytes: &[u8],
+    sinks: PtyOutputSinks<'_>,
+    builder: &mut TraceBuilder,
+    last_event: &mut Instant,
+) -> anyhow::Result<()> {
+    let PtyOutputSinks {
+        local_output,
+        stdout_fd,
+        join_replay,
+        clients,
+        stats,
+    } = sinks;
+    if local_output {
+        let stdout_borrow = unsafe { BorrowedFd::borrow_raw(stdout_fd) };
+        let _ = write(stdout_borrow, bytes);
+    }
+    let client_frame = encode_output_frame(bytes);
+    remember_for_late_joiners(join_replay, &client_frame);
+    broadcast(clients, &client_frame, stats);
+    let now = Instant::now();
+    let dwell = DwellMs::from_duration(now.saturating_duration_since(*last_event));
+    builder.record_output(bytes.to_vec(), dwell)?;
+    *last_event = now;
+    Ok(())
+}
+
+fn record_resize_event(
+    builder: &mut TraceBuilder,
+    last_event: &mut Instant,
+    size: TerminalSize,
+) -> anyhow::Result<()> {
+    let now = Instant::now();
+    let dwell = DwellMs::from_duration(now.saturating_duration_since(*last_event));
+    builder.record_resize(size.cols, size.rows, dwell)?;
+    *last_event = now;
+    Ok(())
+}
+
+fn finish_share_trace(
+    builder: TraceBuilder,
+    size: TerminalSize,
+    out: PathBuf,
+) -> anyhow::Result<(PathBuf, usize)> {
+    let recording = builder.finish_screen(size.cols, size.rows)?;
+    let trace = recording.into_trace();
+    let events = trace.events.len();
+    write_trace(&trace, &out)?;
+    Ok((out, events))
+}
+
 fn resolve_argv(argv: Vec<String>) -> Vec<String> {
     if !argv.is_empty() {
         return argv;
@@ -448,7 +781,7 @@ mod tests {
     use std::io::ErrorKind;
 
     use super::*;
-    use crate::trace::Trace;
+    use crate::trace::{EventKind, Trace};
 
     #[test]
     fn default_share_opts_bind_a_trace_name() {
@@ -520,6 +853,133 @@ mod tests {
                 .events
                 .iter()
                 .any(|event| event.data.contains("got:hello"))
+        );
+    }
+
+    #[test]
+    fn half_closed_client_still_receives_resulting_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("shared-half-close.ptytrace");
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn({
+            let out = out.clone();
+            move || {
+                run(
+                    &listener,
+                    ShareOpts {
+                        argv: vec![
+                            "sh".into(),
+                            "-lc".into(),
+                            "read line; printf 'half:%s\\n' \"$line\"".into(),
+                        ],
+                        out,
+                        local_output: false,
+                        local_input: false,
+                        max_runtime: Duration::from_secs(5),
+                        ..ShareOpts::default()
+                    },
+                )
+            }
+        });
+
+        let mut client = connect_with_retry(addr);
+        client.write_all(b"hello\n").unwrap();
+        client.shutdown(Shutdown::Write).unwrap();
+
+        assert_contains_from_stream(&mut client, "half:hello");
+        let summary = handle.join().unwrap().unwrap();
+        assert_eq!(summary.clients_accepted, 1);
+        assert_eq!(summary.clients_dropped_for_backlog, 0);
+    }
+
+    #[test]
+    fn late_joining_client_receives_recent_output_before_typing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("shared-late-join.ptytrace");
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn({
+            let out = out.clone();
+            move || {
+                run(
+                    &listener,
+                    ShareOpts {
+                        argv: vec![
+                            "sh".into(),
+                            "-lc".into(),
+                            "sleep 0.2; printf 'ready\\n'; read line; printf 'late:%s\\n' \"$line\""
+                                .into(),
+                        ],
+                        out,
+                        local_output: false,
+                        local_input: false,
+                        max_runtime: Duration::from_secs(5),
+                        ..ShareOpts::default()
+                    },
+                )
+            }
+        });
+
+        let mut early = connect_with_retry(addr);
+        assert_contains_from_stream(&mut early, "ready");
+        drop(early);
+
+        let mut late = connect_with_retry(addr);
+        assert_contains_from_stream(&mut late, "ready");
+        late.write_all(b"hello\n").unwrap();
+        assert_contains_from_stream(&mut late, "late:hello");
+
+        let summary = handle.join().unwrap().unwrap();
+        assert_eq!(summary.clients_accepted, 2);
+        assert_eq!(summary.clients_dropped_for_backlog, 0);
+    }
+
+    #[test]
+    fn resize_control_updates_child_pty_size_without_reaching_input() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("shared-resize.ptytrace");
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn({
+            let out = out.clone();
+            move || {
+                run(
+                    &listener,
+                    ShareOpts {
+                        argv: vec![
+                            "sh".into(),
+                            "-lc".into(),
+                            "sleep 0.2; stty size; read line; printf 'line:%s\\n' \"$line\"".into(),
+                        ],
+                        cols: 100,
+                        rows: 30,
+                        out,
+                        local_output: false,
+                        local_input: false,
+                        max_runtime: Duration::from_secs(5),
+                    },
+                )
+            }
+        });
+
+        let mut client = connect_with_retry(addr);
+        client.write_all(resize_control(40, 10).as_slice()).unwrap();
+        assert_contains_from_stream(&mut client, "10 40");
+        client.write_all(b"hello\n").unwrap();
+        assert_contains_from_stream(&mut client, "line:hello");
+
+        let summary = handle.join().unwrap().unwrap();
+        assert_eq!(summary.clients_accepted, 1);
+        assert_eq!(summary.clients_dropped_for_backlog, 0);
+        let trace = Trace::read(summary.trace_path).unwrap();
+        assert_eq!(trace.header.width, 100);
+        assert_eq!(trace.header.height, 30);
+        assert!(
+            trace
+                .events
+                .iter()
+                .any(|event| { matches!(event.kind, EventKind::Resize) && event.data == "40x10" })
         );
     }
 
@@ -620,6 +1080,40 @@ mod tests {
         assert_eq!(stats.dropped_for_backlog, 1);
     }
 
+    #[test]
+    fn desired_session_size_recomputes_from_active_participants() {
+        let fallback = TerminalSize {
+            cols: 100,
+            rows: 30,
+        };
+        let small = client_with_size(TerminalSize { cols: 40, rows: 10 });
+        let large = client_with_size(TerminalSize { cols: 90, rows: 25 });
+
+        assert_eq!(
+            desired_session_size(fallback, None, &[small, large]),
+            TerminalSize { cols: 40, rows: 10 }
+        );
+
+        let large = client_with_size(TerminalSize { cols: 90, rows: 25 });
+        assert_eq!(
+            desired_session_size(fallback, None, &[large]),
+            TerminalSize { cols: 90, rows: 25 }
+        );
+        assert_eq!(desired_session_size(fallback, None, &[]), fallback);
+    }
+
+    #[test]
+    fn output_frames_preserve_control_lookalikes_as_data() {
+        let payload = b"before\x1bPptyshare;size;1;1\x1b\\after";
+        let mut expected = Vec::new();
+        expected.extend_from_slice(CONTROL_PREFIX);
+        expected.extend_from_slice(format!("data;{}", payload.len()).as_bytes());
+        expected.extend_from_slice(CONTROL_SUFFIX);
+        expected.extend_from_slice(payload);
+
+        assert_eq!(encode_output_frame(payload), expected);
+    }
+
     fn connect_with_retry(addr: SocketAddr) -> TcpStream {
         let started = Instant::now();
         loop {
@@ -662,5 +1156,22 @@ mod tests {
                 Err(err) => panic!("read from ptyshare client stream failed: {err}"),
             }
         }
+    }
+
+    fn resize_control(cols: u16, rows: u16) -> Vec<u8> {
+        let mut frame = Vec::new();
+        frame.extend_from_slice(CONTROL_PREFIX);
+        frame.extend_from_slice(format!("resize;{cols};{rows}").as_bytes());
+        frame.extend_from_slice(CONTROL_SUFFIX);
+        frame
+    }
+
+    fn client_with_size(size: TerminalSize) -> Client {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let _peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        let mut client = Client::new(stream).unwrap();
+        client.size = Some(size);
+        client
     }
 }

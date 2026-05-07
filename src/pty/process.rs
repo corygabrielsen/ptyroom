@@ -12,10 +12,10 @@ use portable_pty::{Child, CommandBuilder, MasterPty, NativePtySystem, PtySize, P
 
 pub struct PtyMaster {
     // Field order matters: `child` is killed/reaped via `terminate_child`
-    // before drop, then `_master` closes the master fd on drop, which sends
+    // before drop, then `master` closes the master fd on drop, which sends
     // SIGHUP to any descendants still attached to the slave.
     child: Box<dyn Child + Send + Sync>,
-    _master: Box<dyn MasterPty + Send>,
+    master: Box<dyn MasterPty + Send>,
     fd: RawFd,
 }
 
@@ -23,6 +23,22 @@ impl PtyMaster {
     #[must_use]
     pub fn fd(&self) -> RawFd {
         self.fd
+    }
+
+    /// Resize the PTY and notify the child side with the platform's
+    /// normal terminal-resize semantics.
+    ///
+    /// # Errors
+    /// The platform PTY resize operation failed.
+    pub fn resize(&mut self, cols: u16, rows: u16) -> anyhow::Result<()> {
+        self.master
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .context("resize PTY")
     }
 
     /// Send SIGKILL to the child and reap it. Idempotent — safe to call
@@ -75,7 +91,7 @@ pub fn spawn(argv: &[&str], cols: u16, rows: u16) -> anyhow::Result<PtyMaster> {
 
     Ok(PtyMaster {
         child,
-        _master: pair.master,
+        master: pair.master,
         fd,
     })
 }

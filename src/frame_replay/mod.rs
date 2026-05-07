@@ -1,7 +1,7 @@
 //! Trace → per-frame [`Frame`] replay.
 //!
-//! Drives a [`vt100::Parser`] through every `"o"` event in the trace,
-//! capturing screen state after each event. Terminal-default bg/fg
+//! Drives a [`vt100::Parser`] through trace output and resize events,
+//! capturing screen state after each output event. Terminal-default bg/fg
 //! and palette overrides come from a sibling [`OscTracker`] that
 //! sniffs the same bytes for OSC 10/11/4/110/111/104 sequences (vt100
 //! only handles OSC 0/1/2/52, so the rest are our responsibility).
@@ -50,7 +50,7 @@ pub const TAIL_DWELL_MS: u32 = 0;
 /// ```
 ///
 /// # Errors
-/// Trace header has zero width or height (otherwise vt100 panics).
+/// Trace header has zero width or height, or a resize event is malformed.
 pub fn replay(
     trace: &Trace,
     defaults: StubColors,
@@ -66,40 +66,69 @@ pub fn replay(
     let mut snapshots = Vec::with_capacity(output_events.len());
     let mut timing = Vec::with_capacity(output_events.len());
 
-    // Frame frame indices (1-based, 4-digit zero-padded) come from
+    // Frame indices (1-based, 4-digit zero-padded) come from
     // the original trace event index — preserves the previous TS
     // implementation's filenames so paint/encode/golden checks line up.
-    for (output_idx, (i, event)) in output_events.iter().copied().enumerate() {
-        let snapshot = state.process_output(event.data.as_bytes());
-        snapshots.push(snapshot);
+    let mut output_idx = 0;
+    for (i, event) in trace.events.iter().enumerate() {
+        match event.kind {
+            EventKind::Output => {
+                let snapshot = state.process_output(event.data.as_bytes());
+                snapshots.push(snapshot);
 
-        let frame = format!("{:04}", i + 1);
-        let next_t = output_events
-            .get(output_idx + 1)
-            .map(|(_, next_event)| next_event.time_s);
-        let dwell_ms = match next_t {
-            Some(t) => {
-                // Round + clamp to [1, u32::MAX]. Negative deltas can't
-                // happen for in-order trace events; saturate to 1 ms
-                // anyway in case of clock drift in malformed traces.
-                let delta = ((t - event.time_s) * 1000.0).round();
-                if delta < 1.0 {
-                    1
-                } else if delta >= f64::from(u32::MAX) {
-                    u32::MAX
-                } else {
-                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                    {
-                        delta as u32
-                    }
-                }
+                let frame = format!("{:04}", i + 1);
+                let next_t = output_events
+                    .get(output_idx + 1)
+                    .map(|(_, next_event)| next_event.time_s);
+                timing.push(TimingEntry {
+                    frame,
+                    dwell_ms: dwell_until_next_output(event.time_s, next_t),
+                });
+                output_idx += 1;
             }
-            None => TAIL_DWELL_MS,
-        };
-        timing.push(TimingEntry { frame, dwell_ms });
+            EventKind::Resize => {
+                let (cols, rows) = parse_resize_event(&event.data)?;
+                state.resize(cols, rows)?;
+            }
+            EventKind::Input => {}
+        }
     }
 
     Ok((snapshots, timing))
+}
+
+fn dwell_until_next_output(time_s: f64, next_output_time_s: Option<f64>) -> u32 {
+    match next_output_time_s {
+        Some(t) => {
+            // Round + clamp to [1, u32::MAX]. Negative deltas can't
+            // happen for in-order trace events; saturate to 1 ms
+            // anyway in case of clock drift in malformed traces.
+            let delta = ((t - time_s) * 1000.0).round();
+            if delta < 1.0 {
+                1
+            } else if delta >= f64::from(u32::MAX) {
+                u32::MAX
+            } else {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                {
+                    delta as u32
+                }
+            }
+        }
+        None => TAIL_DWELL_MS,
+    }
+}
+
+fn parse_resize_event(data: &str) -> anyhow::Result<(u16, u16)> {
+    let Some((cols, rows)) = data.split_once('x') else {
+        anyhow::bail!("malformed resize event: {data:?}");
+    };
+    let cols = cols.parse::<u16>()?;
+    let rows = rows.parse::<u16>()?;
+    if cols == 0 || rows == 0 {
+        anyhow::bail!("resize event has zero dimension: {cols}x{rows}");
+    }
+    Ok((cols, rows))
 }
 
 /// Incremental trace replay state.
@@ -144,6 +173,18 @@ impl ReplayState {
         self.parser.process(bytes);
         self.osc.observe(bytes);
         capture(&self.parser, &self.osc)
+    }
+
+    /// Apply a trace resize event to the terminal model.
+    ///
+    /// # Errors
+    /// Either dimension is zero.
+    pub fn resize(&mut self, cols: u16, rows: u16) -> anyhow::Result<()> {
+        if cols == 0 || rows == 0 {
+            anyhow::bail!("resize has zero dimension: {cols}x{rows}");
+        }
+        self.parser.screen_mut().set_size(rows, cols);
+        Ok(())
     }
 }
 
@@ -258,5 +299,35 @@ mod tests {
         assert_eq!(timing[0].dwell_ms, 1000);
         assert_eq!(timing[1].frame, "0003");
         assert_eq!(timing[1].dwell_ms, TAIL_DWELL_MS);
+    }
+
+    #[test]
+    fn resize_event_changes_replay_geometry_before_next_output() {
+        let trace = Trace {
+            header: TraceHeader {
+                version: 2,
+                width: 10,
+                height: 2,
+                env: std::collections::BTreeMap::default(),
+            },
+            events: vec![
+                TraceEvent {
+                    time_s: 0.0,
+                    kind: EventKind::Resize,
+                    data: "4x2".into(),
+                },
+                TraceEvent {
+                    time_s: 0.1,
+                    kind: EventKind::Output,
+                    data: "abcdef".into(),
+                },
+            ],
+        };
+
+        let (snapshots, timing) = replay(&trace, StubColors::default()).unwrap();
+
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].cols(), 4);
+        assert_eq!(timing[0].frame, "0002");
     }
 }

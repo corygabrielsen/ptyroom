@@ -229,8 +229,17 @@ ptyconnect 127.0.0.1:7000                                 # attach to ptyshare
 `ptyshare` / `ptyconnect` are the first collaborative PTY primitive.
 The host owns one PTY; host stdin and client input bytes are interleaved
 into that PTY; PTY output is broadcast to all clients and written to a
-`.ptytrace`. Slow clients get a bounded output backlog and are
-disconnected rather than being allowed to stall the shared session.
+`.ptytrace`. Late-joining clients receive a bounded replay of recent PTY
+output before live output resumes. `ptyconnect` reports terminal resizes
+from rendering clients, and `ptyshare` resizes the child PTY to the
+smallest known attached rendering terminal so zoomed-in clients do not
+render a wider logical screen than they can display. Resize changes are
+recorded as asciicast resize events. Interactive `ptyconnect` clients
+render that shared screen into their local alternate screen, leaving blank
+space outside the canonical canvas on larger terminals. Host-to-client PTY
+output is length-framed so child output cannot spoof trusted transport
+controls. Slow clients get a bounded output backlog and are disconnected
+rather than being allowed to stall the shared session.
 The transport is intentionally small and does not provide authentication
 or encryption; non-loopback binds require
 `--allow-unauthenticated-public-bind`, and remote sharing should go
