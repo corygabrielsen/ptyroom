@@ -222,11 +222,16 @@ Raw and composed command forms:
 ptytrace <command...>                                      # command → trace
 ptyrender <trace> <out.gif|out.mp4> [--receipt R]          # trace → media
 ptyrecord [--out OUT.ptyrecord] <command...>               # command → trace + MP4 bundle
+termroom host [--listen 127.0.0.1:0] [cmd]                 # open shared terminal room
+termroom join 127.0.0.1:7000                               # join shared terminal room
+termroom demo                                              # local demo room
 ptyshare [--listen 127.0.0.1:0] [--out S.ptytrace] [cmd]   # host shared PTY
 ptyconnect 127.0.0.1:7000                                 # attach to ptyshare
 ```
 
-`ptyshare` / `ptyconnect` are the first collaborative PTY primitive.
+`termroom` is the demo-facing command for collaborative terminals.
+`termroom host` opens a room and prints a `termroom join ...` command for
+peers. `ptyshare` / `ptyconnect` are the lower-level transport tools.
 The host owns one PTY; host stdin and client input bytes are interleaved
 into that PTY; PTY output is broadcast to all clients and written to a
 `.ptytrace`. Late-joining clients receive a bounded replay of recent PTY
