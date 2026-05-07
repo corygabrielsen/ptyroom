@@ -170,7 +170,7 @@ signature over `h(T)`.
 
 ```text
 ssh -L 7000:127.0.0.1:7000 host
-ptyshare --listen 127.0.0.1:7000 -> T
+ptyroom host --listen 127.0.0.1:7000 -> T
 provider-sign(h(T))              -> A
 ```
 

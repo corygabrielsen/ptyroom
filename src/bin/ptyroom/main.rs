@@ -14,10 +14,8 @@ use ptytrace::pty::share::{ShareOpts, host_local_io_notice, run};
     version,
     about = "ptyroom — open or join a shared terminal room",
     long_about = "Open or join a shared terminal room. The host terminal is\n\
-                  connected by default. `ptyroom` is the high-level facade over\n\
-                  the lower-level\n\
-                  `ptyshare` and `ptyconnect` transport tools. The transport has\n\
-                  no built-in auth or encryption; bind loopback and use SSH,\n\
+                  connected by default. The room transport has no built-in auth\n\
+                  or encryption; bind loopback and use SSH,\n\
                   WireGuard, or another trusted tunnel for remote use."
 )]
 struct Cli {

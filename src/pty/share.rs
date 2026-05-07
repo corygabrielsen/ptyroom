@@ -30,9 +30,10 @@ use crate::recording::{DwellMs, TraceBuilder};
 
 const MAX_CLIENT_BACKLOG_BYTES: usize = 1024 * 1024;
 const MAX_JOIN_REPLAY_BYTES: usize = 256 * 1024;
+const PROTOCOL_VERSION: u16 = 1;
 const MAX_CONTROL_BYTES: usize = 1024;
 const SIZE_CHECK_INTERVAL: Duration = Duration::from_millis(250);
-const CONTROL_PREFIX: &[u8] = b"\x1bPptyshare;";
+const CONTROL_PREFIX: &[u8] = b"\x1bPptyroom;";
 const CONTROL_SUFFIX: &[u8] = b"\x1b\\";
 
 #[derive(Debug, Clone)]
@@ -293,13 +294,14 @@ fn accept_ready_clients(
         match listener.accept() {
             Ok((stream, _addr)) => {
                 let mut client = Client::new(stream)?;
+                client.enqueue(&encode_hello_control());
                 client.enqueue(&encode_size_control(current_size));
                 client.enqueue_replay(join_replay);
                 clients.push(client);
                 accepted += 1;
             }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => return Ok(accepted),
-            Err(err) => return Err(err).context("accept ptyshare client"),
+            Err(err) => return Err(err).context("accept ptyroom client"),
         }
     }
 }
@@ -451,6 +453,14 @@ fn encode_size_control(size: TerminalSize) -> Vec<u8> {
     frame
 }
 
+fn encode_hello_control() -> Vec<u8> {
+    let mut frame = Vec::new();
+    frame.extend_from_slice(CONTROL_PREFIX);
+    frame.extend_from_slice(format!("hello;{PROTOCOL_VERSION}").as_bytes());
+    frame.extend_from_slice(CONTROL_SUFFIX);
+    frame
+}
+
 fn encode_output_frame(bytes: &[u8]) -> Vec<u8> {
     let mut frame =
         Vec::with_capacity(CONTROL_PREFIX.len() + 24 + CONTROL_SUFFIX.len() + bytes.len());
@@ -495,6 +505,7 @@ struct Client {
     pending: VecDeque<u8>,
     input_pending: Vec<u8>,
     input_open: bool,
+    protocol_ready: bool,
     size: Option<TerminalSize>,
 }
 
@@ -507,6 +518,7 @@ impl Client {
             pending: VecDeque::new(),
             input_pending: Vec::new(),
             input_open: true,
+            protocol_ready: false,
             size: None,
         })
     }
@@ -574,7 +586,9 @@ impl Client {
                 }
                 Ok(n) => {
                     self.input_pending.extend_from_slice(&buf[..n]);
-                    self.flush_pending_input(pty_fd)?;
+                    if !self.flush_pending_input(pty_fd)? {
+                        return Ok(false);
+                    }
                 }
                 Err(err) if err.kind() == io::ErrorKind::WouldBlock => return Ok(true),
                 Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
@@ -583,21 +597,28 @@ impl Client {
         }
     }
 
-    fn flush_pending_input(&mut self, pty_fd: i32) -> anyhow::Result<()> {
+    fn flush_pending_input(&mut self, pty_fd: i32) -> anyhow::Result<bool> {
         loop {
             if self.input_pending.is_empty() {
-                return Ok(());
+                return Ok(true);
             }
             let Some(start) = find_subslice(&self.input_pending, CONTROL_PREFIX) else {
+                if !self.protocol_ready {
+                    let keep = prefix_overlap(&self.input_pending, CONTROL_PREFIX);
+                    return Ok(keep > 0 && self.input_pending.len() <= MAX_CONTROL_BYTES);
+                }
                 let keep = prefix_overlap(&self.input_pending, CONTROL_PREFIX);
                 let write_len = self.input_pending.len().saturating_sub(keep);
                 if write_len > 0 {
                     write_all(pty_fd, &self.input_pending[..write_len])?;
                     self.input_pending.drain(..write_len);
                 }
-                return Ok(());
+                return Ok(true);
             };
             if start > 0 {
+                if !self.protocol_ready {
+                    return Ok(false);
+                }
                 write_all(pty_fd, &self.input_pending[..start])?;
                 self.input_pending.drain(..start);
                 continue;
@@ -608,22 +629,31 @@ impl Client {
                 find_subslice(&self.input_pending[suffix_search_start..], CONTROL_SUFFIX)
             else {
                 if self.input_pending.len() > MAX_CONTROL_BYTES {
+                    if !self.protocol_ready {
+                        return Ok(false);
+                    }
                     write_all(pty_fd, &self.input_pending[..1])?;
                     self.input_pending.drain(..1);
                     continue;
                 }
-                return Ok(());
+                return Ok(true);
             };
             let payload_start = CONTROL_PREFIX.len();
             let payload_end = suffix_search_start + end_rel;
             let payload = self.input_pending[payload_start..payload_end].to_vec();
-            self.apply_control(&payload);
+            if !self.apply_control(&payload) {
+                return Ok(false);
+            }
             self.input_pending
                 .drain(..payload_end + CONTROL_SUFFIX.len());
         }
     }
 
     fn flush_pending_input_as_raw(&mut self, pty_fd: i32) -> anyhow::Result<()> {
+        if !self.protocol_ready {
+            self.input_pending.clear();
+            return Ok(());
+        }
         if !self.input_pending.is_empty() {
             write_all(pty_fd, &self.input_pending)?;
             self.input_pending.clear();
@@ -631,22 +661,35 @@ impl Client {
         Ok(())
     }
 
-    fn apply_control(&mut self, payload: &[u8]) {
+    fn apply_control(&mut self, payload: &[u8]) -> bool {
         let Ok(text) = std::str::from_utf8(payload) else {
-            return;
+            return self.protocol_ready;
         };
         let mut parts = text.split(';');
-        if parts.next() != Some("resize") {
-            return;
-        }
-        let Some(cols) = parts.next().and_then(|value| value.parse::<u16>().ok()) else {
-            return;
-        };
-        let Some(rows) = parts.next().and_then(|value| value.parse::<u16>().ok()) else {
-            return;
-        };
-        if cols > 0 && rows > 0 && parts.next().is_none() {
-            self.size = Some(TerminalSize { cols, rows });
+        match parts.next() {
+            Some("hello") => {
+                let Some(version) = parts.next().and_then(|value| value.parse::<u16>().ok()) else {
+                    return false;
+                };
+                if version == PROTOCOL_VERSION && parts.next().is_none() {
+                    self.protocol_ready = true;
+                    return true;
+                }
+                false
+            }
+            Some("resize") if self.protocol_ready => {
+                let Some(cols) = parts.next().and_then(|value| value.parse::<u16>().ok()) else {
+                    return true;
+                };
+                let Some(rows) = parts.next().and_then(|value| value.parse::<u16>().ok()) else {
+                    return true;
+                };
+                if cols > 0 && rows > 0 && parts.next().is_none() {
+                    self.size = Some(TerminalSize { cols, rows });
+                }
+                true
+            }
+            _ => self.protocol_ready,
         }
     }
 
@@ -776,8 +819,7 @@ fn handle_pty_output(
         stats,
     } = sinks;
     if local_output {
-        let stdout_borrow = unsafe { BorrowedFd::borrow_raw(stdout_fd) };
-        let _ = write(stdout_borrow, bytes);
+        let _ = write_all(stdout_fd, bytes);
     }
     let client_frame = encode_output_frame(bytes);
     join_replay.remember(&client_frame);
@@ -828,9 +870,11 @@ fn resolve_argv(argv: Vec<String>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use std::io::ErrorKind;
+    use std::os::fd::AsRawFd;
 
     use super::*;
     use crate::trace::{EventKind, Trace};
+    use nix::unistd::{pipe, read as nix_read};
 
     #[test]
     fn default_share_opts_bind_a_trace_name() {
@@ -1049,6 +1093,41 @@ mod tests {
     }
 
     #[test]
+    fn client_raw_input_before_protocol_hello_disconnects() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        let mut client = Client::new(stream).unwrap();
+        let (pty_r, pty_w) = pipe().unwrap();
+
+        peer.write_all(b"legacy input\n").unwrap();
+
+        assert!(!client.drain_input_to_pty(pty_w.as_raw_fd()).unwrap());
+        drop(pty_w);
+        let mut buf = [0_u8; 16];
+        assert_eq!(nix_read(&pty_r, &mut buf).unwrap(), 0);
+    }
+
+    #[test]
+    fn client_accepts_protocol_hello_before_raw_input() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        let mut client = Client::new(stream).unwrap();
+        let (pty_r, pty_w) = pipe().unwrap();
+        let mut input = encode_hello_control();
+        input.extend_from_slice(b"hello\n");
+
+        peer.write_all(&input).unwrap();
+        assert!(client.drain_input_to_pty(pty_w.as_raw_fd()).unwrap());
+        drop(pty_w);
+
+        let mut output = [0_u8; 16];
+        let n = nix_read(&pty_r, &mut output).unwrap();
+        assert_eq!(&output[..n], b"hello\n");
+    }
+
+    #[test]
     fn share_broadcasts_client_driven_output_to_all_clients() {
         let tmp = tempfile::tempdir().unwrap();
         let out = tmp.path().join("shared-broadcast.ptytrace");
@@ -1169,7 +1248,7 @@ mod tests {
 
     #[test]
     fn output_frames_preserve_control_lookalikes_as_data() {
-        let payload = b"before\x1bPptyshare;size;1;1\x1b\\after";
+        let payload = b"before\x1bPptyroom;size;1;1\x1b\\after";
         let mut expected = Vec::new();
         expected.extend_from_slice(CONTROL_PREFIX);
         expected.extend_from_slice(format!("data;{}", payload.len()).as_bytes());
@@ -1219,7 +1298,10 @@ mod tests {
         let started = Instant::now();
         loop {
             match TcpStream::connect(addr) {
-                Ok(stream) => return stream,
+                Ok(mut stream) => {
+                    stream.write_all(&encode_hello_control()).unwrap();
+                    return stream;
+                }
                 Err(err) if started.elapsed() < Duration::from_secs(2) => {
                     assert!(
                         err.kind() == std::io::ErrorKind::ConnectionRefused
@@ -1227,7 +1309,7 @@ mod tests {
                     );
                     std::thread::sleep(Duration::from_millis(10));
                 }
-                Err(err) => panic!("connect to ptyshare test server failed: {err}"),
+                Err(err) => panic!("connect to ptyroom test server failed: {err}"),
             }
         }
     }
@@ -1254,7 +1336,7 @@ mod tests {
                         String::from_utf8_lossy(&bytes)
                     );
                 }
-                Err(err) => panic!("read from ptyshare client stream failed: {err}"),
+                Err(err) => panic!("read from ptyroom client stream failed: {err}"),
             }
         }
     }

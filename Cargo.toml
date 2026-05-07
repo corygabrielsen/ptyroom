@@ -22,16 +22,7 @@ path = "src/lib.rs"
 #   name "ptyrender", auto-discovered from the dir).
 # - The composed capture+render CLI is at src/bin/ptyrecord/main.rs
 #   (binary name "ptyrecord", auto-discovered from the dir).
-# - The high-level shared terminal facade is at
-#   src/bin/ptyroom/main.rs.
-# - The collaborative session tools are at src/bin/ptyshare/main.rs
-#   and src/bin/ptyconnect/main.rs.
-# - stress-child is explicit because the test integration uses the
-#   hyphenated form via env!("CARGO_BIN_EXE_stress-child").
-
-[[bin]]
-name = "stress-child"
-path = "src/bin/stress_child.rs"
+# - The shared terminal CLI is at src/bin/ptyroom/main.rs.
 
 [dependencies]
 ab_glyph = "0.2"

@@ -1,9 +1,8 @@
 //! Client side of a shared PTY session.
 //!
-//! This is the shared implementation behind both the `ptyconnect` binary
-//! and `ptyroom join`. Interactive stdout renders into an alternate-screen
-//! viewport; non-terminal stdout receives decoded PTY output bytes for
-//! pipeline use.
+//! This is the implementation behind `ptyroom join`. Interactive stdout
+//! renders into an alternate-screen viewport; non-terminal stdout receives
+//! decoded PTY output bytes for pipeline use.
 
 use std::io;
 use std::io::IsTerminal;
@@ -20,9 +19,10 @@ use nix::sys::termios::{SetArg, Termios, cfmakeraw, tcgetattr, tcsetattr};
 use nix::unistd::{read, write};
 
 const RESIZE_CHECK_INTERVAL: Duration = Duration::from_millis(250);
+const PROTOCOL_VERSION: u16 = 1;
 const MAX_CONTROL_BYTES: usize = 1024;
 const MAX_DATA_FRAME_BYTES: usize = 16 * 1024 * 1024;
-const CONTROL_PREFIX: &[u8] = b"\x1bPptyshare;";
+const CONTROL_PREFIX: &[u8] = b"\x1bPptyroom;";
 const CONTROL_SUFFIX: &[u8] = b"\x1b\\";
 
 /// Connect this process's terminal to a shared PTY server.
@@ -69,8 +69,10 @@ fn relay_fds_with_output(
     let mut buf = [0_u8; 4096];
     let mut stdin_open = true;
     let mut last_size = None;
+    let mut protocol_ready = false;
     let mut server_stream = ServerStream::default();
     let reports_size = output.reports_size();
+    write_all(stream_fd, &encode_hello_control())?;
     send_resize_if_changed(stream_fd, stdout_fd, &mut last_size)?;
 
     loop {
@@ -95,7 +97,7 @@ fn relay_fds_with_output(
             Ok(_) => {}
             Err(Errno::EINTR) if termination_requested() => return Ok(()),
             Err(Errno::EINTR) => continue,
-            Err(err) => return Err(anyhow!("poll ptyconnect: {err}")),
+            Err(err) => return Err(anyhow!("poll ptyroom join: {err}")),
         }
 
         let stdin_revents = stdin_index
@@ -121,14 +123,30 @@ fn relay_fds_with_output(
             if rev.intersects(PollFlags::POLLIN | PollFlags::POLLHUP) {
                 let stream_borrow = unsafe { BorrowedFd::borrow_raw(stream_fd) };
                 match read(stream_borrow, &mut buf) {
-                    Ok(0) | Err(Errno::EIO) => return Ok(()),
+                    Ok(0) | Err(Errno::EIO) => {
+                        if protocol_ready {
+                            return Ok(());
+                        }
+                        return Err(anyhow!("ptyroom host closed before protocol hello"));
+                    }
                     Ok(n) => {
                         for event in server_stream.push(&buf[..n]) {
                             match event {
+                                ServerEvent::Hello(version) => {
+                                    if version != PROTOCOL_VERSION {
+                                        return Err(anyhow!(
+                                            "unsupported ptyroom protocol version {version}; \
+                                             expected {PROTOCOL_VERSION}"
+                                        ));
+                                    }
+                                    protocol_ready = true;
+                                }
                                 ServerEvent::Output(bytes) => {
+                                    ensure_protocol_ready(protocol_ready)?;
                                     output.write_output(stdout_fd, &bytes)?;
                                 }
                                 ServerEvent::Size(size) => {
+                                    ensure_protocol_ready(protocol_ready)?;
                                     output.resize(stdout_fd, size)?;
                                 }
                             }
@@ -136,13 +154,21 @@ fn relay_fds_with_output(
                     }
                     Err(Errno::EINTR) if termination_requested() => return Ok(()),
                     Err(Errno::EINTR) => {}
-                    Err(err) => return Err(anyhow!("read ptyshare socket: {err}")),
+                    Err(err) => return Err(anyhow!("read ptyroom socket: {err}")),
                 }
             }
             if rev.intersects(PollFlags::POLLERR | PollFlags::POLLNVAL) {
                 return Ok(());
             }
         }
+    }
+}
+
+fn ensure_protocol_ready(ready: bool) -> anyhow::Result<()> {
+    if ready {
+        Ok(())
+    } else {
+        Err(anyhow!("ptyroom host did not send protocol hello"))
     }
 }
 
@@ -290,6 +316,7 @@ fn render_viewport_full(screen: &vt100::Screen, local_size: Option<TerminalSize>
 
 #[derive(Debug, PartialEq, Eq)]
 enum ServerEvent {
+    Hello(u16),
     Output(Vec<u8>),
     Size(TerminalSize),
 }
@@ -353,6 +380,7 @@ impl ServerStream {
             let payload = self.pending[payload_start..payload_end].to_vec();
             let frame = self.pending.drain(..frame_end).collect::<Vec<_>>();
             match parse_server_control(&payload) {
+                Some(ServerControl::Hello(version)) => events.push(ServerEvent::Hello(version)),
                 Some(ServerControl::Size(size)) => events.push(ServerEvent::Size(size)),
                 Some(ServerControl::Data(len)) => {
                     self.pending_data_len = Some(len);
@@ -364,6 +392,7 @@ impl ServerStream {
 }
 
 enum ServerControl {
+    Hello(u16),
     Size(TerminalSize),
     Data(usize),
 }
@@ -372,6 +401,13 @@ fn parse_server_control(payload: &[u8]) -> Option<ServerControl> {
     let text = std::str::from_utf8(payload).ok()?;
     let mut parts = text.split(';');
     match parts.next()? {
+        "hello" => {
+            let version = parts.next()?.parse::<u16>().ok()?;
+            if parts.next().is_some() {
+                return None;
+            }
+            Some(ServerControl::Hello(version))
+        }
         "size" => {
             let cols = parts.next()?.parse::<u16>().ok()?;
             let rows = parts.next()?.parse::<u16>().ok()?;
@@ -389,6 +425,14 @@ fn parse_server_control(payload: &[u8]) -> Option<ServerControl> {
         }
         _ => None,
     }
+}
+
+fn encode_hello_control() -> Vec<u8> {
+    let mut frame = Vec::new();
+    frame.extend_from_slice(CONTROL_PREFIX);
+    frame.extend_from_slice(format!("hello;{PROTOCOL_VERSION}").as_bytes());
+    frame.extend_from_slice(CONTROL_SUFFIX);
+    frame
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -461,10 +505,10 @@ fn write_all(fd: RawFd, mut bytes: &[u8]) -> anyhow::Result<()> {
     while !bytes.is_empty() {
         let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
         match write(borrowed, bytes) {
-            Ok(0) => anyhow::bail!("ptyconnect write returned 0"),
+            Ok(0) => anyhow::bail!("ptyroom join write returned 0"),
             Ok(n) => bytes = &bytes[n..],
             Err(Errno::EINTR) => {}
-            Err(err) => return Err(anyhow!("ptyconnect write failed: {err}")),
+            Err(err) => return Err(anyhow!("ptyroom join write failed: {err}")),
         }
     }
     Ok(())
@@ -506,8 +550,8 @@ mod tests {
 
     use super::{
         OutputSink, ServerEvent, ServerStream, TerminalSize, ViewportRenderer,
-        encode_resize_control, relay_fds, relay_fds_with_output, render_viewport,
-        render_viewport_full,
+        encode_hello_control, encode_resize_control, relay_fds, relay_fds_with_output,
+        render_viewport, render_viewport_full,
     };
 
     #[test]
@@ -518,8 +562,11 @@ mod tests {
             let (mut socket, _) = listener.accept().unwrap();
             let mut input = Vec::new();
             socket.read_to_end(&mut input).unwrap();
-            assert_eq!(input, b"ping");
-            socket.write_all(b"pong").unwrap();
+            let mut expected = encode_hello_control();
+            expected.extend_from_slice(b"ping");
+            assert_eq!(input, expected);
+            socket.write_all(&encode_hello_control()).unwrap();
+            socket.write_all(&server_data_frame(b"pong")).unwrap();
         });
         let stream = TcpStream::connect(addr).unwrap();
         let (stdin_r, stdin_w) = pipe().unwrap();
@@ -548,6 +595,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = thread::spawn(move || {
             let (mut socket, _) = listener.accept().unwrap();
+            socket.write_all(&encode_hello_control()).unwrap();
             socket
                 .set_read_timeout(Some(std::time::Duration::from_secs(2)))
                 .unwrap();
@@ -596,13 +644,54 @@ mod tests {
     }
 
     #[test]
+    fn relay_rejects_output_before_protocol_hello() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.write_all(&server_data_frame(b"pong")).unwrap();
+        });
+        let stream = TcpStream::connect(addr).unwrap();
+        let (stdin_r, stdin_w) = pipe().unwrap();
+        let (_stdout_r, stdout_w) = pipe().unwrap();
+        drop(stdin_w);
+
+        let err = relay_fds(&stream, stdin_r.as_raw_fd(), stdout_w.as_raw_fd()).unwrap_err();
+
+        assert!(err.to_string().contains("protocol hello"));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn relay_rejects_unsupported_protocol_version() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.write_all(b"\x1bPptyroom;hello;2\x1b\\").unwrap();
+        });
+        let stream = TcpStream::connect(addr).unwrap();
+        let (stdin_r, stdin_w) = pipe().unwrap();
+        let (_stdout_r, stdout_w) = pipe().unwrap();
+        drop(stdin_w);
+
+        let err = relay_fds(&stream, stdin_r.as_raw_fd(), stdout_w.as_raw_fd()).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("unsupported ptyroom protocol version")
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
     fn resize_control_is_dcs_framed() {
         assert_eq!(
             encode_resize_control(TerminalSize {
                 cols: 100,
                 rows: 30
             }),
-            b"\x1bPptyshare;resize;100;30\x1b\\"
+            b"\x1bPptyroom;resize;100;30\x1b\\"
         );
     }
 
@@ -611,12 +700,22 @@ mod tests {
         let mut stream = ServerStream::default();
 
         assert_eq!(
-            stream.push(b"before\x1bPptyshare;size;40;10\x1b\\after"),
+            stream.push(b"before\x1bPptyroom;size;40;10\x1b\\after"),
             vec![
                 ServerEvent::Output(b"before".to_vec()),
                 ServerEvent::Size(TerminalSize { cols: 40, rows: 10 }),
                 ServerEvent::Output(b"after".to_vec()),
             ]
+        );
+    }
+
+    #[test]
+    fn server_hello_control_is_reported() {
+        let mut stream = ServerStream::default();
+
+        assert_eq!(
+            stream.push(&encode_hello_control()),
+            vec![ServerEvent::Hello(1)]
         );
     }
 
@@ -628,7 +727,7 @@ mod tests {
             stream.push(b"hello\x1bPpty"),
             vec![ServerEvent::Output(b"hello".to_vec()),]
         );
-        assert_eq!(stream.push(b"share;size;80;24"), Vec::new());
+        assert_eq!(stream.push(b"room;size;80;24"), Vec::new());
         assert_eq!(
             stream.push(b"\x1b\\world"),
             vec![
@@ -641,7 +740,7 @@ mod tests {
     #[test]
     fn server_data_frame_emits_control_lookalike_bytes_as_output() {
         let mut stream = ServerStream::default();
-        let payload = b"before\x1bPptyshare;size;1;1\x1b\\after";
+        let payload = b"before\x1bPptyroom;size;1;1\x1b\\after";
         let frame = server_data_frame(payload);
 
         assert_eq!(
@@ -741,7 +840,7 @@ mod tests {
 
     fn server_data_frame(payload: &[u8]) -> Vec<u8> {
         let mut frame = Vec::new();
-        frame.extend_from_slice(b"\x1bPptyshare;");
+        frame.extend_from_slice(b"\x1bPptyroom;");
         frame.extend_from_slice(format!("data;{}", payload.len()).as_bytes());
         frame.extend_from_slice(b"\x1b\\");
         frame.extend_from_slice(payload);

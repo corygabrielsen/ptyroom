@@ -1,10 +1,9 @@
 //! PtyTracer-layer stress tests.
 //!
 //! These tests exercise the recorder's timing-sensitive primitives
-//! against a synthetic host child (`target/debug/stress-child` or the
-//! release equivalent, built from `src/bin/stress_child.rs`) and
-//! assert library-level correctness contracts directly — not through
-//! any application-layer script.
+//! against a synthetic host child compiled from
+//! `tests/fixtures/stress_child.rs` and assert library-level correctness
+//! contracts directly — not through any application-layer script.
 //!
 //! Architectural rule: this file imports `ptytrace::*` only —
 //! it must not depend on any consumer crate. The recorder library is
@@ -12,7 +11,10 @@
 //! Consumer-layer integration coverage belongs in the consumer crate.
 
 use std::collections::HashSet;
+use std::path::PathBuf;
+use std::process::Command;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
@@ -32,12 +34,30 @@ fn ms(n: u64) -> Duration {
     Duration::from_millis(n)
 }
 
-/// Path to the `stress-child` binary cargo built alongside this test.
-/// Cargo sets `CARGO_BIN_EXE_<name>` for every `[[bin]]` listed in
-/// `Cargo.toml` whenever it builds an integration test, so we never
-/// need to hard-code a debug/release path.
 fn fixture_path() -> String {
-    env!("CARGO_BIN_EXE_stress-child").to_string()
+    static PATH: OnceLock<PathBuf> = OnceLock::new();
+    PATH.get_or_init(build_stress_child)
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn build_stress_child() -> PathBuf {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let src = manifest_dir.join("tests/fixtures/stress_child.rs");
+    let out_dir = std::env::var_os("CARGO_TARGET_TMPDIR")
+        .map_or_else(|| manifest_dir.join("target/test-fixtures"), PathBuf::from);
+    std::fs::create_dir_all(&out_dir).expect("create stress fixture output dir");
+    let exe = out_dir.join("stress-child");
+    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    let status = Command::new(rustc)
+        .arg("--edition=2024")
+        .arg(src)
+        .arg("-o")
+        .arg(&exe)
+        .status()
+        .expect("compile stress fixture");
+    assert!(status.success(), "stress fixture compilation failed");
+    exe
 }
 
 fn run_trace() -> anyhow::Result<Trace> {

@@ -1,32 +1,38 @@
 # ptytrace
 
-`ptytrace` records interactive terminal sessions under a PTY, stores the
-raw trace, and renders that trace into GIF/MP4. It is built for repeatable
-terminal media, verifiable artifacts, and shared terminal sessions.
+`ptytrace` gives you shareable PTY rooms backed by durable terminal
+traces. Start a room, let other terminals join it, and keep the session as
+a `.ptytrace` artifact that can be replayed, rendered, verified, or bundled
+later.
 
-The central artifact is a `.ptytrace`: an asciinema-shaped event log that
-can be inspected, verified, stitched, rendered again, or bundled with media
-as a `.ptyrecord`.
+The top-level command is `ptyroom`:
+
+```bash
+ptyroom host --listen 127.0.0.1:7373 --out /tmp/room.ptytrace bash
+ptyroom join 127.0.0.1:7373
+```
+
+The room is live and collaborative; the trace is the durable evidence.
+Everything else in this crate exists to capture, render, verify, or package
+that PTY trace.
 
 ## Command Map
 
 Main commands:
 
 ```bash
+ptyroom host [--listen 127.0.0.1:0] [cmd]                  # shared room host
+ptyroom join 127.0.0.1:7000                                # shared room client
 ptytrace <command...>                                      # command -> trace
 ptytrace capture [--out PATH]                             # live shell -> trace
 ptytrace run <script> --out <trace|media>                 # script -> trace/media
 ptyrender <trace> <out.gif|out.mp4> [--receipt R]          # trace -> media
 ptyrecord [--out OUT.ptyrecord] <command...>               # command -> bundle
-ptyroom host [--listen 127.0.0.1:0] [cmd]                  # shared room host
-ptyroom join 127.0.0.1:7000                                # shared room client
 ```
 
 Lower-level or specialized commands:
 
 ```bash
-ptyshare [--listen 127.0.0.1:0] [--out S.ptytrace] [cmd]   # shared PTY host
-ptyconnect 127.0.0.1:7000                                  # shared PTY client
 ptytrace render <trace> <out> [--receipt R] [--spec S]
 ptytrace verify --witness R --trace T [--contract C] [--attestation A]
 ptytrace check --trace T --contract C
@@ -45,6 +51,37 @@ ptytrace debug inspect <frame>
 ```
 
 ## Quickstart
+
+Host a room:
+
+```bash
+ptyroom host --listen 127.0.0.1:7373 --out /tmp/room.ptytrace bash
+```
+
+Join from another terminal:
+
+```bash
+ptyroom join 127.0.0.1:7373
+```
+
+Both the host and joined clients type into the same child PTY. The host
+terminal participates by default; use `--no-local-input` only when joined
+clients should be the exclusive input source.
+
+When the room ends, `/tmp/room.ptytrace` is a normal trace:
+
+```bash
+ptyrender /tmp/room.ptytrace room.gif
+```
+
+For remote use, bind loopback and carry the TCP stream through SSH,
+WireGuard, or another authenticated tunnel. The built-in transport has no
+authentication or encryption. Shared-terminal details are in
+[`docs/shared-terminals.md`](docs/shared-terminals.md).
+
+## Common Workflows
+
+### Script a Reproducible Recording
 
 Write a script that targets a local shell:
 
@@ -71,8 +108,6 @@ ptytrace run demo.script --out demo.gif
 and `SetCold` targets are available when a recording needs a hermetic
 environment. The full DSL is documented in
 [`docs/script-grammar.md`](docs/script-grammar.md).
-
-## Common Workflows
 
 ### Record a Command
 
@@ -129,23 +164,12 @@ ptyrender demo.ptytrace demo.mp4 --receipt demo.mp4.witness.json
 step. The `ptytrace debug ...` commands expose those stages separately
 when intermediate artifacts are useful.
 
-### Share a Terminal Room
+### Inspect the Room Protocol
 
-Use `ptyroom` for collaborative terminal sessions:
-
-```bash
-ptyroom host --listen 127.0.0.1:7373 --out /tmp/room.ptytrace bash
-ptyroom join 127.0.0.1:7373
-```
-
-The host terminal is interactive by default. Use `--no-local-input` only
-when joined clients should be the exclusive input source.
-
-`ptyshare` and `ptyconnect` are the lower-level transport tools behind
-`ptyroom`. Shared-terminal behavior is documented in
-[`docs/shared-terminals.md`](docs/shared-terminals.md), and the byte
-protocol is documented in
-[`docs/ptyshare-protocol.md`](docs/ptyshare-protocol.md).
+`ptyroom host` owns the child PTY and accepts joined clients.
+`ptyroom join` connects a local terminal to that room. The byte protocol
+between those two subcommands is documented in
+[`docs/ptyroom-protocol.md`](docs/ptyroom-protocol.md).
 
 ## Verification
 
@@ -273,7 +297,7 @@ cargo build --bins
 
 Stress coverage for PTY timing primitives lives in
 [`tests/ptytrace_stress.rs`](tests/ptytrace_stress.rs) and uses the generic
-test child in [`src/bin/stress_child.rs`](src/bin/stress_child.rs).
+test child in [`tests/fixtures/stress_child.rs`](tests/fixtures/stress_child.rs).
 Consumer-specific golden media belongs in consumer crates, not in
 `ptytrace`.
 
@@ -281,7 +305,7 @@ Consumer-specific golden media belongs in consumer crates, not in
 
 - [`docs/script-grammar.md`](docs/script-grammar.md)
 - [`docs/shared-terminals.md`](docs/shared-terminals.md)
-- [`docs/ptyshare-protocol.md`](docs/ptyshare-protocol.md)
+- [`docs/ptyroom-protocol.md`](docs/ptyroom-protocol.md)
 - [`docs/ptyrecord-format.md`](docs/ptyrecord-format.md)
 - [`docs/provenance-anchors.md`](docs/provenance-anchors.md)
 - [`docs/determinism-audit.md`](docs/determinism-audit.md)

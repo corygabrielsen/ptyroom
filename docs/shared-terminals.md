@@ -1,10 +1,7 @@
 # Shared Terminals
 
-`ptyroom` is the user-facing shared-terminal command. It wraps the
-lower-level `ptyshare` server and `ptyconnect` client transport behind
-explicit `host` and `join` operations.
-
-Use `ptyroom` unless you are testing the transport directly:
+`ptyroom` is the shared-terminal command. It exposes explicit `host` and
+`join` operations:
 
 ```bash
 ptyroom host \
@@ -26,21 +23,16 @@ process should run as a headless relay.
 ## Layers
 
 ```text
-ptyroom host ─┐
-               ├── pty::share ── child PTY ── .ptytrace
-ptyshare ──────┘                     │
-                                     └── framed output to clients
+ptyroom host ── pty::share ── child PTY ── .ptytrace
+                                   │
+                                   └── framed output to clients
 
-ptyroom join ─┐
-               ├── pty::connect ── local terminal viewport or stdout
-ptyconnect ────┘
+ptyroom join ── pty::connect ── local terminal viewport or stdout
 ```
 
 - `ptyroom` is the stable shared-terminal command.
-- `ptyshare` is the transport-level host command.
-- `ptyconnect` is the transport-level client command.
-- `pty::share` and `pty::connect` are the shared library
-  implementations used by those binaries.
+- `pty::share` hosts one shared PTY over TCP.
+- `pty::connect` attaches a local terminal to an existing room.
 
 ## Session Model
 
@@ -59,11 +51,11 @@ stalling the PTY owner, recorder, or other clients.
 
 ## Geometry
 
-`ptyshare` owns one canonical child PTY size. Rendering participants
+`ptyroom host` owns one canonical child PTY size. Rendering participants
 report terminal size:
 
 - the host terminal, when local output is enabled;
-- interactive `ptyconnect` or `ptyroom join` clients.
+- interactive `ptyroom join` clients.
 
 The canonical size is the smallest known rendering terminal. This is the
 tmux-like rule that prevents a zoomed-in participant from seeing a wider
@@ -99,4 +91,4 @@ remote use, put the TCP stream behind SSH, WireGuard, a private overlay
 network, or another authenticated tunnel.
 
 The raw byte protocol is documented in
-[`ptyshare-protocol.md`](ptyshare-protocol.md).
+[`ptyroom-protocol.md`](ptyroom-protocol.md).

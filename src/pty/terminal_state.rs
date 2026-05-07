@@ -29,7 +29,7 @@ pub const fn child_output_restore_sequence() -> &'static [u8] {
     GENERAL_RESTORE_SEQUENCE
 }
 
-/// Cleanup for `ptyconnect` viewport mode.
+/// Cleanup for `ptyroom join` viewport mode.
 #[must_use]
 pub const fn viewport_restore_sequence() -> &'static [u8] {
     GENERAL_RESTORE_SEQUENCE
