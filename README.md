@@ -222,37 +222,34 @@ Raw and composed command forms:
 ptytrace <command...>                                      # command → trace
 ptyrender <trace> <out.gif|out.mp4> [--receipt R]          # trace → media
 ptyrecord [--out OUT.ptyrecord] <command...>               # command → trace + MP4 bundle
-termroom host [--listen 127.0.0.1:0] [cmd]                 # open shared terminal room
-termroom join 127.0.0.1:7000                               # join shared terminal room
-termroom demo                                              # local demo room
+ptyroom host [--listen 127.0.0.1:0] [cmd]                  # open shared terminal room
+ptyroom join 127.0.0.1:7000                                # join shared terminal room
 ptyshare [--listen 127.0.0.1:0] [--out S.ptytrace] [cmd]   # host shared PTY
 ptyconnect 127.0.0.1:7000                                 # attach to ptyshare
 ```
 
-`termroom` is the demo-facing command for collaborative terminals.
-`termroom host` opens a room and prints a `termroom join ...` command for
-peers. `ptyshare` / `ptyconnect` are the lower-level transport tools.
-The host owns one PTY; host stdin and client input bytes are interleaved
-into that PTY; PTY output is broadcast to all clients and written to a
-`.ptytrace`. Late-joining clients receive a bounded replay of recent PTY
-output before live output resumes. `ptyconnect` reports terminal resizes
-from rendering clients, and `ptyshare` resizes the child PTY to the
-smallest known attached rendering terminal so zoomed-in clients do not
-render a wider logical screen than they can display. Resize changes are
-recorded as asciicast resize events. Interactive `ptyconnect` clients
-render that shared screen into their local alternate screen, leaving blank
-space outside the canonical canvas on larger terminals. Host-to-client PTY
-output is length-framed so child output cannot spoof trusted transport
-controls. Slow clients get a bounded output backlog and are disconnected
-rather than being allowed to stall the shared session.
-The transport is intentionally small and does not provide authentication
-or encryption; non-loopback binds require
-`--allow-unauthenticated-public-bind`, and remote sharing should go
-through SSH, WireGuard, or another authenticated tunnel.
+Use `ptyroom` for shared-terminal rooms:
 
-`ptyconnect` works interactively and in pipelines: after piped stdin
-closes, it keeps reading the shared session until the server closes.
-The raw stream contract is documented in
+```bash
+ptyroom host --listen 127.0.0.1:7373 --out /tmp/room.ptytrace bash
+ptyroom join 127.0.0.1:7373
+```
+
+`ptyroom host` opens a room and prints the exact `ptyroom join ...`
+command for peers. The host terminal is interactive by default; use
+`--no-local-input` only when input should come exclusively from joined
+clients. `ptyshare` and `ptyconnect` are the lower-level transport tools
+behind `ptyroom`.
+
+The host owns one PTY. Host stdin and client input bytes are interleaved
+into that PTY; PTY output is broadcast to all clients and written to a
+`.ptytrace`. `ptyconnect` works interactively and in pipelines: after
+piped stdin closes, it keeps reading the shared session until the server
+closes.
+
+Shared-terminal behavior is documented in
+[`docs/shared-terminals.md`](docs/shared-terminals.md). The raw stream
+contract is documented in
 [`docs/ptyshare-protocol.md`](docs/ptyshare-protocol.md).
 
 The `ptytrace` binary also exposes named subcommands:

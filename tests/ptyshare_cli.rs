@@ -1,6 +1,10 @@
+mod common;
+
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::process::{Child, Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use common::{contains_bytes, drain_remaining_stderr, wait_child_stdout_until, wait_with_timeout};
 
 #[test]
 fn ptyconnect_pipeline_receives_ptyshare_command_output() {
@@ -107,7 +111,15 @@ fn ptyconnect_late_join_decodes_replayed_output() {
         "-lc",
         "printf 'ready\\n'; read line; printf 'late:%s\\n' \"$line\"",
     ]);
-    std::thread::sleep(Duration::from_millis(200));
+    let mut observer = spawn_ptyconnect_with_input(&addr, b"");
+    let ready_output = wait_child_stdout_until(&mut observer, b"ready", Duration::from_secs(5));
+    assert!(
+        contains_bytes(&ready_output, b"ready"),
+        "observer stdout was {:?}",
+        String::from_utf8_lossy(&ready_output)
+    );
+    let _ = observer.kill();
+    let _ = observer.wait();
 
     let late = spawn_ptyconnect_with_input(&addr, b"hello\n");
     let late_output = wait_with_timeout(late, Duration::from_secs(5));
@@ -174,6 +186,39 @@ fn child_output_can_contain_ptyshare_control_lookalike() {
     assert!(trace_path.exists());
 }
 
+#[test]
+fn ptyshare_warns_when_local_input_is_disabled() {
+    let tmp = tempfile::tempdir().unwrap();
+    let trace_path = tmp.path().join("shared-no-local-input.ptytrace");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_ptyshare"))
+        .args([
+            "--listen",
+            "127.0.0.1:0",
+            "--no-local-input",
+            "--max-secs",
+            "0",
+            "--out",
+            trace_path.to_str().unwrap(),
+            "sh",
+            "-lc",
+            "true",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "ptyshare failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("host input disabled"),
+        "ptyshare stderr was {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 fn spawn_ptyshare(args: &[&str]) -> (Child, String) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_ptyshare"))
         .args(args)
@@ -198,14 +243,9 @@ fn spawn_ptyshare(args: &[&str]) -> (Child, String) {
         .and_then(|line| line.strip_suffix(']'))
         .unwrap_or_else(|| panic!("unexpected ptyshare listening line: {listening:?}"))
         .to_string();
+    drain_remaining_stderr(reader);
 
     (child, addr)
-}
-
-fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack
-        .windows(needle.len())
-        .any(|window| window == needle)
 }
 
 fn spawn_ptyconnect_with_input(addr: &str, input: &[u8]) -> Child {
@@ -231,18 +271,4 @@ fn assert_shared_output_mentions_both_inputs(output: &Output) {
         stdout.contains("seen:") && stdout.contains("alpha") && stdout.contains("omega"),
         "ptyconnect stdout was {stdout:?}"
     );
-}
-
-fn wait_with_timeout(mut child: Child, timeout: Duration) -> Output {
-    let started = Instant::now();
-    loop {
-        if child.try_wait().unwrap().is_some() {
-            return child.wait_with_output().unwrap();
-        }
-        if started.elapsed() > timeout {
-            let _ = child.kill();
-            panic!("process did not exit within {timeout:?}");
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
 }

@@ -25,6 +25,7 @@ use nix::sys::termios::{SetArg, Termios, cfmakeraw, tcgetattr, tcsetattr};
 use nix::unistd::{read, write};
 
 use super::process;
+use super::terminal_state::{RestoreGuard, child_output_restore_sequence, termination_requested};
 use crate::recording::{DwellMs, TraceBuilder};
 
 const MAX_CLIENT_BACKLOG_BYTES: usize = 1024 * 1024;
@@ -76,6 +77,19 @@ pub struct ShareSummary {
     pub clients_dropped_for_backlog: usize,
 }
 
+#[must_use]
+pub const fn host_local_io_notice(local_input: bool, local_output: bool) -> Option<&'static str> {
+    match (local_input, local_output) {
+        (false, false) => {
+            Some("[host input/output disabled; session is controlled by connected clients]")
+        }
+        (false, true) => Some(
+            "[warning: host input disabled; type from a connected client or remove --no-local-input]",
+        ),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TerminalSize {
     cols: u16,
@@ -99,6 +113,7 @@ pub fn run(listener: &TcpListener, opts: ShareOpts) -> anyhow::Result<ShareSumma
     let stdin_fd = stdin.as_raw_fd();
     let stdout = std::io::stdout();
     let stdout_fd = stdout.as_raw_fd();
+    let _terminal_cleanup = terminal_cleanup_guard(opts.local_output, &stdout, stdout_fd);
     let mut local_stdin_open = opts.local_input;
     let _raw_mode = if opts.local_input && stdin.is_terminal() {
         RawModeGuard::enter(stdin_fd).ok()
@@ -125,7 +140,7 @@ pub fn run(listener: &TcpListener, opts: ShareOpts) -> anyhow::Result<ShareSumma
     let mut buf = [0_u8; 4096];
 
     loop {
-        if started.elapsed() > opts.max_runtime {
+        if termination_requested() || started.elapsed() > opts.max_runtime {
             break;
         }
         if opts.local_output && last_size_check.elapsed() >= SIZE_CHECK_INTERVAL {
@@ -375,6 +390,18 @@ fn desired_session_size(
         desired.rows = desired.rows.min(size.rows);
     }
     desired
+}
+
+fn terminal_cleanup_guard(
+    local_output: bool,
+    stdout: &io::Stdout,
+    fd: i32,
+) -> Option<RestoreGuard> {
+    if cfg!(test) {
+        return None;
+    }
+    (local_output && stdout.is_terminal())
+        .then_some(RestoreGuard::new(fd, child_output_restore_sequence()))
 }
 
 fn terminal_size(fd: i32) -> Option<TerminalSize> {
@@ -809,6 +836,22 @@ mod tests {
     fn default_share_opts_bind_a_trace_name() {
         assert_eq!(ShareOpts::default().out, PathBuf::from("shared.ptytrace"));
         assert!(ShareOpts::default().local_input);
+    }
+
+    #[test]
+    fn host_local_io_notice_warns_for_viewer_only_host_modes() {
+        assert_eq!(host_local_io_notice(true, true), None);
+        assert_eq!(host_local_io_notice(true, false), None);
+        assert_eq!(
+            host_local_io_notice(false, true),
+            Some(
+                "[warning: host input disabled; type from a connected client or remove --no-local-input]"
+            )
+        );
+        assert_eq!(
+            host_local_io_notice(false, false),
+            Some("[host input/output disabled; session is controlled by connected clients]")
+        );
     }
 
     #[test]

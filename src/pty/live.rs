@@ -18,7 +18,7 @@
 //! `trace -> media` render remains byte-stable; receipts attest that
 //! arrow.
 
-use std::io;
+use std::io::{self, IsTerminal};
 use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
 use std::time::{Duration, Instant};
 
@@ -29,6 +29,7 @@ use nix::sys::termios::{SetArg, Termios, cfmakeraw, tcgetattr, tcsetattr};
 use nix::unistd::{read, write};
 
 use super::process;
+use super::terminal_state::{RestoreGuard, child_output_restore_sequence, termination_requested};
 use crate::recording::{DwellMs, TraceBuilder};
 use crate::trace::Trace;
 
@@ -146,7 +147,9 @@ pub fn capture_with_sink(opts: CaptureOpts, sink: &mut impl CaptureSink) -> Resu
     let pty_fd = pty.fd();
 
     let stdin_fd = io::stdin().as_raw_fd();
-    let stdout_fd = io::stdout().as_raw_fd();
+    let stdout = io::stdout();
+    let stdout_fd = stdout.as_raw_fd();
+    let _terminal_cleanup = terminal_cleanup_guard(&stdout, stdout_fd);
 
     // RAII: original termios is restored when this drops, even on
     // error paths or panics. SIGKILL is the only way to leave the
@@ -160,7 +163,7 @@ pub fn capture_with_sink(opts: CaptureOpts, sink: &mut impl CaptureSink) -> Resu
     let mut buf = [0u8; 4096];
 
     loop {
-        if started.elapsed() > opts.max_runtime {
+        if termination_requested() || started.elapsed() > opts.max_runtime {
             break;
         }
 
@@ -177,6 +180,7 @@ pub fn capture_with_sink(opts: CaptureOpts, sink: &mut impl CaptureSink) -> Resu
         match poll(&mut fds, timeout) {
             // Timeout (Ok(0)) and EINTR are both "no events; loop again";
             // any other error halts.
+            Err(Errno::EINTR) if termination_requested() => break,
             Ok(0) | Err(Errno::EINTR) => continue,
             Ok(_) => {}
             Err(e) => return Err(anyhow!("poll: {e}")),
@@ -193,6 +197,7 @@ pub fn capture_with_sink(opts: CaptureOpts, sink: &mut impl CaptureSink) -> Resu
                     let pty_borrow = unsafe { BorrowedFd::borrow_raw(pty_fd) };
                     write(pty_borrow, &buf[..n]).context("write stdin → pty")?;
                 }
+                Err(Errno::EINTR) if termination_requested() => break,
                 Err(Errno::EINTR) => {}
                 Err(e) => return Err(anyhow!("read stdin: {e}")),
             }
@@ -229,6 +234,7 @@ pub fn capture_with_sink(opts: CaptureOpts, sink: &mut impl CaptureSink) -> Resu
                         trace_time_ms = trace_time_ms.saturating_add(u64::from(dwell.get()));
                         last_event = now;
                     }
+                    Err(Errno::EINTR) if termination_requested() => break,
                     Err(Errno::EINTR) => {}
                     Err(e) => return Err(anyhow!("read pty: {e}")),
                 }
@@ -265,6 +271,15 @@ fn resolve_argv(argv: Vec<String>) -> Vec<String> {
 fn resolve_geometry(cols: Option<u16>, rows: Option<u16>) -> (u16, u16) {
     let (auto_c, auto_r) = detect_tty_size().unwrap_or((80, 24));
     (cols.unwrap_or(auto_c), rows.unwrap_or(auto_r))
+}
+
+fn terminal_cleanup_guard(stdout: &io::Stdout, fd: RawFd) -> Option<RestoreGuard> {
+    if cfg!(test) {
+        return None;
+    }
+    stdout
+        .is_terminal()
+        .then_some(RestoreGuard::new(fd, child_output_restore_sequence()))
 }
 
 fn detect_tty_size() -> Option<(u16, u16)> {

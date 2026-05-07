@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use anyhow::anyhow;
 use clap::Parser;
-use ptytrace::pty::share::{ShareOpts, run};
+use ptytrace::pty::share::{ShareOpts, host_local_io_notice, run};
 
 #[derive(Parser)]
 #[command(
@@ -63,6 +63,9 @@ fn main() -> anyhow::Result<()> {
     eprintln!("[connect with: ptyconnect {bound_addr}]");
     if args.allow_unauthenticated_public_bind && !bound_addr.ip().is_loopback() {
         eprintln!("[warning: unauthenticated public ptyshare bind]");
+    }
+    if let Some(notice) = host_local_io_notice(!args.no_local_input, !args.no_local_output) {
+        eprintln!("{notice}");
     }
     let out = args.out.unwrap_or_else(|| default_trace_path(bound_addr));
     let summary = run(

@@ -12,7 +12,8 @@
 //! - [`paint`] — frames → PNG images.
 //! - [`encode`] — PNG sequence → MP4/GIF via ffmpeg.
 //! - [`inspect`] — ASCII rendering of a frame for debugging.
-//! - [`pty`] — spawn any interactive argv under a PTY and drive it.
+//! - [`pty`] — spawn any interactive argv under a PTY, capture it live,
+//!   or share it with connected terminals.
 //! - [`verify`] — load + diff frame directories.
 //!
 //! Determinism is exposed externally via [`witness`] (reproducibility

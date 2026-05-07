@@ -165,13 +165,15 @@ algebra.
 
 ## Current CLI Shape
 
-The current crate installs five user-facing binaries:
+The current crate installs six user-facing binaries:
 
 - `ptytrace`: the raw primitive plus named low-level subcommands.
 - `ptyrender`: the renderer that turns a trace into GIF/MP4 media and
   optional witnesses.
 - `ptyrecord`: the composed command recorder that captures, renders MP4,
   and writes a `.ptyrecord` bundle.
+- `ptyroom`: the high-level shared-terminal facade with explicit
+  `host` and `join` operations.
 - `ptyshare`: host one shared PTY over TCP, interleave host and client
   input, broadcast output to clients, and write the output trace.
 - `ptyconnect`: attach a local terminal to a `ptyshare` TCP session.
@@ -179,12 +181,21 @@ The current crate installs five user-facing binaries:
 `ptytrace render` remains available as the low-level subcommand form of
 `ptyrender`.
 
+For shared terminals, the intended user entry point is `ptyroom`.
+`ptyshare` and `ptyconnect` remain available as transport-level tools for
+testing, protocol debugging, and scripts that need the raw host/connect
+split. `ptyroom join` calls the same library implementation as
+`ptyconnect`, so a partial install of binaries does not change join
+behavior.
+
 `ptyshare` is transport plumbing, not a trust primitive. It defaults to
 loopback, refuses non-loopback binds without an explicit unsafe flag, and
 should be paired with SSH, WireGuard, or another authenticated tunnel
 before crossing a machine boundary. Client output is nonblocking with a
 bounded backlog: a slow observer can be disconnected, but it cannot stop
 the PTY owner, recorder, or other clients from making progress.
+The operator-facing shared-terminal guide is in
+[`shared-terminals.md`](shared-terminals.md).
 The byte-level contract is in [`ptyshare-protocol.md`](ptyshare-protocol.md).
 
 ## Future Package Split

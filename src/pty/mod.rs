@@ -1,19 +1,27 @@
-//! PTY recording core.
+//! PTY recording and shared-terminal transport.
 //!
-//! Spawns an interactive terminal process via PTY, drives it by sending
-//! scripted keystrokes/dwells, captures every byte written, and emits an
-//! asciinema v2-compatible trace with deterministic timestamps.
+//! Local recording paths spawn an interactive terminal process via PTY,
+//! drive it by sending scripted keystrokes/dwells, capture every byte
+//! written, and emit an asciinema v2-compatible trace with deterministic
+//! timestamps.
+//!
+//! Collaborative paths reuse the same PTY mechanics: [`share`] hosts one
+//! PTY, [`connect`] attaches another terminal to it, and `ptyroom` wraps
+//! both as the high-level CLI.
 //!
 //! The trace's per-event timestamp is the cumulative sum of the *intended*
 //! dwell, not wall-clock — playback is independent of the speed of the
 //! recording machine.
+
+pub mod connect;
+pub mod share;
 
 mod drainer;
 mod keys;
 mod live;
 mod osc;
 mod process;
-pub mod share;
+mod terminal_state;
 
 pub use drainer::WatchHandle;
 pub use keys::Key;

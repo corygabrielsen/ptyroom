@@ -4,8 +4,10 @@
 It is intentionally small: one process owns one PTY, peers connect over
 TCP, peer bytes go into the PTY, and PTY output bytes go back to every
 connected peer while the host records the same output as `.ptytrace`.
-`termroom` is the higher-level demo command that wraps this transport as
-`termroom host` and `termroom join`.
+`ptyroom` is the higher-level command that wraps this transport as
+explicit `ptyroom host` and `ptyroom join` operations.
+For command choice, terminal geometry behavior, and operator guidance,
+see [`shared-terminals.md`](shared-terminals.md).
 
 ## Topology
 
