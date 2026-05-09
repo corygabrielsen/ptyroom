@@ -1,9 +1,12 @@
 # ptyroom
 
-`ptyroom` gives you shareable terminal rooms backed by durable PTY trace
-artifacts. Start one terminal session, let other terminals join it, and
-keep the result as a `.ptytrace` file that can be replayed, rendered,
-verified, or bundled later.
+`ptyroom` is a shared terminal room that leaves behind a durable trace.
+Start one PTY, let other terminals join it, and keep the result as a
+`.ptytrace` artifact that can be rendered, verified, or bundled later.
+
+It is deliberately smaller than tmux: there is one shared PTY, one shared
+view, and intentionally merged input. That makes it useful for demos,
+pairing, debugging, teaching, and chaotic "everyone can type" sessions.
 
 The top-level command is `ptyroom`:
 
@@ -12,15 +15,54 @@ ptyroom host --listen 127.0.0.1:7373 --out /tmp/room.ptytrace bash
 ptyroom join 127.0.0.1:7373
 ```
 
-The room is the live collaborative experience. The trace is the durable
-evidence. The render, verify, and bundle commands are downstream tools for
-that trace.
+The room is the live experience. The trace is the durable evidence.
+Render, verify, and bundle commands are downstream tools for that trace.
 
 The repository is named `ptyroom` because the shared room is the primary
-user-facing workflow. The lower-level trace crate, file format, and raw
-recorder command are still named `ptytrace`.
+user-facing workflow. The workspace is split along the command algebra:
+`ptytrace`, `ptyrender`, `ptyrecord`, and `ptyroom` are separate crates.
+The lower-level trace crate, file format, and raw recorder command are
+still named `ptytrace`.
 
 ## Quickstart
+
+Install from GitHub:
+
+```bash
+cargo install --git https://github.com/corygabrielsen/ptyroom --package ptyroom --locked
+```
+
+Build from a checkout:
+
+```bash
+cargo build --release --workspace --bins
+```
+
+Run the local smoke demo:
+
+```bash
+scripts/smoke-local.sh
+```
+
+Or install just the room command locally:
+
+```bash
+cargo install --path crates/ptyroom --locked
+```
+
+Install artifact tools when you need them:
+
+```bash
+# from a checkout
+cargo install --path crates/ptytrace --locked
+cargo install --path crates/ptyrender --locked
+cargo install --path crates/ptyrecord --locked
+
+# from GitHub
+cargo install --git https://github.com/corygabrielsen/ptyroom --package ptytrace --locked
+cargo install --git https://github.com/corygabrielsen/ptyroom --package ptyrender --locked
+cargo install --git https://github.com/corygabrielsen/ptyroom --package ptyrecord --locked
+```
 
 Host a local room:
 
@@ -63,10 +105,25 @@ When the room ends, the output path is a normal trace:
 ptyrender /tmp/ptyroom-demo.ptytrace room.gif
 ```
 
+Rendering GIF/MP4 output requires `ffmpeg` on `PATH`.
+
 For remote use, bind loopback and carry the TCP stream through SSH,
 WireGuard, or another authenticated tunnel. The built-in transport has no
 authentication or encryption. Shared-terminal details are in
 [`docs/shared-terminals.md`](docs/shared-terminals.md).
+
+## Status
+
+This is early software intended for local demos and trusted networks. The
+default bind is loopback, non-loopback binds require an explicit unsafe
+flag, and the wire protocol is not an authentication or encryption layer.
+
+## What It Is Not
+
+`ptyroom` is not a tmux replacement, persistent terminal multiplexer,
+authorization server, or secure remote shell. It is one shared PTY with a
+durable trace. Use SSH, WireGuard, or an equivalent trusted channel for
+remote access.
 
 ## Which Command Should I Use?
 
@@ -86,11 +143,29 @@ Use the other binaries when you are working with the durable artifact:
 | Run a scripted recording | `ptytrace run demo.script --out demo.ptytrace` |
 | Render a trace to media | `ptyrender demo.ptytrace demo.gif` |
 | Capture, render, and package | `ptyrecord --out demo.ptyrecord <command...>` |
-| Verify a witness or contract | `ptytrace verify ...` / `ptytrace check ...` |
+| Verify a witness or contract | `ptyrender verify ...` / `ptytrace check ...` |
 
-Debug pipeline commands are available under `ptytrace debug ...` when you
-need intermediate replay snapshots, PNG frames, encoder inputs, or frame
-inspection.
+The `ptyrender` crate owns the replay, frame, paint, encode, and witness
+pipeline. The `ptytrace` binary stays focused on producing and checking
+trace artifacts.
+
+## Workspace Layout
+
+The four Cargo packages mirror the data flow:
+
+```text
+ptyroom   -> .ptytrace
+ptytrace  -> .ptytrace
+ptyrender -> media + witness
+ptyrecord -> .ptyrecord bundle
+```
+
+- `crates/ptyroom`: shared terminal room CLI.
+- `crates/ptytrace`: trace schema, PTY capture, scripts, contracts, and raw
+  recorder CLI.
+- `crates/ptyrender`: replay, frame, paint, encode, witness, and renderer CLI
+  for trace-derived media.
+- `crates/ptyrecord`: composed capture/render/bundle CLI.
 
 ## Common Workflows
 
@@ -114,7 +189,8 @@ Sleep 800ms
 Render it to a GIF:
 
 ```bash
-ptytrace run demo.script --out demo.gif
+ptytrace run demo.script --out demo.ptytrace
+ptyrender demo.ptytrace demo.gif
 ```
 
 `SetSpawn` is the normal local starting point. Docker-backed `SetWarm`
@@ -173,9 +249,9 @@ ptyrender demo.ptytrace demo.gif
 ptyrender demo.ptytrace demo.mp4 --receipt demo.mp4.witness.json
 ```
 
-`ptyrender` and `ptytrace render` run replay, paint, and encode in one
-step. The `ptytrace debug ...` commands expose those stages separately
-when intermediate artifacts are useful.
+`ptyrender` runs replay, paint, and encode in one step. The library
+modules expose those stages separately when intermediate artifacts are
+useful.
 
 ### Inspect the Room Protocol
 
@@ -186,7 +262,7 @@ between those two subcommands is documented in
 
 ## Verification
 
-The `ptytrace` artifact pipeline has three verification layers:
+The artifact pipeline has three verification layers:
 
 - Witnesses prove that media bytes reproduce from a trace, render config,
   font, toolchain, and ffmpeg identity.
@@ -198,7 +274,7 @@ Render with a witness:
 
 ```bash
 ptyrender demo.ptytrace demo.gif --receipt demo.gif.witness.json
-ptytrace verify --witness demo.gif.witness.json --trace demo.ptytrace
+ptyrender verify --witness demo.gif.witness.json --trace demo.ptytrace
 ```
 
 Check a behavioral contract:
@@ -224,6 +300,7 @@ ptytrace attest file --trace demo.ptytrace --out demo.attestation.json
 ptyrender demo.ptytrace demo.gif \
     --receipt demo.gif.witness.json \
     --spec demo.contract.json \
+    --script demo.script \
     --attestation demo.attestation.json
 ```
 
@@ -236,7 +313,7 @@ overview is in [`docs/crate-architecture.md`](docs/crate-architecture.md).
 Render a trace from Rust:
 
 ```rust
-ptytrace::render("demo.ptytrace")?
+ptyrender::render("demo.ptytrace")?
     .font_size(40.0)
     .width(824)
     .to_path("demo.gif")?;
@@ -267,7 +344,8 @@ rec.send_raw_wait_for(
 rec.stop()?.write("hello.ptytrace")?;
 ```
 
-Working examples live in `examples/`. The library is process-agnostic:
+Working examples live in `crates/ptytrace/examples/` and
+`crates/ptyrender/examples/`. The recorder library is process-agnostic:
 it can drive any interactive CLI that can run under a PTY.
 
 ## Determinism Model
@@ -292,36 +370,41 @@ The deeper determinism audit is in
 ## Development
 
 ```bash
-cargo build --release
-cargo test
+cargo build --workspace --bins
+cargo test --workspace
 ```
 
-Requires `cargo`. Encode-stage tests require `ffmpeg`. Docker-backed script
-targets require `docker`.
+Requires Rust/Cargo. Rendering and encode-stage tests require `ffmpeg`.
+Docker-backed script targets require `docker`.
 
 Useful local checks:
 
 ```bash
-cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test
-cargo build --bins
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace
+cargo build --workspace --bins
+PTYROOM_SMOKE_SKIP_BUILD=1 scripts/smoke-local.sh
+cargo doc --workspace --no-deps
+cargo sort --workspace --check
+cargo machete
 git diff --check
 ```
 
 Stress coverage for PTY timing primitives lives in
-[`tests/ptytrace_stress.rs`](tests/ptytrace_stress.rs) and uses the generic
-test child in [`tests/fixtures/stress_child.rs`](tests/fixtures/stress_child.rs).
+[`crates/ptytrace/tests/ptytrace_stress.rs`](crates/ptytrace/tests/ptytrace_stress.rs)
+and uses the generic test child in
+[`crates/ptytrace/tests/fixtures/stress_child.rs`](crates/ptytrace/tests/fixtures/stress_child.rs).
 Consumer-specific golden media belongs in consumer crates, not in the
 `ptyroom` repository.
 
 Useful focused checks while working on `ptyroom`:
 
 ```bash
-cargo test pty::room_protocol --lib
-cargo test pty::connect --lib
-cargo test pty::share --lib
-cargo test --test ptyroom_transport_cli
+cargo test -p ptytrace pty::room_protocol --lib
+cargo test -p ptytrace pty::connect --lib
+cargo test -p ptytrace pty::share --lib
+cargo test -p ptyroom --test ptyroom_transport_cli
 ```
 
 ## Documents
@@ -338,10 +421,13 @@ cargo test --test ptyroom_transport_cli
   contract, and attestation model.
 - [`docs/determinism-audit.md`](docs/determinism-audit.md): render
   determinism assumptions and risks.
-- [`docs/crate-architecture.md`](docs/crate-architecture.md): layering,
-  invariants, and future package split.
+- [`docs/crate-architecture.md`](docs/crate-architecture.md): workspace
+  layering and invariants.
+- [`docs/publishing.md`](docs/publishing.md): crates.io publish order and
+  release checks.
+- [`SECURITY.md`](SECURITY.md): supported security boundary and reporting.
 
 ## License
 
 MIT - see `LICENSE`. Bundled DejaVu Sans Mono is under the Bitstream Vera
-license; see `assets/fonts/LICENSE-DejaVu.txt`.
+license; see `crates/ptyrender/assets/fonts/LICENSE-DejaVu.txt`.

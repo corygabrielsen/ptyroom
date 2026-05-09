@@ -107,8 +107,8 @@ Constraints:
 
 - Exactly one of `SetSpawn` / `SetWarm` / `SetCold` is required.
 - `SetShellRcfile` is meaningful only with `SetCold`. Specifying it
-  with Spawn or Warm emits a parse warning; the rcfile is ignored
-  because the warm container's shell is already running.
+  with Spawn or Warm is ignored because those targets do not read the
+  generated cold-container rcfile.
 - `SetWarmCommand` is meaningful only with `SetWarm`. Specifying it
   with Spawn or Cold is silently ignored. Default is `bash -i`; pin
   this to a wrapper script (e.g. one that sets `PS1`) when the warm
@@ -251,21 +251,22 @@ trace.write("demo.ptytrace")?;
 
 ```bash
 ptytrace run demo.script --out demo.ptytrace
-ptytrace run demo.script --out demo.gif         # chains through render
-ptytrace run demo.script \
-    --out demo.gif \
+ptyrender demo.ptytrace demo.gif
+ptyrender demo.ptytrace demo.gif \
     --receipt demo.gif.witness.json \
+    --script demo.script \
     --spec demo.contract.json \
     --attestation-out demo.attestation.json
 ```
 
-When `--receipt` is set, the witness's `script_sha256` field records the
-hash of the source script file — `output` is `g(f(script))` for
-`f = script.run` and `g = ptyrender`, and the witness now pins all three
-hashes (trace, output, script) plus optional `contract_sha256` and
-`attestation_sha256`. The `script_sha256` field is provenance only:
-verification does not re-run the script (script execution depends on
-shells, docker images, and external state that ptytrace does not pin).
+When `ptyrender ... --receipt ... --script demo.script` is set, the witness's
+`script_sha256` field records the hash of the source script file:
+`output` is `g(f(script))` for `f = script.run` and `g = ptyrender`, and
+the witness pins all three hashes (trace, output, script) plus optional
+`contract_sha256` and `attestation_sha256`. The `script_sha256` field is
+provenance only: verification does not re-run the script (script
+execution depends on shells, docker images, and external state that
+ptytrace does not pin).
 
 ## Out of scope for v1
 

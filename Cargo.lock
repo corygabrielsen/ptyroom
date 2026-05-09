@@ -593,17 +593,57 @@ dependencies = [
 ]
 
 [[package]]
-name = "ptytrace"
+name = "ptyrecord"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "clap",
+ "ptyrender",
+ "ptytrace",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "ptyrender"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
  "anyhow",
- "base64",
  "clap",
  "image",
+ "ptytrace",
+ "rayon",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "vt100",
+]
+
+[[package]]
+name = "ptyroom"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "nix 0.31.2",
+ "ptytrace",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "ptytrace"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
  "nix 0.31.2",
  "portable-pty",
- "rayon",
  "regex",
  "serde",
  "serde_json",

@@ -1,0 +1,32 @@
+[package]
+name = "ptytrace"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Deterministic PTY trace capture, scripts, contracts, and recorder CLI."
+homepage.workspace = true
+repository.workspace = true
+readme = "README.md"
+documentation = "https://docs.rs/ptytrace"
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+name = "ptytrace"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+nix.workspace = true
+portable-pty.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+vt100.workspace = true
+
+[lints]
+workspace = true

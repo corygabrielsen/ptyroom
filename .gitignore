@@ -1,10 +1,10 @@
 # Rust
 target/
 
-# Node (snapshot replay only)
+# Node
 node_modules/
 
-# Generated demo artifacts
+# Generated terminal artifacts
 assets/*.gif
 assets/*.mp4
 assets/*.cast
@@ -22,7 +22,7 @@ assets/concat.txt
 *.swo
 *~
 
-# Python (legacy, removed in Rust port)
+# Python
 __pycache__/
 *.pyc
 .venv/

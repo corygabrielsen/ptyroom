@@ -24,11 +24,11 @@ h = SHA-256 over exact file bytes
 Implemented files map directly onto those objects:
 
 ```text
-T : src/trace.rs
-M : src/render.rs + src/encode.rs
-C : src/contract.rs
-A : src/attestation.rs
-W : src/witness.rs
+T : crates/ptytrace/src/trace.rs
+M : crates/ptyrender/src/render.rs + crates/ptyrender/src/encode.rs
+C : crates/ptytrace/src/contract.rs
+A : crates/ptytrace/src/attestation.rs
+W : crates/ptyrender/src/witness.rs
 ```
 
 ## Operations
@@ -160,7 +160,7 @@ they plug into the same verification equation.
 ```text
 ptytrace ssh host.example.com -> T
 ssh-key-sign(h(T))            -> A_ssh
-ptyrender T M --attestation A_ssh -> W
+ptyrender T M --receipt W --attestation A_ssh
 verify(W, T, M, A_ssh)
 ```
 

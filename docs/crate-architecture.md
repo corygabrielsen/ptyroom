@@ -2,8 +2,8 @@
 
 `ptyroom` is the repository and product: a live shared terminal room that
 records the same PTY session as a durable trace. The lower layers still
-provide the reusable `ptytrace` capture/replay crate and deterministic
-rendering pipeline.
+provide reusable `ptytrace` capture primitives and a deterministic
+`ptyrender` rendering pipeline.
 
 ## Design Goal
 
@@ -178,20 +178,19 @@ the session, then only encodes and bundles at the end. This removes the
 post-session replay/paint pass without changing the trace or witness
 algebra.
 
-## Current CLI Shape
+## Current Workspace Shape
 
-The current package installs four user-facing binaries:
+The workspace has four user-facing crates and binaries:
 
-- `ptytrace`: the raw primitive plus named low-level subcommands.
+- `ptytrace`: trace schema, PTY capture, script execution, stitching,
+  attestations, contract checks, and the raw recorder binary.
 - `ptyrender`: the renderer that turns a trace into GIF/MP4 media and
-  optional witnesses.
+  optional witnesses. It owns frame replay, paint, encode, and witness
+  verification.
 - `ptyrecord`: the composed command recorder that captures, renders MP4,
   and writes a `.ptyrecord` bundle.
 - `ptyroom`: the shared-terminal command with explicit `host` and `join`
   operations.
-
-`ptytrace render` remains available as the low-level subcommand form of
-`ptyrender`.
 
 `ptyroom` is transport plumbing, not a trust primitive. It defaults to
 loopback, refuses non-loopback binds without an explicit unsafe flag, and
@@ -203,22 +202,23 @@ The operator-facing shared-terminal guide is in
 [`shared-terminals.md`](shared-terminals.md).
 The byte-level contract is in [`ptyroom-protocol.md`](ptyroom-protocol.md).
 
-## Future Package Split
+## Package Ownership
 
-Prefer package names that make the layering explicit even if installed
-binaries are short:
+Package names make the layering explicit while keeping the installed
+binaries short:
 
 - `ptyroom`: shared-terminal room transport, join viewport, local
   controls, geometry negotiation, and the `ptyroom` CLI.
 - `ptytrace`: trace schema, PTY capture, script runner, provenance
   anchors over trace digests, and the raw `ptytrace` binary.
-- `ptyrender`: frame replay, paint, encode, render witnesses,
-  contracts over rendered terminal state, and the `ptyrender` CLI.
-- `ptyrecord`: thin CLI package that depends on both lower
-  layers and exposes the composed `ptyrecord` CLI.
+- `ptyrender`: frame replay, paint, encode, render witnesses, witness
+  verification against contracts, and the `ptyrender` CLI.
+- `ptyrecord`: bundle schema, selectable-text projection, live frame
+  stitching, and the composed `ptyrecord` CLI.
 
-`ptyrecord` should not own trace or render logic. It is a UX shell
-around the two lower-level operations.
+`ptyrecord` should not own trace capture or render primitives. It owns
+the composition and the `.ptyrecord` bundle boundary around the two
+lower-level operations.
 
 ## Verification Model
 
@@ -242,15 +242,15 @@ behind `AttestationProvider` / `AttestationVerifier` implementations.
 The formal substitution model is in
 [`provenance-anchors.md`](provenance-anchors.md).
 
-## Publication Bar
+## Public Release Bar
 
-Before publishing, this project should have:
+Public-facing releases should preserve these properties:
 
-- a repository name and README that present `ptyroom` as the front door;
-- examples that record a tiny CLI session without Docker;
-- examples that record a Docker-backed shell session;
-- documented guarantees for time virtualization and output source identity;
-- a clean separation between reusable modules and consumer scenes;
-- stable public names for `PtyTracer`, `PtyTracerConfig`, `ShellProfile`,
-  `PresentationOutput`, `Key`, `StubColors`, `Trace`, and frame/verification
-  primitives.
+- `ptyroom` is the front door for the shared-terminal experience.
+- `ptytrace`, `ptyrender`, `ptyrecord`, and `ptyroom` remain separate
+  crates matching the command algebra.
+- The README includes a local demo, install path, security boundary, and
+  durable-artifact workflow.
+- The release checks in [`publishing.md`](publishing.md) pass.
+- Networked use remains explicit about authentication and encryption
+  being outside the built-in transport.

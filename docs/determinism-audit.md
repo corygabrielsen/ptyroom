@@ -11,7 +11,7 @@ arrow (recording) is wall-clock dependent by design; see
 
 ## Layer-by-layer
 
-### Trace parser (`src/trace.rs`)
+### Trace parser (`crates/ptytrace/src/trace.rs`)
 
 - Pure JSON parse via `serde_json`.
 - `Trace.events: Vec<TraceEvent>` — order-preserving collection.
@@ -19,7 +19,7 @@ arrow (recording) is wall-clock dependent by design; see
   serialization (not HashMap).
 - Output: deterministic given input bytes.
 
-### Frame replay (`src/frame_replay/`)
+### Frame replay (`crates/ptyrender/src/frame_replay/`)
 
 - `vt100::Parser` is a state machine over input bytes; no time, no
   randomness.
@@ -36,14 +36,14 @@ i + 1)`) — preserves a stable lexicographic ordering for
 - No HashMap usage anywhere in the module.
 - Output: deterministic given trace bytes + `StubColors`.
 
-### Paint (`src/paint.rs`)
+### Paint (`crates/ptyrender/src/paint.rs`)
 
 - `Painter::paint(frame) -> RgbImage` — pure given font bytes +
   paint config.
 - `paint_is_byte_stable` test asserts: two paints of the same
   frame produce identical pixel buffers. Live regression gate.
-- Parallelism (`par_iter` in `src/render.rs:execute` and
-  `src/bin/ptytrace/paint.rs`): each thread paints one
+- Parallelism (`par_iter` in `crates/ptyrender/src/render.rs:execute`):
+  each thread paints one
   frame to one PNG file. Snapshots are independent; PNG file
   paths derive from `entry.frame` (deterministic). No shared
   mutable state.
@@ -51,7 +51,7 @@ i + 1)`) — preserves a stable lexicographic ordering for
   deterministic given identical input pixel buffer.
 - Output: deterministic given frame + font bytes.
 
-### Encode (`src/encode.rs`)
+### Encode (`crates/ptyrender/src/encode.rs`)
 
 ffmpeg invocation flags are explicitly pinned for byte-stable output.
 
@@ -90,20 +90,19 @@ The `Mp4Encoder::H264Nvenc` variant is **explicitly non-deterministic**:
 > NVIDIA NVENC hardware H.264 encoder. Faster wall-time but requires
 > a CUDA-capable GPU + matching ffmpeg build, **and is not bit-for-
 > bit reproducible across driver versions.**
-> — `src/encode.rs:34-38`
+> — `crates/ptyrender/src/encode.rs:34-38`
 
 The witness's `RenderOptions.mp4_encoder` field captures which
 encoder was used, so a verifier sees the choice. **For blockchain
 provenance, NVENC-encoded artifacts are NOT byte-reproducible
 across machines** and should not be attested.
 
-Gap: `Witness::verify` does not refuse NVENC receipts. It will
-re-render with NVENC and then output_sha256 won't match — so the
-verify call returns `OutputDiffers`, but the failure mode looks
-like "the witness is broken" rather than "this encoder isn't
-verifiable." Worth a future doc clarification or refusal.
+`Witness::verify` refuses NVENC receipts for `.mp4` outputs before
+re-rendering. The failure is `EncoderNotVerifiable { encoder }`, which
+keeps non-portable GPU output distinct from a broken reproducibility
+witness.
 
-### Concat file (`src/encode.rs:build_concat`)
+### Concat file (`crates/ptyrender/src/encode.rs:build_concat`)
 
 - Iterates `timing` in order (input order from frame stage).
 - Writes absolute paths via `frames_dir.canonicalize()`.
@@ -111,7 +110,7 @@ verifiable." Worth a future doc clarification or refusal.
 - Per-call tempfile path (no concurrent-encode race on shared concat).
 - Deterministic given timing list.
 
-### Trace file write (`src/trace.rs`)
+### Trace file write (`crates/ptytrace/src/trace.rs`)
 
 - `Trace.to_string()` writes header line + events line by line.
 - Each event serialized via `serde_json::to_string` — stable for
@@ -126,11 +125,11 @@ changed, can produce different output bytes:
 
 ```rust
 pub struct ToolIdentity {
-    pub name: String,                    // "ptytrace"
+    pub name: String,                    // "ptyrender"
     pub version: String,                 // CARGO_PKG_VERSION
     pub ffmpeg_version: String,          // first line of `ffmpeg -version`
     pub font_sha256: String,             // hash of bundled DejaVu Sans Mono
-    pub recorder_sha256: Option<String>, // SHA-256 of the ptytrace binary itself
+    pub renderer_sha256: Option<String>, // SHA-256 of the ptyrender binary itself
     pub ffmpeg_sha256:   Option<String>, // SHA-256 of the ffmpeg binary on PATH
 }
 ```
@@ -141,7 +140,7 @@ the `_sha256` fields close the gap where two builds with the same
 version string but different patches could diverge:
 
 - `font_sha256` — bundled (`include_bytes!`); always known.
-- `recorder_sha256` — hash of `std::env::current_exe()`, populated
+- `renderer_sha256` — hash of `std::env::current_exe()`, populated
   best-effort. Closes the gap where two builds at the same
   `Cargo.toml` version with different `Cargo.lock` patch versions
   could in principle diverge.
@@ -157,7 +156,7 @@ Both binary hashes are `Option<String>` for two reasons:
    existed continue to parse via `#[serde(default)]`.
 2. **Best-effort population:** if `std::env::current_exe()` fails,
    or PATH is unset / `ffmpeg` is not on it / the resolved file
-   is unreadable, the ptytrace still emits a witness — just
+   is unreadable, ptyrender still emits a witness, just
    without that field. The verifier symmetrically skips comparison
    when either side lacks the hash (Scott-flat: `None` matches
    anything).
@@ -165,17 +164,18 @@ Both binary hashes are `Option<String>` for two reasons:
 When both sides have a given hash and they disagree, `Witness::verify`
 returns `EnvironmentDiffers { field: "tool.<name>_sha256", ... }`
 before the re-render even runs. For strict blockchain attestation,
-two nodes with different binary hashes (ptytrace OR ffmpeg) are
+two nodes with different binary hashes (ptyrender or ffmpeg) are
 rejected up front instead of failing on `OutputDiffers` later.
 
 ## Empirical confirmation
 
 These layer-level claims are continuously verified by:
 
-- `cargo test --lib` (137 tests including `paint_is_byte_stable`)
-- `make verify-goldens` (45 layer hashes across 5 scenes)
-- `make bless-goldens` (N=10 agreement gate; refuses to commit a
-  golden if any layer disagrees across 10 runs)
+- `cargo test -p ptyrender --lib` (library tests including `paint_is_byte_stable`)
+- `cargo test -p ptytrace --lib` (trace serialization, contracts, PTY
+  recording primitives, and room protocol tests)
+- `cargo test -p ptyroom --test public_surface` (crate topology and CLI
+  algebra)
 - `Witness::verify` (re-renders the trace and compares output hash;
   runs on every witness check)
 
@@ -197,7 +197,7 @@ SHA-256 across N=10), confirming that determinism survives the
 | Encode (GIF)     | pinned palettegen + Bayer dither                                 | yes           |
 | Concat file      | deterministic input ordering                                     | yes           |
 | Trace write       | sorted env, ordered events                                       | yes           |
-| Tool identity    | name + version + ffmpeg + font + recorder_sha256 + ffmpeg_sha256 | yes           |
+| Tool identity    | name + version + ffmpeg + font + renderer_sha256 + ffmpeg_sha256 | yes           |
 
 Every layer has a strong determinism story. The libx264 path, GIF
 path, frame replay, paint, and trace serialization are all byte-
@@ -206,5 +206,5 @@ flagged non-portable, and **`Witness::verify` now refuses NVENC
 receipts for `.mp4` outputs up front with the
 `EncoderNotVerifiable { encoder }` outcome** —
 no wasted re-render, clear failure mode. Tool identity captures
-every variance source including the ptytrace binary's own SHA-256
+every variance source including the ptyrender binary's own SHA-256
 and the resolved ffmpeg binary's SHA-256.

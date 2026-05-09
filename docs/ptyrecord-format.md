@@ -64,7 +64,7 @@ re-rendering the terminal session.
 ```
 
 `witness` is optional. When present, it is the same render witness
-produced by `ptyrender --receipt`.
+produced by `ptyrender trace.ptytrace out.mp4 --receipt witness.json`.
 
 ## Text Projection
 

@@ -1,30 +1,24 @@
+[workspace]
+members = [
+    "crates/ptyrecord",
+    "crates/ptyrender",
+    "crates/ptyroom",
+    "crates/ptytrace",
+]
+resolver = "3"
 
-[package]
-name = "ptytrace"
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
-description = "Shared terminal rooms backed by deterministic PTY traces, verifiable render artifacts, and reusable capture/replay primitives."
+homepage = "https://github.com/corygabrielsen/ptyroom"
 repository = "https://github.com/corygabrielsen/ptyroom"
 readme = "README.md"
 keywords = ["terminal", "pty", "trace", "asciinema", "cli"]
 categories = ["command-line-utilities", "development-tools"]
 
-[lib]
-name = "ptytrace"
-path = "src/lib.rs"
-
-# Generic pipeline binaries:
-# - The unified CLI is at src/bin/ptytrace/main.rs (binary name "ptytrace",
-#   auto-discovered from the dir).
-# - The top-level renderer is at src/bin/ptyrender/main.rs (binary
-#   name "ptyrender", auto-discovered from the dir).
-# - The composed capture+render CLI is at src/bin/ptyrecord/main.rs
-#   (binary name "ptyrecord", auto-discovered from the dir).
-# - The shared terminal CLI is at src/bin/ptyroom/main.rs.
-
-[dependencies]
+[workspace.dependencies]
 ab_glyph = "0.2"
 anyhow = "1"
 base64 = "0.22"
@@ -32,6 +26,8 @@ clap = { version = "4", features = ["derive"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 nix = { version = "0.31", features = ["poll", "term"] }
 portable-pty = "0.9.0"
+ptyrender = { version = "0.1.0", path = "crates/ptyrender" }
+ptytrace = { version = "0.1.0", path = "crates/ptytrace" }
 rayon = "1"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
@@ -40,7 +36,7 @@ sha2 = "0.11.0"
 tempfile = "3"
 vt100 = "0.16.2"
 
-[lints.clippy]
+[workspace.lints.clippy]
 pedantic = { level = "deny", priority = -1 }
 
 [profile.release]
