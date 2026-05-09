@@ -1,8 +1,8 @@
-# ptytrace
+# ptyroom
 
-`ptytrace` gives you shareable terminal rooms backed by durable PTY
-traces. Start one terminal session, let other terminals join it, and keep
-the result as a `.ptytrace` artifact that can be replayed, rendered,
+`ptyroom` gives you shareable terminal rooms backed by durable PTY trace
+artifacts. Start one terminal session, let other terminals join it, and
+keep the result as a `.ptytrace` file that can be replayed, rendered,
 verified, or bundled later.
 
 The top-level command is `ptyroom`:
@@ -15,6 +15,10 @@ ptyroom join 127.0.0.1:7373
 The room is the live collaborative experience. The trace is the durable
 evidence. The render, verify, and bundle commands are downstream tools for
 that trace.
+
+The repository is named `ptyroom` because the shared room is the primary
+user-facing workflow. The lower-level trace crate, file format, and raw
+recorder command are still named `ptytrace`.
 
 ## Quickstart
 
@@ -182,7 +186,7 @@ between those two subcommands is documented in
 
 ## Verification
 
-`ptytrace` has three verification layers:
+The `ptytrace` artifact pipeline has three verification layers:
 
 - Witnesses prove that media bytes reproduce from a trace, render config,
   font, toolchain, and ffmpeg identity.
@@ -308,8 +312,8 @@ git diff --check
 Stress coverage for PTY timing primitives lives in
 [`tests/ptytrace_stress.rs`](tests/ptytrace_stress.rs) and uses the generic
 test child in [`tests/fixtures/stress_child.rs`](tests/fixtures/stress_child.rs).
-Consumer-specific golden media belongs in consumer crates, not in
-`ptytrace`.
+Consumer-specific golden media belongs in consumer crates, not in the
+`ptyroom` repository.
 
 Useful focused checks while working on `ptyroom`:
 

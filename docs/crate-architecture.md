@@ -1,9 +1,9 @@
-# Crate Architecture
+# Repository Architecture
 
-`ptytrace` is a reusable PTY capture and replay crate. Its newest
-top-level workflow is `ptyroom`: a live shared terminal room that records
-the same PTY session as a durable trace. The lower layers still serve the
-original deterministic recording and rendering pipeline.
+`ptyroom` is the repository and product: a live shared terminal room that
+records the same PTY session as a durable trace. The lower layers still
+provide the reusable `ptytrace` capture/replay crate and deterministic
+rendering pipeline.
 
 ## Design Goal
 
@@ -33,7 +33,7 @@ script helpers
   Small reusable beats: type a line, press Enter, wait for a prompt,
   hold a frame, add presentation-only text.
 
-ptytrace core
+`ptytrace` core
   PTY spawn, typed input, raw byte capture, content-aware waits,
   virtual presentation time, asciinema-compatible trace output.
 
@@ -56,7 +56,7 @@ pipeline as scripted or one-shot recordings.
 
 ## Core Contract
 
-The ptytrace core owns terminal mechanics:
+The `ptytrace` core owns terminal mechanics:
 
 - process spawning under a PTY;
 - terminal rows and columns;
@@ -66,7 +66,7 @@ The ptytrace core owns terminal mechanics:
 - virtual dwell;
 - trace construction.
 
-The ptytrace core must not own product semantics:
+The `ptytrace` core must not own product semantics:
 
 - no consumer-specific identifiers (theme names, command names, etc.);
 - no consumer-specific UI conventions;
@@ -180,7 +180,7 @@ algebra.
 
 ## Current CLI Shape
 
-The current crate installs four user-facing binaries:
+The current package installs four user-facing binaries:
 
 - `ptytrace`: the raw primitive plus named low-level subcommands.
 - `ptyrender`: the renderer that turns a trace into GIF/MP4 media and
@@ -208,6 +208,8 @@ The byte-level contract is in [`ptyroom-protocol.md`](ptyroom-protocol.md).
 Prefer package names that make the layering explicit even if installed
 binaries are short:
 
+- `ptyroom`: shared-terminal room transport, join viewport, local
+  controls, geometry negotiation, and the `ptyroom` CLI.
 - `ptytrace`: trace schema, PTY capture, script runner, provenance
   anchors over trace digests, and the raw `ptytrace` binary.
 - `ptyrender`: frame replay, paint, encode, render witnesses,
@@ -244,7 +246,7 @@ The formal substitution model is in
 
 Before publishing, this project should have:
 
-- a crate name and README that describe the generic ptytrace;
+- a repository name and README that present `ptyroom` as the front door;
 - examples that record a tiny CLI session without Docker;
 - examples that record a Docker-backed shell session;
 - documented guarantees for time virtualization and output source identity;

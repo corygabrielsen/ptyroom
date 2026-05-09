@@ -1,8 +1,9 @@
 # Provenance Anchors And Trust Algebra
 
-`ptytrace` can prove that media was rendered from a trace. That is not
-the same as proving the trace came from a particular machine, user,
-service, or courtroom exhibit. A trace is bytes; bytes can be fabricated.
+The `ptyroom` toolchain can prove that media was rendered from a trace.
+That is not the same as proving the trace came from a particular machine,
+user, service, or courtroom exhibit. A trace is bytes; bytes can be
+fabricated.
 
 The missing durable object is an attestation: a provider-specific claim
 over the trace digest.
@@ -202,7 +203,7 @@ witness(T, M, A) -> W
 The GIF or MP4 explains the exhibit. The trace is the replayable record.
 The attestation says which expert, lab, or system bound itself to that
 record. Chain of custody for the underlying evidence still lives outside
-`ptytrace`.
+`ptyroom`.
 
 ## What Verification Does Not Prove
 
