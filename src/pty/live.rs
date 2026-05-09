@@ -194,8 +194,7 @@ pub fn capture_with_sink(opts: CaptureOpts, sink: &mut impl CaptureSink) -> Resu
             match read(stdin_borrow, &mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    let pty_borrow = unsafe { BorrowedFd::borrow_raw(pty_fd) };
-                    write(pty_borrow, &buf[..n]).context("write stdin → pty")?;
+                    write_all(pty_fd, &buf[..n]).context("write stdin -> pty")?;
                 }
                 Err(Errno::EINTR) if termination_requested() => break,
                 Err(Errno::EINTR) => {}
@@ -214,11 +213,10 @@ pub fn capture_with_sink(opts: CaptureOpts, sink: &mut impl CaptureSink) -> Resu
                     Ok(0) | Err(Errno::EIO) => break,
                     Ok(n) => {
                         let bytes = &buf[..n];
-                        let stdout_borrow = unsafe { BorrowedFd::borrow_raw(stdout_fd) };
                         // Best-effort tee: a stalled stdout shouldn't
                         // halt the recording. Worst case the user
                         // misses a frame; the trace still has it.
-                        let _ = write(stdout_borrow, bytes);
+                        let _ = write_all(stdout_fd, bytes);
                         let now = Instant::now();
                         let dwell =
                             DwellMs::from_duration(now.saturating_duration_since(last_event));
@@ -248,6 +246,19 @@ pub fn capture_with_sink(opts: CaptureOpts, sink: &mut impl CaptureSink) -> Resu
     pty.terminate_child();
     let recording = builder.finish_screen(cols, rows)?;
     Ok(recording.into_trace())
+}
+
+fn write_all(fd: RawFd, mut bytes: &[u8]) -> Result<()> {
+    while !bytes.is_empty() {
+        let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+        match write(borrowed, bytes) {
+            Ok(0) => anyhow::bail!("live capture write returned 0"),
+            Ok(n) => bytes = &bytes[n..],
+            Err(Errno::EINTR) => {}
+            Err(err) => return Err(anyhow!("live capture write failed: {err}")),
+        }
+    }
+    Ok(())
 }
 
 fn ms_to_seconds(ms: u64) -> f64 {

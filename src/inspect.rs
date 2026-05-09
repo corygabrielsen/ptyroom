@@ -68,8 +68,7 @@ pub fn render(snap: &Frame, range: RowRange, mode: InspectMode) -> String {
             InspectMode::Plain => render_row_plain(snap, y),
             InspectMode::Color => render_row_color(snap, y),
         };
-        // Width formatter discards Display impl errors only on OOM — fine for a tool.
-        let _ = writeln!(out, "{:>width$}  {line}", y + 1);
+        writeln!(out, "{:>width$}  {line}", y + 1).expect("write to String cannot fail");
     }
     out
 }
@@ -98,8 +97,10 @@ fn render_row_color(snap: &Frame, y: usize) -> String {
                 // Goes through Cell::resolve_layers so the inverse attribute
                 // applies here just like it does in the PNG renderer.
                 let (fg, bg) = c.resolve_layers(snap);
-                let _ = write!(out, "\x1b[48;2;{};{};{}m", bg.r(), bg.g(), bg.b());
-                let _ = write!(out, "\x1b[38;2;{};{};{}m", fg.r(), fg.g(), fg.b());
+                write!(out, "\x1b[48;2;{};{};{}m", bg.r(), bg.g(), bg.b())
+                    .expect("write to String cannot fail");
+                write!(out, "\x1b[38;2;{};{};{}m", fg.r(), fg.g(), fg.b())
+                    .expect("write to String cannot fail");
                 out.push(c.first_char());
             }
         }

@@ -1,9 +1,9 @@
 # ptytrace
 
-`ptytrace` gives you shareable PTY rooms backed by durable terminal
-traces. Start a room, let other terminals join it, and keep the session as
-a `.ptytrace` artifact that can be replayed, rendered, verified, or bundled
-later.
+`ptytrace` gives you shareable terminal rooms backed by durable PTY
+traces. Start one terminal session, let other terminals join it, and keep
+the result as a `.ptytrace` artifact that can be replayed, rendered,
+verified, or bundled later.
 
 The top-level command is `ptyroom`:
 
@@ -12,50 +12,21 @@ ptyroom host --listen 127.0.0.1:7373 --out /tmp/room.ptytrace bash
 ptyroom join 127.0.0.1:7373
 ```
 
-The room is live and collaborative; the trace is the durable evidence.
-Everything else in this crate exists to capture, render, verify, or package
-that PTY trace.
-
-## Command Map
-
-Main commands:
-
-```bash
-ptyroom host [--listen 127.0.0.1:0] [cmd]                  # shared room host
-ptyroom join 127.0.0.1:7000                                # shared room client
-ptytrace <command...>                                      # command -> trace
-ptytrace capture [--out PATH]                             # live shell -> trace
-ptytrace run <script> --out <trace|media>                 # script -> trace/media
-ptyrender <trace> <out.gif|out.mp4> [--receipt R]          # trace -> media
-ptyrecord [--out OUT.ptyrecord] <command...>               # command -> bundle
-```
-
-Lower-level or specialized commands:
-
-```bash
-ptytrace render <trace> <out> [--receipt R] [--spec S]
-ptytrace verify --witness R --trace T [--contract C] [--attestation A]
-ptytrace check --trace T --contract C
-ptytrace stitch --out OUT INPUT...
-ptytrace attest file --trace T --out A
-```
-
-Debug pipeline commands:
-
-```bash
-ptytrace debug replay <trace> <out_dir>                    # trace -> frame JSON
-ptytrace debug paint <snap_dir> <out_dir>                  # frames -> PNGs
-ptytrace debug encode <frames> <timing> <out>              # PNGs -> GIF/MP4
-ptytrace debug compare-snapshots <baseline> <candidate>
-ptytrace debug inspect <frame>
-```
+The room is the live collaborative experience. The trace is the durable
+evidence. The render, verify, and bundle commands are downstream tools for
+that trace.
 
 ## Quickstart
 
-Host a room:
+Host a local room:
 
 ```bash
-ptyroom host --listen 127.0.0.1:7373 --out /tmp/room.ptytrace bash
+ptyroom host \
+    --listen 127.0.0.1:7373 \
+    --out /tmp/ptyroom-demo.ptytrace \
+    --cols 100 \
+    --rows 30 \
+    bash
 ```
 
 Join from another terminal:
@@ -68,16 +39,54 @@ Both the host and joined clients type into the same child PTY. The host
 terminal participates by default; use `--no-local-input` only when joined
 clients should be the exclusive input source.
 
-When the room ends, `/tmp/room.ptytrace` is a normal trace:
+For a more chaotic local demo, run the host in one terminal and start two
+or more joins from other terminals. Everyone sees the same PTY and all
+input goes to the same child process.
+
+Fully interactive joins reserve `Ctrl-]` as a local prefix. Press
+`Ctrl-] .` to detach from the room, `Ctrl-] ?` for help, `Ctrl-] r` to
+redraw the local viewport, or `Ctrl-] Ctrl-]` to send a literal `Ctrl-]`
+to the shared PTY.
+
+Interactive joins use a tmux-like size rule. The shared PTY uses the
+smallest active rendering terminal size, and joined terminals reserve one
+local status row that is not part of the remote PTY. This keeps zoomed-in
+participants from seeing a broken oversized layout.
+
+When the room ends, the output path is a normal trace:
 
 ```bash
-ptyrender /tmp/room.ptytrace room.gif
+ptyrender /tmp/ptyroom-demo.ptytrace room.gif
 ```
 
 For remote use, bind loopback and carry the TCP stream through SSH,
 WireGuard, or another authenticated tunnel. The built-in transport has no
 authentication or encryption. Shared-terminal details are in
 [`docs/shared-terminals.md`](docs/shared-terminals.md).
+
+## Which Command Should I Use?
+
+Start with `ptyroom` when you want the shared-terminal experience:
+
+```bash
+ptyroom host [--listen 127.0.0.1:0] [cmd]
+ptyroom join 127.0.0.1:7000
+```
+
+Use the other binaries when you are working with the durable artifact:
+
+| Need | Command |
+| --- | --- |
+| Run one command and keep a trace | `ptytrace <command...>` |
+| Record an exploratory shell | `ptytrace capture --out demo.ptytrace` |
+| Run a scripted recording | `ptytrace run demo.script --out demo.ptytrace` |
+| Render a trace to media | `ptyrender demo.ptytrace demo.gif` |
+| Capture, render, and package | `ptyrecord --out demo.ptyrecord <command...>` |
+| Verify a witness or contract | `ptytrace verify ...` / `ptytrace check ...` |
+
+Debug pipeline commands are available under `ptytrace debug ...` when you
+need intermediate replay snapshots, PNG frames, encoder inputs, or frame
+inspection.
 
 ## Common Workflows
 
@@ -293,6 +302,7 @@ cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 cargo build --bins
+git diff --check
 ```
 
 Stress coverage for PTY timing primitives lives in
@@ -301,15 +311,31 @@ test child in [`tests/fixtures/stress_child.rs`](tests/fixtures/stress_child.rs)
 Consumer-specific golden media belongs in consumer crates, not in
 `ptytrace`.
 
+Useful focused checks while working on `ptyroom`:
+
+```bash
+cargo test pty::room_protocol --lib
+cargo test pty::connect --lib
+cargo test pty::share --lib
+cargo test --test ptyroom_transport_cli
+```
+
 ## Documents
 
-- [`docs/script-grammar.md`](docs/script-grammar.md)
-- [`docs/shared-terminals.md`](docs/shared-terminals.md)
-- [`docs/ptyroom-protocol.md`](docs/ptyroom-protocol.md)
-- [`docs/ptyrecord-format.md`](docs/ptyrecord-format.md)
-- [`docs/provenance-anchors.md`](docs/provenance-anchors.md)
-- [`docs/determinism-audit.md`](docs/determinism-audit.md)
-- [`docs/crate-architecture.md`](docs/crate-architecture.md)
+- [`docs/shared-terminals.md`](docs/shared-terminals.md): operator model
+  for `ptyroom` rooms, local controls, geometry, cleanup, and security.
+- [`docs/ptyroom-protocol.md`](docs/ptyroom-protocol.md): byte-level host
+  and join protocol.
+- [`docs/script-grammar.md`](docs/script-grammar.md): reproducible
+  recording script DSL.
+- [`docs/ptyrecord-format.md`](docs/ptyrecord-format.md): portable bundle
+  format.
+- [`docs/provenance-anchors.md`](docs/provenance-anchors.md): witness,
+  contract, and attestation model.
+- [`docs/determinism-audit.md`](docs/determinism-audit.md): render
+  determinism assumptions and risks.
+- [`docs/crate-architecture.md`](docs/crate-architecture.md): layering,
+  invariants, and future package split.
 
 ## License
 

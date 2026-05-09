@@ -30,6 +30,30 @@ A peer that receives any data or geometry frame before a supported hello
 must fail the connection. This makes mixed-version rooms fail clearly
 instead of treating old control bytes as terminal content.
 
+## Frame Reference
+
+All control frames use the DCS namespace:
+
+```text
+ESC P ptyroom;<payload> ESC \
+```
+
+Payloads:
+
+| Direction | Payload | Meaning |
+| --- | --- | --- |
+| both | `hello;1` | Protocol version handshake. Must appear before any other trusted frame. |
+| client -> host | `resize;<cols>;<rows>` | Latest rendering size for that join client. Zero dimensions are invalid. |
+| host -> client | `size;<cols>;<rows>` | Canonical shared PTY size chosen by the host. |
+| host -> client | `data;<byte-len>` followed by raw bytes | Length-delimited PTY output payload. |
+
+Unknown, malformed, or oversized host-to-client control frames are
+preserved as output by `ptyroom join` after the connection is ready. This
+keeps child output robust in the face of escape-sequence lookalikes.
+Malformed client-to-host controls before `hello;1` disconnect the client;
+after `hello;1`, unknown controls are ignored as controls rather than
+written to the PTY.
+
 After the hello, client-to-host is a raw terminal input byte stream with
 reserved `ptyroom` DCS control frames for terminal geometry.
 
@@ -61,6 +85,13 @@ the socket, parse host-to-client frames, and write only decoded PTY output
 bytes to stdout. After piped stdin closes, it half-closes the socket write
 side and continues reading output until `ptyroom host` closes.
 
+When both stdin and stdout are terminals, `ptyroom join` also has a
+client-local control prefix, `Ctrl-]`. That prefix is not a protocol
+frame and is not sent to the host unless the user types `Ctrl-] Ctrl-]`.
+Local controls such as `Ctrl-] .` detach only that join client; bare
+terminal controls such as `Ctrl-C` and `Esc` remain ordinary remote PTY
+input.
+
 ## Terminal Geometry
 
 `ptyroom host` owns one canonical PTY size. `ptyroom join` reports its
@@ -91,11 +122,46 @@ canvas instead of stale raw-output artifacts. Non-terminal stdout keeps
 pipeline behavior: `ptyroom join` strips `ptyroom` control frames and
 writes raw PTY output bytes.
 
+Interactive join clients reserve one local status row for controls and
+connection state. They report the remaining rows to the host, so the
+canonical shared PTY never renders beneath the local-only status line.
+
 This is the first tmux-like geometry rule: no connected rendering
 `ptyroom join` client should be smaller than the logical PTY it is
 rendering. Larger clients get blank space outside the canonical shared
 screen, and removing the smallest client allows the session to grow to
 the next smallest active renderer.
+
+## State Machines
+
+Host-side state for each client:
+
+```text
+new connection
+  -> waiting for hello
+  -> ready
+  -> input closed or disconnected
+```
+
+While waiting for hello, the host buffers only enough bytes to recognize a
+split protocol prefix. Raw input, resize controls, unsupported versions,
+and oversized unfinished controls disconnect the client. Once ready, raw
+bytes are written to the child PTY, resize controls update that client's
+reported size, and unknown control frames are ignored.
+
+Join-side host stream state:
+
+```text
+connected
+  -> waiting for hello
+  -> ready
+  -> host closed
+```
+
+Before the host hello, decoded output or size frames are an error. Once
+ready, data frames become local output, size frames resize the local
+screen model, and data payloads are interpreted only by byte length. A
+zero-length data frame is a no-op and must not stall the following frame.
 
 ## Scheduling
 
@@ -124,6 +190,23 @@ that client instead of blocking:
 
 This is the core progress invariant for the current transport: a slow
 observer can lose its session, but it cannot stall the shared session.
+
+## Testable Invariants
+
+- Every connection starts with `hello;1`, and unsupported versions fail
+  before user bytes reach the PTY.
+- PTY output is length-delimited, so child output may contain
+  `ESC P ptyroom;... ESC \` byte sequences literally.
+- Late replay queues and evicts whole data frames, never partial payloads.
+- Interactive joins report `local_rows - 1` so the status line is never
+  part of the shared PTY.
+- The host canonical size is the minimum known rendering size, falling
+  back to the configured initial size when no renderer has reported one.
+- A slow client can be disconnected for backlog growth, but cannot block
+  the host PTY, recorder, or other clients.
+- Local join controls are not protocol frames and are enabled only when
+  both stdin and stdout are terminals. `Ctrl-] .` detaches only the local
+  join process; bare `Ctrl-C` remains remote input in interactive mode.
 
 ## Lifecycle
 

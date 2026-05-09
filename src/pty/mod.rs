@@ -21,6 +21,7 @@ mod keys;
 mod live;
 mod osc;
 mod process;
+mod room_protocol;
 mod terminal_state;
 
 pub use drainer::WatchHandle;

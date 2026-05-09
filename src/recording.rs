@@ -241,20 +241,23 @@ impl TraceBuilder {
     /// path; predicate evaluation now happens uniformly at record time.
     ///
     /// # Errors
-    /// Currently infallible.
+    /// Either dimension is zero.
     pub fn finish_synthetic(self, cols: u16, rows: u16) -> anyhow::Result<Recording> {
-        Ok(self.finish(cols, rows))
+        self.finish(cols, rows)
     }
 
     /// Same as [`Self::finish_synthetic`] — see note there.
     ///
     /// # Errors
-    /// Currently infallible.
+    /// Either dimension is zero.
     pub fn finish_screen(self, cols: u16, rows: u16) -> anyhow::Result<Recording> {
-        Ok(self.finish(cols, rows))
+        self.finish(cols, rows)
     }
 
-    fn finish(self, cols: u16, rows: u16) -> Recording {
+    fn finish(self, cols: u16, rows: u16) -> anyhow::Result<Recording> {
+        if cols == 0 || rows == 0 {
+            anyhow::bail!("trace header dimensions must be nonzero; got {cols}x{rows}");
+        }
         let header = TraceHeader {
             version: 2,
             width: u32::from(cols),
@@ -276,10 +279,10 @@ impl TraceBuilder {
             t_ms = t_ms.saturating_add(u64::from(step.dwell.get()));
         }
 
-        Recording {
+        Ok(Recording {
             trace: Trace { header, events },
             markers: self.markers,
-        }
+        })
     }
 }
 
@@ -357,6 +360,16 @@ mod tests {
         assert!((rec.trace().events[1].time_s - 0.05).abs() < f64::EPSILON);
         assert_eq!(rec.trace().events[1].data, "100x30");
         assert!((rec.trace().events[2].time_s - 0.075).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn finish_rejects_zero_header_dimensions() {
+        let err = TraceBuilder::new()
+            .finish_synthetic(0, 24)
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("nonzero"));
     }
 
     #[test]

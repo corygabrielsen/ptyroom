@@ -1,15 +1,16 @@
 # Crate Architecture
 
-`ptytrace` is a reusable deterministic PTY session recorder. Its
-primitives are designed to compose into scripted recordings of any
-interactive CLI; consumer-specific scenes live above this library, not
-inside it.
+`ptytrace` is a reusable PTY capture and replay crate. Its newest
+top-level workflow is `ptyroom`: a live shared terminal room that records
+the same PTY session as a durable trace. The lower layers still serve the
+original deterministic recording and rendering pipeline.
 
 ## Design Goal
 
 Record scripted terminal sessions as reproducible artifacts:
 
 - capture real PTY input and output as raw evidence;
+- share a live PTY without losing the durable trace artifact;
 - keep playback time independent from wall-clock capture time;
 - allow presentation-only bytes, but mark them as synthetic;
 - verify the rendered terminal state before treating a recording as good;
@@ -21,6 +22,10 @@ live above it.
 ## Layers
 
 ```text
+ptyroom
+  Live shared terminal room: one host-owned PTY, joined clients,
+  tmux-like size negotiation, local join controls, durable trace output.
+
 app scenes
   Domain story: commands, labels, timing taste, expected states.
 
@@ -43,6 +48,11 @@ terminal model and verification
 rendering
   Convert snapshots into PNG frames, then encode GIF/MP4.
 ```
+
+`ptyroom` sits beside the scripted scene layer rather than inside it. It
+is an interactive producer of `.ptytrace` artifacts; once the room ends,
+rendering, verification, and bundling use the same downstream trace
+pipeline as scripted or one-shot recordings.
 
 ## Core Contract
 
@@ -127,10 +137,15 @@ Consumer-specific script helpers should remain outside the ptytrace core.
 The user-facing tools should separate primitives from composed workflows:
 
 ```text
+ptyroom  : SharedPtySession -> Trace
 ptytrace : Command -> Trace
 ptyrender: Trace x RenderOptions -> Media x Witness
 ptyrecord: Command x RenderOptions -> PtyRecord
 ```
+
+`ptyroom host` owns the child PTY and writes the trace. `ptyroom join`
+does not create a second trace; it is a participant in the host's live
+session.
 
 `ptytrace htop` and `ptytrace ssh ...` are the raw operation: run a
 command under a PTY and preserve the resulting trace. They should not

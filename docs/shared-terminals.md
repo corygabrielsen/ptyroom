@@ -20,6 +20,39 @@ terminal. Use `--no-local-input` when the host should observe while
 joined clients drive the session. Use `--no-local-output` when the host
 process should run as a headless relay.
 
+## Local Demo
+
+The simplest demo uses three terminals on one machine.
+
+Terminal 1:
+
+```bash
+ptyroom host \
+    --listen 127.0.0.1:7373 \
+    --out /tmp/ptyroom-demo.ptytrace \
+    --cols 100 \
+    --rows 30 \
+    --no-local-input \
+    bash
+```
+
+Terminals 2 and 3:
+
+```bash
+ptyroom join 127.0.0.1:7373
+```
+
+Both joined terminals are now typing into the same shell. Run ordinary
+terminal programs: `bash`, `vim`, `htop`, a REPL, or any CLI that behaves
+inside a PTY. End the child shell with `exit`, or detach an individual
+join client with `Ctrl-] .`.
+
+When the host exits, the trace path from `--out` can be rendered:
+
+```bash
+ptyrender /tmp/ptyroom-demo.ptytrace room.gif
+```
+
 ## Layers
 
 ```text
@@ -40,6 +73,11 @@ One host process owns one child PTY. Host stdin and connected client
 input bytes are interleaved into that PTY. PTY output is length-framed,
 broadcast to all clients, and recorded as `.ptytrace` output events.
 
+There is no separate edit log and no per-client cursor in the current
+model. The room is intentionally a shared PTY, not a collaborative text
+editor. If two people type at once, their bytes race into the same child
+process in the order the host event loop reads them.
+
 Late joiners receive the current terminal size followed by a bounded
 replay of recent complete output frames before live output resumes. The
 replay buffer evicts whole frames, so a client never starts in the middle
@@ -48,6 +86,31 @@ of a length-delimited payload.
 Slow clients have bounded output backlogs. If a client stops reading and
 exceeds the backlog limit, that client is disconnected instead of
 stalling the PTY owner, recorder, or other clients.
+
+## Join-Local Controls
+
+When both stdin and stdout are terminals, `ptyroom join` reserves
+`Ctrl-]` as a local prefix. The prefix is handled by the join process
+before bytes are sent to the room:
+
+- `Ctrl-] .` detaches this join client.
+- `Ctrl-] ?` shows local help.
+- `Ctrl-] r` redraws the local viewport.
+- `Ctrl-] Ctrl-]` sends a literal `Ctrl-]` into the shared PTY.
+
+All other control bytes, including bare `Ctrl-C`, `Esc`, and `q`, remain
+remote input. This keeps full-screen programs usable while still giving
+the join client a local escape hatch.
+
+Interactive clients also reserve one local status row. That row belongs
+to the join process, not the shared PTY, and is excluded from the size the
+client reports to the host.
+
+Piped input does not install local controls, but it can still render in
+the local viewport when stdout is a terminal. If stdout is not a
+terminal, `ptyroom join` behaves like a transport filter: stdin bytes go
+to the room, protocol controls are decoded, and raw PTY output bytes go
+to stdout.
 
 ## Geometry
 
@@ -66,6 +129,37 @@ active renderer. Resize changes are recorded as asciicast resize events.
 
 Non-terminal clients keep pipeline behavior: controls are stripped and
 decoded PTY output bytes are written to stdout.
+
+## Common Failure Modes
+
+Nothing happens after typing on the host:
+
+- If the host was started with `--no-local-input`, host keystrokes are
+  intentionally ignored. Type from a joined client or restart without
+  `--no-local-input`.
+- If the child program is waiting for input without echoing, verify from
+  a second terminal with `ptyroom join <addr>`.
+
+The joined terminal looks clipped or has blank space:
+
+- This is expected when participants have different window sizes. The
+  room chooses the smallest active rendering size. Larger terminals show
+  the shared canvas plus unused space.
+- Resize the smallest terminal or detach it to let the room grow.
+
+The cursor or alternate screen did not restore:
+
+- Normal exits and catchable termination signals run cleanup guards.
+- `SIGKILL`, `SIGSTOP`, terminal emulator crashes, and OS failures cannot
+  run cleanup. Run `reset` in the affected terminal if that happens.
+
+Remote connection is refused:
+
+- The default listen address is loopback. Use SSH port forwarding or
+  another authenticated tunnel for remote participants.
+- Non-loopback binds require
+  `--allow-unauthenticated-public-bind`; only use that behind a trusted
+  network boundary.
 
 ## Terminal Cleanup
 

@@ -25,16 +25,13 @@ use nix::sys::termios::{SetArg, Termios, cfmakeraw, tcgetattr, tcsetattr};
 use nix::unistd::{read, write};
 
 use super::process;
+use super::room_protocol::{self, ClientControl, TerminalSize};
 use super::terminal_state::{RestoreGuard, child_output_restore_sequence, termination_requested};
 use crate::recording::{DwellMs, TraceBuilder};
 
 const MAX_CLIENT_BACKLOG_BYTES: usize = 1024 * 1024;
 const MAX_JOIN_REPLAY_BYTES: usize = 256 * 1024;
-const PROTOCOL_VERSION: u16 = 1;
-const MAX_CONTROL_BYTES: usize = 1024;
 const SIZE_CHECK_INTERVAL: Duration = Duration::from_millis(250);
-const CONTROL_PREFIX: &[u8] = b"\x1bPptyroom;";
-const CONTROL_SUFFIX: &[u8] = b"\x1b\\";
 
 #[derive(Debug, Clone)]
 pub struct ShareOpts {
@@ -91,18 +88,13 @@ pub const fn host_local_io_notice(local_input: bool, local_output: bool) -> Opti
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct TerminalSize {
-    cols: u16,
-    rows: u16,
-}
-
 /// Run a shared PTY session using an already-bound listener.
 ///
 /// # Errors
 /// PTY spawn, listener, client IO, trace construction, or trace write
 /// failed.
 pub fn run(listener: &TcpListener, opts: ShareOpts) -> anyhow::Result<ShareSummary> {
+    ensure_nonzero_size(opts.cols, opts.rows)?;
     listener.set_nonblocking(true)?;
     let listen_addr = listener.local_addr()?;
     let argv = resolve_argv(opts.argv);
@@ -116,15 +108,8 @@ pub fn run(listener: &TcpListener, opts: ShareOpts) -> anyhow::Result<ShareSumma
     let stdout_fd = stdout.as_raw_fd();
     let _terminal_cleanup = terminal_cleanup_guard(opts.local_output, &stdout, stdout_fd);
     let mut local_stdin_open = opts.local_input;
-    let _raw_mode = if opts.local_input && stdin.is_terminal() {
-        RawModeGuard::enter(stdin_fd).ok()
-    } else {
-        None
-    };
-    let initial_size = TerminalSize {
-        cols: opts.cols,
-        rows: opts.rows,
-    };
+    let _raw_mode = host_raw_mode_guard(opts.local_input, &stdin, stdin_fd)?;
+    let initial_size = TerminalSize::new(opts.cols, opts.rows);
     let mut current_size = initial_size;
     let mut host_size = if opts.local_output && stdout.is_terminal() {
         terminal_size(stdout_fd)
@@ -144,10 +129,12 @@ pub fn run(listener: &TcpListener, opts: ShareOpts) -> anyhow::Result<ShareSumma
         if termination_requested() || started.elapsed() > opts.max_runtime {
             break;
         }
-        if opts.local_output && last_size_check.elapsed() >= SIZE_CHECK_INTERVAL {
-            host_size = terminal_size(stdout_fd);
-            last_size_check = Instant::now();
-        }
+        refresh_host_size(
+            opts.local_output,
+            stdout_fd,
+            &mut host_size,
+            &mut last_size_check,
+        );
 
         let poll_state = poll_share_fds(
             listener_fd,
@@ -171,7 +158,11 @@ pub fn run(listener: &TcpListener, opts: ShareOpts) -> anyhow::Result<ShareSumma
             &clients,
         )? {
             record_resize_event(&mut builder, &mut last_event, size)?;
-            broadcast_control(&mut clients, &encode_size_control(size), &mut stats);
+            broadcast_control(
+                &mut clients,
+                &room_protocol::encode_size_control(size),
+                &mut stats,
+            );
         }
 
         local_stdin_open = maybe_drain_local_input(
@@ -208,6 +199,26 @@ pub fn run(listener: &TcpListener, opts: ShareOpts) -> anyhow::Result<ShareSumma
         listen_addr,
         &stats,
     )
+}
+
+fn ensure_nonzero_size(cols: u16, rows: u16) -> anyhow::Result<()> {
+    if cols == 0 || rows == 0 {
+        anyhow::bail!("ptyroom initial terminal size must be nonzero; got {cols}x{rows}");
+    }
+    Ok(())
+}
+
+fn host_raw_mode_guard(
+    local_input: bool,
+    stdin: &io::Stdin,
+    stdin_fd: i32,
+) -> anyhow::Result<Option<RawModeGuard>> {
+    if local_input && stdin.is_terminal() {
+        return Ok(Some(
+            RawModeGuard::enter(stdin_fd).context("enter raw mode for ptyroom host stdin")?,
+        ));
+    }
+    Ok(None)
 }
 
 #[derive(Debug, Default)]
@@ -294,8 +305,8 @@ fn accept_ready_clients(
         match listener.accept() {
             Ok((stream, _addr)) => {
                 let mut client = Client::new(stream)?;
-                client.enqueue(&encode_hello_control());
-                client.enqueue(&encode_size_control(current_size));
+                client.enqueue(&room_protocol::encode_hello_control());
+                client.enqueue(&room_protocol::encode_size_control(current_size));
                 client.enqueue_replay(join_replay);
                 clients.push(client);
                 accepted += 1;
@@ -394,6 +405,18 @@ fn desired_session_size(
     desired
 }
 
+fn refresh_host_size(
+    local_output: bool,
+    stdout_fd: i32,
+    host_size: &mut Option<TerminalSize>,
+    last_size_check: &mut Instant,
+) {
+    if local_output && last_size_check.elapsed() >= SIZE_CHECK_INTERVAL {
+        *host_size = terminal_size(stdout_fd);
+        *last_size_check = Instant::now();
+    }
+}
+
 fn terminal_cleanup_guard(
     local_output: bool,
     stdout: &io::Stdout,
@@ -415,10 +438,7 @@ fn terminal_size(fd: i32) -> Option<TerminalSize> {
     };
     let rc = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut size) };
     if rc == 0 && size.ws_col > 0 && size.ws_row > 0 {
-        Some(TerminalSize {
-            cols: size.ws_col,
-            rows: size.ws_row,
-        })
+        Some(TerminalSize::new(size.ws_col, size.ws_row))
     } else {
         None
     }
@@ -443,32 +463,6 @@ fn broadcast(clients: &mut Vec<Client>, bytes: &[u8], stats: &mut ShareStats) {
 
 fn broadcast_control(clients: &mut Vec<Client>, bytes: &[u8], stats: &mut ShareStats) {
     broadcast(clients, bytes, stats);
-}
-
-fn encode_size_control(size: TerminalSize) -> Vec<u8> {
-    let mut frame = Vec::new();
-    frame.extend_from_slice(CONTROL_PREFIX);
-    frame.extend_from_slice(format!("size;{};{}", size.cols, size.rows).as_bytes());
-    frame.extend_from_slice(CONTROL_SUFFIX);
-    frame
-}
-
-fn encode_hello_control() -> Vec<u8> {
-    let mut frame = Vec::new();
-    frame.extend_from_slice(CONTROL_PREFIX);
-    frame.extend_from_slice(format!("hello;{PROTOCOL_VERSION}").as_bytes());
-    frame.extend_from_slice(CONTROL_SUFFIX);
-    frame
-}
-
-fn encode_output_frame(bytes: &[u8]) -> Vec<u8> {
-    let mut frame =
-        Vec::with_capacity(CONTROL_PREFIX.len() + 24 + CONTROL_SUFFIX.len() + bytes.len());
-    frame.extend_from_slice(CONTROL_PREFIX);
-    frame.extend_from_slice(format!("data;{}", bytes.len()).as_bytes());
-    frame.extend_from_slice(CONTROL_SUFFIX);
-    frame.extend_from_slice(bytes);
-    frame
 }
 
 #[derive(Debug, Default)]
@@ -602,12 +596,18 @@ impl Client {
             if self.input_pending.is_empty() {
                 return Ok(true);
             }
-            let Some(start) = find_subslice(&self.input_pending, CONTROL_PREFIX) else {
+            let Some(start) =
+                room_protocol::find_subslice(&self.input_pending, room_protocol::PREFIX)
+            else {
                 if !self.protocol_ready {
-                    let keep = prefix_overlap(&self.input_pending, CONTROL_PREFIX);
-                    return Ok(keep > 0 && self.input_pending.len() <= MAX_CONTROL_BYTES);
+                    let keep =
+                        room_protocol::prefix_overlap(&self.input_pending, room_protocol::PREFIX);
+                    return Ok(
+                        keep > 0 && self.input_pending.len() <= room_protocol::MAX_CONTROL_BYTES
+                    );
                 }
-                let keep = prefix_overlap(&self.input_pending, CONTROL_PREFIX);
+                let keep =
+                    room_protocol::prefix_overlap(&self.input_pending, room_protocol::PREFIX);
                 let write_len = self.input_pending.len().saturating_sub(keep);
                 if write_len > 0 {
                     write_all(pty_fd, &self.input_pending[..write_len])?;
@@ -624,11 +624,12 @@ impl Client {
                 continue;
             }
 
-            let suffix_search_start = CONTROL_PREFIX.len();
-            let Some(end_rel) =
-                find_subslice(&self.input_pending[suffix_search_start..], CONTROL_SUFFIX)
-            else {
-                if self.input_pending.len() > MAX_CONTROL_BYTES {
+            let suffix_search_start = room_protocol::PREFIX.len();
+            let Some(end_rel) = room_protocol::find_subslice(
+                &self.input_pending[suffix_search_start..],
+                room_protocol::SUFFIX,
+            ) else {
+                if self.input_pending.len() > room_protocol::MAX_CONTROL_BYTES {
                     if !self.protocol_ready {
                         return Ok(false);
                     }
@@ -638,14 +639,14 @@ impl Client {
                 }
                 return Ok(true);
             };
-            let payload_start = CONTROL_PREFIX.len();
+            let payload_start = room_protocol::PREFIX.len();
             let payload_end = suffix_search_start + end_rel;
             let payload = self.input_pending[payload_start..payload_end].to_vec();
             if !self.apply_control(&payload) {
                 return Ok(false);
             }
             self.input_pending
-                .drain(..payload_end + CONTROL_SUFFIX.len());
+                .drain(..payload_end + room_protocol::SUFFIX.len());
         }
     }
 
@@ -662,57 +663,29 @@ impl Client {
     }
 
     fn apply_control(&mut self, payload: &[u8]) -> bool {
-        let Ok(text) = std::str::from_utf8(payload) else {
-            return self.protocol_ready;
-        };
-        let mut parts = text.split(';');
-        match parts.next() {
-            Some("hello") => {
-                let Some(version) = parts.next().and_then(|value| value.parse::<u16>().ok()) else {
-                    return false;
-                };
-                if version == PROTOCOL_VERSION && parts.next().is_none() {
+        match room_protocol::parse_client_control(payload) {
+            Some(ClientControl::Hello(version)) => {
+                if version == room_protocol::VERSION {
                     self.protocol_ready = true;
                     return true;
                 }
                 false
             }
-            Some("resize") if self.protocol_ready => {
-                let Some(cols) = parts.next().and_then(|value| value.parse::<u16>().ok()) else {
-                    return true;
-                };
-                let Some(rows) = parts.next().and_then(|value| value.parse::<u16>().ok()) else {
-                    return true;
-                };
-                if cols > 0 && rows > 0 && parts.next().is_none() {
-                    self.size = Some(TerminalSize { cols, rows });
+            Some(ClientControl::Resize(size)) => {
+                if self.protocol_ready {
+                    self.size = Some(size);
+                    true
+                } else {
+                    false
                 }
-                true
             }
-            _ => self.protocol_ready,
+            None => self.protocol_ready,
         }
     }
 
     fn disconnect(&self) {
         let _ = self.stream.shutdown(Shutdown::Both);
     }
-}
-
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() {
-        return Some(0);
-    }
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
-}
-
-fn prefix_overlap(haystack: &[u8], prefix: &[u8]) -> usize {
-    let max = haystack.len().min(prefix.len().saturating_sub(1));
-    (1..=max)
-        .rev()
-        .find(|&len| haystack[haystack.len() - len..] == prefix[..len])
-        .unwrap_or(0)
 }
 
 struct RawModeGuard {
@@ -821,7 +794,7 @@ fn handle_pty_output(
     if local_output {
         let _ = write_all(stdout_fd, bytes);
     }
-    let client_frame = encode_output_frame(bytes);
+    let client_frame = room_protocol::encode_output_frame(bytes);
     join_replay.remember(&client_frame);
     broadcast(clients, &client_frame, stats);
     let now = Instant::now();
@@ -870,7 +843,7 @@ fn resolve_argv(argv: Vec<String>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use std::io::ErrorKind;
-    use std::os::fd::AsRawFd;
+    use std::os::fd::{AsFd, AsRawFd};
 
     use super::*;
     use crate::trace::{EventKind, Trace};
@@ -880,6 +853,24 @@ mod tests {
     fn default_share_opts_bind_a_trace_name() {
         assert_eq!(ShareOpts::default().out, PathBuf::from("shared.ptytrace"));
         assert!(ShareOpts::default().local_input);
+    }
+
+    #[test]
+    fn share_rejects_zero_initial_size() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let err = run(
+            &listener,
+            ShareOpts {
+                cols: 0,
+                rows: 24,
+                local_output: false,
+                local_input: false,
+                ..ShareOpts::default()
+            },
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("nonzero"));
     }
 
     #[test]
@@ -1115,7 +1106,7 @@ mod tests {
         let (stream, _) = listener.accept().unwrap();
         let mut client = Client::new(stream).unwrap();
         let (pty_r, pty_w) = pipe().unwrap();
-        let mut input = encode_hello_control();
+        let mut input = room_protocol::encode_hello_control();
         input.extend_from_slice(b"hello\n");
 
         peer.write_all(&input).unwrap();
@@ -1125,6 +1116,58 @@ mod tests {
         let mut output = [0_u8; 16];
         let n = nix_read(&pty_r, &mut output).unwrap();
         assert_eq!(&output[..n], b"hello\n");
+    }
+
+    #[test]
+    fn client_accepts_split_protocol_hello_before_raw_input() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        let mut client = Client::new(stream).unwrap();
+        let (pty_r, pty_w) = pipe().unwrap();
+
+        peer.write_all(b"\x1bPpty").unwrap();
+        assert!(client.drain_input_to_pty(pty_w.as_raw_fd()).unwrap());
+        peer.write_all(b"room;hello;1\x1b\\hello\n").unwrap();
+        assert!(client.drain_input_to_pty(pty_w.as_raw_fd()).unwrap());
+        drop(pty_w);
+
+        assert_eq!(read_pipe_to_end(&pty_r), b"hello\n");
+    }
+
+    #[test]
+    fn client_resize_before_protocol_hello_disconnects() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        let mut client = Client::new(stream).unwrap();
+        let (pty_r, pty_w) = pipe().unwrap();
+
+        peer.write_all(&room_protocol::encode_resize_control(TerminalSize {
+            cols: 40,
+            rows: 10,
+        }))
+        .unwrap();
+
+        assert!(!client.drain_input_to_pty(pty_w.as_raw_fd()).unwrap());
+        drop(pty_w);
+        assert!(read_pipe_to_end(&pty_r).is_empty());
+    }
+
+    #[test]
+    fn client_unsupported_protocol_hello_disconnects() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        let mut client = Client::new(stream).unwrap();
+        let (pty_r, pty_w) = pipe().unwrap();
+
+        peer.write_all(b"\x1bPptyroom;hello;2\x1b\\hello\n")
+            .unwrap();
+
+        assert!(!client.drain_input_to_pty(pty_w.as_raw_fd()).unwrap());
+        drop(pty_w);
+        assert!(read_pipe_to_end(&pty_r).is_empty());
     }
 
     #[test]
@@ -1250,20 +1293,20 @@ mod tests {
     fn output_frames_preserve_control_lookalikes_as_data() {
         let payload = b"before\x1bPptyroom;size;1;1\x1b\\after";
         let mut expected = Vec::new();
-        expected.extend_from_slice(CONTROL_PREFIX);
+        expected.extend_from_slice(room_protocol::PREFIX);
         expected.extend_from_slice(format!("data;{}", payload.len()).as_bytes());
-        expected.extend_from_slice(CONTROL_SUFFIX);
+        expected.extend_from_slice(room_protocol::SUFFIX);
         expected.extend_from_slice(payload);
 
-        assert_eq!(encode_output_frame(payload), expected);
+        assert_eq!(room_protocol::encode_output_frame(payload), expected);
     }
 
     #[test]
     fn join_replay_evicts_whole_frames() {
         let mut replay = JoinReplay::default();
         let first_payload = vec![b'a'; MAX_JOIN_REPLAY_BYTES - 128];
-        let first = encode_output_frame(&first_payload);
-        let second = encode_output_frame(&vec![b'b'; 256]);
+        let first = room_protocol::encode_output_frame(&first_payload);
+        let second = room_protocol::encode_output_frame(&vec![b'b'; 256]);
 
         replay.remember(&first);
         replay.remember(&second);
@@ -1283,8 +1326,8 @@ mod tests {
         let (stream, _) = listener.accept().unwrap();
         let mut client = Client::new(stream).unwrap();
         let mut replay = JoinReplay::default();
-        let first = encode_output_frame(b"one");
-        let second = encode_output_frame(b"two");
+        let first = room_protocol::encode_output_frame(b"one");
+        let second = room_protocol::encode_output_frame(b"two");
         replay.remember(&first);
         replay.remember(&second);
 
@@ -1299,7 +1342,9 @@ mod tests {
         loop {
             match TcpStream::connect(addr) {
                 Ok(mut stream) => {
-                    stream.write_all(&encode_hello_control()).unwrap();
+                    stream
+                        .write_all(&room_protocol::encode_hello_control())
+                        .unwrap();
                     return stream;
                 }
                 Err(err) if started.elapsed() < Duration::from_secs(2) => {
@@ -1310,6 +1355,17 @@ mod tests {
                     std::thread::sleep(Duration::from_millis(10));
                 }
                 Err(err) => panic!("connect to ptyroom test server failed: {err}"),
+            }
+        }
+    }
+
+    fn read_pipe_to_end(fd: &impl AsFd) -> Vec<u8> {
+        let mut output = Vec::new();
+        let mut buf = [0_u8; 64];
+        loop {
+            match nix_read(fd, &mut buf).unwrap() {
+                0 => return output,
+                n => output.extend_from_slice(&buf[..n]),
             }
         }
     }
@@ -1343,9 +1399,9 @@ mod tests {
 
     fn resize_control(cols: u16, rows: u16) -> Vec<u8> {
         let mut frame = Vec::new();
-        frame.extend_from_slice(CONTROL_PREFIX);
+        frame.extend_from_slice(room_protocol::PREFIX);
         frame.extend_from_slice(format!("resize;{cols};{rows}").as_bytes());
-        frame.extend_from_slice(CONTROL_SUFFIX);
+        frame.extend_from_slice(room_protocol::SUFFIX);
         frame
     }
 

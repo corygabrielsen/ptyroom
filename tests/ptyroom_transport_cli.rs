@@ -60,6 +60,47 @@ fn ptyroom_join_pipeline_receives_host_command_output() {
 }
 
 #[test]
+fn ptyroom_join_pipeline_forwards_control_prefix_literally() {
+    let tmp = tempfile::tempdir().unwrap();
+    let trace_path = tmp.path().join("shared-control-prefix.ptytrace");
+    let (host, addr) = spawn_ptyroom_host(&[
+        "--listen",
+        "127.0.0.1:0",
+        "--no-local-input",
+        "--no-local-output",
+        "--max-secs",
+        "5",
+        "--out",
+        trace_path.to_str().unwrap(),
+        "sh",
+        "-lc",
+        "IFS= read -r line; printf '%s' \"$line\" | od -An -tx1 | tr -d ' \\n'",
+    ]);
+
+    let join = spawn_ptyroom_join_with_input(&addr, b"\x1d.\n");
+    let join_output = wait_with_timeout(join, Duration::from_secs(5));
+
+    assert!(
+        join_output.status.success(),
+        "ptyroom join failed: {}",
+        String::from_utf8_lossy(&join_output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&join_output.stdout).contains("1d2e"),
+        "ptyroom join stdout was {:?}",
+        String::from_utf8_lossy(&join_output.stdout)
+    );
+
+    let host_output = wait_with_timeout(host, Duration::from_secs(5));
+    assert!(
+        host_output.status.success(),
+        "ptyroom host failed: {}",
+        String::from_utf8_lossy(&host_output.stderr)
+    );
+    assert!(trace_path.exists());
+}
+
+#[test]
 fn two_ptyroom_join_clients_both_receive_shared_command_output() {
     let tmp = tempfile::tempdir().unwrap();
     let trace_path = tmp.path().join("shared-race.ptytrace");

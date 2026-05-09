@@ -16,7 +16,10 @@ use ptytrace::pty::share::{ShareOpts, host_local_io_notice, run};
     long_about = "Open or join a shared terminal room. The host terminal is\n\
                   connected by default. The room transport has no built-in auth\n\
                   or encryption; bind loopback and use SSH,\n\
-                  WireGuard, or another trusted tunnel for remote use."
+                  WireGuard, or another trusted tunnel for remote use.\n\n\
+                  Interactive join controls are local: press Ctrl-] then . to\n\
+                  detach, ? for help, r to redraw, or Ctrl-] to send a literal\n\
+                  Ctrl-]."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -83,6 +86,7 @@ fn main() -> anyhow::Result<()> {
 
 fn host(args: HostArgs) -> anyhow::Result<()> {
     validate_listen_addr(args.listen, args.allow_unauthenticated_public_bind)?;
+    validate_terminal_size(args.cols, args.rows)?;
     let listener = TcpListener::bind(args.listen)?;
     let bound_addr = listener.local_addr()?;
     eprintln!("[ptyroom listening on {bound_addr}]");
@@ -125,6 +129,15 @@ fn default_trace_path(addr: SocketAddr) -> PathBuf {
     PathBuf::from(format!("ptyroom-{}-{}.ptytrace", addr.ip(), addr.port()))
 }
 
+fn validate_terminal_size(cols: u16, rows: u16) -> anyhow::Result<()> {
+    if cols == 0 || rows == 0 {
+        return Err(anyhow!(
+            "ptyroom terminal size must be nonzero; got {cols}x{rows}"
+        ));
+    }
+    Ok(())
+}
+
 fn validate_listen_addr(addr: SocketAddr, allow_public: bool) -> anyhow::Result<()> {
     if addr.ip().is_loopback() || allow_public {
         return Ok(());
@@ -141,7 +154,7 @@ mod tests {
 
     use clap::{CommandFactory, Parser};
 
-    use super::{Cli, Command, default_trace_path, validate_listen_addr};
+    use super::{Cli, Command, default_trace_path, validate_listen_addr, validate_terminal_size};
 
     #[test]
     fn parses_host_command_after_options() {
@@ -190,11 +203,20 @@ mod tests {
     }
 
     #[test]
+    fn rejects_zero_terminal_dimensions() {
+        let err = validate_terminal_size(0, 24).unwrap_err().to_string();
+
+        assert!(err.contains("nonzero"));
+        assert!(validate_terminal_size(80, 24).is_ok());
+    }
+
+    #[test]
     fn help_mentions_host_and_join() {
         let help = Cli::command().render_long_help().to_string();
 
         assert!(help.contains("host"));
         assert!(help.contains("join"));
         assert!(help.contains("no built-in auth"));
+        assert!(help.contains("Ctrl-] then ."));
     }
 }

@@ -31,6 +31,7 @@ impl PtyMaster {
     /// # Errors
     /// The platform PTY resize operation failed.
     pub fn resize(&mut self, cols: u16, rows: u16) -> anyhow::Result<()> {
+        ensure_nonzero_size(cols, rows)?;
         self.master
             .resize(PtySize {
                 rows,
@@ -67,6 +68,7 @@ pub fn spawn(argv: &[&str], cols: u16, rows: u16) -> anyhow::Result<PtyMaster> {
     if argv.is_empty() {
         anyhow::bail!("spawn: empty argv");
     }
+    ensure_nonzero_size(cols, rows)?;
     let pty = NativePtySystem::default();
     let pair = pty
         .openpty(PtySize {
@@ -94,4 +96,23 @@ pub fn spawn(argv: &[&str], cols: u16, rows: u16) -> anyhow::Result<PtyMaster> {
         master: pair.master,
         fd,
     })
+}
+
+fn ensure_nonzero_size(cols: u16, rows: u16) -> anyhow::Result<()> {
+    if cols == 0 || rows == 0 {
+        anyhow::bail!("PTY size must be nonzero; got {cols}x{rows}");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::spawn;
+
+    #[test]
+    fn spawn_rejects_zero_dimensions() {
+        let err = spawn(&["true"], 0, 24).unwrap_err().to_string();
+
+        assert!(err.contains("nonzero"));
+    }
 }
