@@ -1,7 +1,8 @@
 //! Shared `ptyroom` wire framing.
 //!
-//! Both host and join paths use this module so protocol names, versioning,
-//! control parsing, and frame construction cannot drift independently.
+//! Host, join, and watch paths use this module so protocol names,
+//! versioning, control parsing, and frame construction cannot drift
+//! independently.
 
 pub(super) const VERSION: u16 = 1;
 pub(super) const MAX_CONTROL_BYTES: usize = 1024;

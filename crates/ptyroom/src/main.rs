@@ -12,14 +12,15 @@ use ptyroom::share::{ShareOpts, host_local_io_notice, run};
 #[derive(Parser)]
 #[command(
     version,
-    about = "ptyroom — open or join a shared terminal room",
-    long_about = "Open or join a shared terminal room. The host terminal is\n\
+    about = "ptyroom — open, join, or watch a shared terminal room",
+    long_about = "Open, join, or watch a shared terminal room. The host terminal is\n\
                   connected by default. The room transport has no built-in auth\n\
                   or encryption; bind loopback and use SSH,\n\
                   WireGuard, or another trusted tunnel for remote use.\n\n\
                   Interactive join controls are local: press Ctrl-] then . to\n\
                   detach, ? for help, r to redraw, or Ctrl-] to send a literal\n\
-                  Ctrl-]."
+                  Ctrl-]. Watch clients are read-only and do not affect the\n\
+                  shared PTY size."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -32,6 +33,8 @@ enum Command {
     Host(HostArgs),
     /// Join an existing room.
     Join(JoinArgs),
+    /// Watch an existing room without sending input or resizing it.
+    Watch(JoinArgs),
 }
 
 #[derive(ClapArgs)]
@@ -81,6 +84,7 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Host(args) => host(args),
         Command::Join(args) => join(args),
+        Command::Watch(args) => watch(args),
     }
 }
 
@@ -91,6 +95,7 @@ fn host(args: HostArgs) -> anyhow::Result<()> {
     let bound_addr = listener.local_addr()?;
     eprintln!("[ptyroom listening on {bound_addr}]");
     eprintln!("[join with: ptyroom join {bound_addr}]");
+    eprintln!("[watch with: ptyroom watch {bound_addr}]");
     if args.allow_unauthenticated_public_bind && !bound_addr.ip().is_loopback() {
         eprintln!("[warning: unauthenticated public ptyroom bind]");
     }
@@ -123,6 +128,10 @@ fn host(args: HostArgs) -> anyhow::Result<()> {
 
 fn join(args: JoinArgs) -> anyhow::Result<()> {
     connect::connect(args.addr)
+}
+
+fn watch(args: JoinArgs) -> anyhow::Result<()> {
+    connect::watch(args.addr)
 }
 
 fn default_trace_path(addr: SocketAddr) -> PathBuf {
@@ -186,6 +195,16 @@ mod tests {
     }
 
     #[test]
+    fn parses_watch_addr() {
+        let cli = Cli::try_parse_from(["ptyroom", "watch", "127.0.0.1:7000"]).unwrap();
+
+        let Command::Watch(args) = cli.command else {
+            panic!("expected watch subcommand");
+        };
+        assert_eq!(args.addr.port(), 7000);
+    }
+
+    #[test]
     fn default_trace_path_uses_ptyroom_name() {
         let path = default_trace_path(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8022));
 
@@ -216,7 +235,9 @@ mod tests {
 
         assert!(help.contains("host"));
         assert!(help.contains("join"));
+        assert!(help.contains("watch"));
         assert!(help.contains("no built-in auth"));
+        assert!(help.contains("read-only"));
         assert!(help.contains("Ctrl-] then ."));
     }
 }

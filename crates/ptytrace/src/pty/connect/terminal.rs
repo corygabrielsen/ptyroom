@@ -1,4 +1,4 @@
-//! Terminal and file-descriptor helpers for `ptyroom join`.
+//! Terminal and file-descriptor helpers for `ptyroom` clients.
 
 use std::os::fd::{BorrowedFd, RawFd};
 
@@ -29,10 +29,10 @@ pub(super) fn write_all(fd: RawFd, mut bytes: &[u8]) -> anyhow::Result<()> {
     while !bytes.is_empty() {
         let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
         match write(borrowed, bytes) {
-            Ok(0) => anyhow::bail!("ptyroom join write returned 0"),
+            Ok(0) => anyhow::bail!("ptyroom client write returned 0"),
             Ok(n) => bytes = &bytes[n..],
             Err(Errno::EINTR) => {}
-            Err(err) => return Err(anyhow!("ptyroom join write failed: {err}")),
+            Err(err) => return Err(anyhow!("ptyroom client write failed: {err}")),
         }
     }
     Ok(())

@@ -1,4 +1,4 @@
-//! Local output rendering for `ptyroom join`.
+//! Local output rendering for `ptyroom join` and `ptyroom watch`.
 
 use std::os::fd::RawFd;
 
@@ -17,11 +17,13 @@ impl OutputSink {
         stdout_fd: RawFd,
         room_label: String,
         local_controls: bool,
+        read_only: bool,
     ) -> anyhow::Result<Self> {
         Ok(Self::Viewport(Box::new(ViewportRenderer::enter(
             stdout_fd,
             room_label,
             local_controls,
+            read_only,
         )?)))
     }
 
@@ -74,6 +76,7 @@ pub(super) struct ViewportRenderer {
     restore: RestoreGuard,
     room_label: String,
     local_controls: bool,
+    read_only: bool,
     status: LocalStatus,
     parser: vt100::Parser,
     size: TerminalSize,
@@ -82,7 +85,12 @@ pub(super) struct ViewportRenderer {
 }
 
 impl ViewportRenderer {
-    fn enter(stdout_fd: RawFd, room_label: String, local_controls: bool) -> anyhow::Result<Self> {
+    fn enter(
+        stdout_fd: RawFd,
+        room_label: String,
+        local_controls: bool,
+        read_only: bool,
+    ) -> anyhow::Result<Self> {
         let terminal = terminal_size(stdout_fd).unwrap_or(TerminalSize::new(80, 24));
         let size = remote_view_size(terminal);
         write_all(stdout_fd, b"\x1b[?1049h\x1b[?25l\x1b[H\x1b[2J")?;
@@ -91,6 +99,7 @@ impl ViewportRenderer {
             restore: RestoreGuard::new(stdout_fd, viewport_restore_sequence()),
             room_label,
             local_controls,
+            read_only,
             status: LocalStatus::Connected,
             parser: vt100::Parser::new(size.rows, size.cols, 0),
             size,
@@ -153,6 +162,7 @@ impl ViewportRenderer {
             self.status,
             &self.room_label,
             self.local_controls,
+            self.read_only,
         ));
         write_all(self.stdout_fd, &frame)
     }
@@ -163,6 +173,7 @@ impl ViewportRenderer {
             self.status,
             &self.room_label,
             self.local_controls,
+            self.read_only,
         );
         write_all(self.stdout_fd, &frame)
     }
@@ -198,21 +209,35 @@ fn render_status_line(
     status: LocalStatus,
     room_label: &str,
     local_controls: bool,
+    read_only: bool,
 ) -> Vec<u8> {
     let Some(size) = terminal_size else {
         return Vec::new();
     };
     let row = size.rows;
     let mut text = match status {
+        LocalStatus::Connected if local_controls && read_only => {
+            format!(" ptyroom watch {room_label} | read-only | {LOCAL_ESCAPE_NAME} ? help")
+        }
         LocalStatus::Connected if local_controls => {
             format!(" ptyroom {room_label} | {LOCAL_ESCAPE_NAME} ? help")
         }
-        LocalStatus::Connected => format!(" ptyroom {room_label}"),
+        LocalStatus::Connected if read_only => format!(" ptyroom watch {room_label} | read-only"),
+        LocalStatus::Connected => format!(" ptyroom join {room_label}"),
         LocalStatus::Command => {
-            format!(" ptyroom command | . detach | ? help | r redraw | {LOCAL_ESCAPE_NAME} send")
+            if read_only {
+                " ptyroom watch command | . detach | ? help | r redraw".to_owned()
+            } else {
+                format!(
+                    " ptyroom join command | . detach | ? help | r redraw | {LOCAL_ESCAPE_NAME} send"
+                )
+            }
         }
+        LocalStatus::Help if read_only => format!(
+            " ptyroom watch controls | {LOCAL_ESCAPE_NAME} . detach | {LOCAL_ESCAPE_NAME} r redraw | read-only"
+        ),
         LocalStatus::Help => format!(
-            " ptyroom controls | {LOCAL_ESCAPE_NAME} . detach | {LOCAL_ESCAPE_NAME} r redraw | {LOCAL_ESCAPE_NAME} {LOCAL_ESCAPE_NAME} send {LOCAL_ESCAPE_NAME}"
+            " ptyroom join controls | {LOCAL_ESCAPE_NAME} . detach | {LOCAL_ESCAPE_NAME} r redraw | {LOCAL_ESCAPE_NAME} {LOCAL_ESCAPE_NAME} send {LOCAL_ESCAPE_NAME}"
         ),
     };
     let max_len = usize::from(size.cols.saturating_sub(1));
@@ -307,6 +332,7 @@ mod tests {
             LocalStatus::Command,
             "127.0.0.1:7373",
             true,
+            false,
         );
         let text = String::from_utf8_lossy(&rendered);
 
@@ -322,6 +348,7 @@ mod tests {
             LocalStatus::Connected,
             "room",
             true,
+            false,
         );
 
         assert!(rendered.starts_with(b"\x1b7\x1b[5;1H\x1b[7m\x1b[2K"));
@@ -335,12 +362,29 @@ mod tests {
             LocalStatus::Connected,
             "127.0.0.1:7373",
             false,
+            false,
         );
         let text = String::from_utf8_lossy(&rendered);
 
-        assert!(text.contains("ptyroom 127.0.0.1:7373"));
+        assert!(text.contains("ptyroom join 127.0.0.1:7373"));
         assert!(!text.contains("^]"));
         assert!(!text.contains("help"));
+    }
+
+    #[test]
+    fn read_only_status_identifies_watch_mode() {
+        let rendered = render_status_line(
+            Some(TerminalSize { cols: 80, rows: 24 }),
+            LocalStatus::Connected,
+            "127.0.0.1:7373",
+            true,
+            true,
+        );
+        let text = String::from_utf8_lossy(&rendered);
+
+        assert!(text.contains("ptyroom watch 127.0.0.1:7373"));
+        assert!(text.contains("read-only"));
+        assert!(text.contains("^] ? help"));
     }
 
     #[test]
@@ -350,6 +394,7 @@ mod tests {
             LocalStatus::Help,
             "127.0.0.1:7373",
             true,
+            false,
         );
         let text = String::from_utf8_lossy(&rendered);
         let visible = status_visible_text(&text);
@@ -359,7 +404,7 @@ mod tests {
 
     #[test]
     fn status_line_without_terminal_size_is_empty() {
-        assert!(render_status_line(None, LocalStatus::Connected, "room", true).is_empty());
+        assert!(render_status_line(None, LocalStatus::Connected, "room", true, false).is_empty());
     }
 
     #[test]

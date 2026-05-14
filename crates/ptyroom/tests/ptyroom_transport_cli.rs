@@ -60,6 +60,51 @@ fn ptyroom_join_pipeline_receives_host_command_output() {
 }
 
 #[test]
+fn ptyroom_watch_pipeline_receives_output_without_sending_input() {
+    let tmp = tempfile::tempdir().unwrap();
+    let trace_path = tmp.path().join("shared-watch.ptytrace");
+    let (host, addr) = spawn_ptyroom_host(&[
+        "--listen",
+        "127.0.0.1:0",
+        "--no-local-input",
+        "--no-local-output",
+        "--max-secs",
+        "5",
+        "--out",
+        trace_path.to_str().unwrap(),
+        "sh",
+        "-lc",
+        "sleep 0.2; printf 'watch:done\\n'",
+    ]);
+
+    let watch = spawn_ptyroom_watch_with_input(&addr, b"should-not-echo\n");
+    let watch_output = wait_with_timeout(watch, Duration::from_secs(5));
+
+    assert!(
+        watch_output.status.success(),
+        "ptyroom watch failed: {}",
+        String::from_utf8_lossy(&watch_output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&watch_output.stdout);
+    assert!(
+        stdout.contains("watch:done"),
+        "ptyroom watch stdout was {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("should-not-echo"),
+        "ptyroom watch forwarded local stdin: {stdout:?}"
+    );
+
+    let host_output = wait_with_timeout(host, Duration::from_secs(5));
+    assert!(
+        host_output.status.success(),
+        "ptyroom host failed: {}",
+        String::from_utf8_lossy(&host_output.stderr)
+    );
+    assert!(trace_path.exists());
+}
+
+#[test]
 fn ptyroom_join_pipeline_forwards_control_prefix_literally() {
     let tmp = tempfile::tempdir().unwrap();
     let trace_path = tmp.path().join("shared-control-prefix.ptytrace");
@@ -294,6 +339,19 @@ fn spawn_ptyroom_host(args: &[&str]) -> (Child, String) {
 fn spawn_ptyroom_join_with_input(addr: &str, input: &[u8]) -> Child {
     let mut child = Command::new(env!("CARGO_BIN_EXE_ptyroom"))
         .arg("join")
+        .arg(addr)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(input).unwrap();
+    child
+}
+
+fn spawn_ptyroom_watch_with_input(addr: &str, input: &[u8]) -> Child {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ptyroom"))
+        .arg("watch")
         .arg(addr)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

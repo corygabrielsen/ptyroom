@@ -40,12 +40,12 @@ ESC P ptyroom;<payload> ESC \
 
 Payloads:
 
-| Direction | Payload | Meaning |
-| --- | --- | --- |
-| both | `hello;1` | Protocol version handshake. Must appear before any other trusted frame. |
-| client -> host | `resize;<cols>;<rows>` | Latest rendering size for that join client. Zero dimensions are invalid. |
-| host -> client | `size;<cols>;<rows>` | Canonical shared PTY size chosen by the host. |
-| host -> client | `data;<byte-len>` followed by raw bytes | Length-delimited PTY output payload. |
+| Direction      | Payload                                 | Meaning                                                                  |
+| -------------- | --------------------------------------- | ------------------------------------------------------------------------ |
+| both           | `hello;1`                               | Protocol version handshake. Must appear before any other trusted frame.  |
+| client -> host | `resize;<cols>;<rows>`                  | Latest rendering size for that join client. Zero dimensions are invalid. |
+| host -> client | `size;<cols>;<rows>`                    | Canonical shared PTY size chosen by the host.                            |
+| host -> client | `data;<byte-len>` followed by raw bytes | Length-delimited PTY output payload.                                     |
 
 Unknown, malformed, or oversized host-to-client control frames are
 preserved as output by `ptyroom join` after the connection is ready. This
@@ -107,6 +107,11 @@ attached rendering terminal size. The host terminal also participates in
 this calculation when local output is enabled and the host stdout is a
 terminal. If no rendering terminal has reported a size, `ptyroom host`
 uses the configured initial size.
+
+`ptyroom watch` clients send only `hello;1` on the client-to-host
+stream. They never emit `resize` frames and never forward stdin bytes,
+so a watcher's local terminal size has no effect on the canonical PTY
+size and cannot drive the child process.
 
 Whenever a client joins or the canonical size changes, `ptyroom host`
 sends a reserved server-to-client DCS control frame:

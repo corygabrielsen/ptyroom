@@ -81,9 +81,17 @@ Join from another terminal:
 ptyroom join 127.0.0.1:7373
 ```
 
+Watch read-only from another terminal:
+
+```bash
+ptyroom watch 127.0.0.1:7373
+```
+
 Both the host and joined clients type into the same child PTY. The host
 terminal participates by default; use `--no-local-input` only when joined
-clients should be the exclusive input source.
+clients should be the exclusive input source. Watch clients see the same
+output stream but never send input and never participate in the shared
+PTY size negotiation.
 
 For a more chaotic local demo, run the host in one terminal and start two
 or more joins from other terminals. Everyone sees the same PTY and all
@@ -132,18 +140,22 @@ Start with `ptyroom` when you want the shared-terminal experience:
 ```bash
 ptyroom host [--listen 127.0.0.1:0] [cmd]
 ptyroom join 127.0.0.1:7000
+ptyroom watch 127.0.0.1:7000
 ```
+
+Use `watch` when an observer should see the room without sending input or
+shrinking the shared PTY (demos, recordings, teaching audiences).
 
 Use the other binaries when you are working with the durable artifact:
 
-| Need | Command |
-| --- | --- |
-| Run one command and keep a trace | `ptytrace <command...>` |
-| Record an exploratory shell | `ptytrace capture --out demo.ptytrace` |
-| Run a scripted recording | `ptytrace run demo.script --out demo.ptytrace` |
-| Render a trace to media | `ptyrender demo.ptytrace demo.gif` |
-| Capture, render, and package | `ptyrecord --out demo.ptyrecord <command...>` |
-| Verify a witness or contract | `ptyrender verify ...` / `ptytrace check ...` |
+| Need                             | Command                                        |
+| -------------------------------- | ---------------------------------------------- |
+| Run one command and keep a trace | `ptytrace <command...>`                        |
+| Record an exploratory shell      | `ptytrace capture --out demo.ptytrace`         |
+| Run a scripted recording         | `ptytrace run demo.script --out demo.ptytrace` |
+| Render a trace to media          | `ptyrender demo.ptytrace demo.gif`             |
+| Capture, render, and package     | `ptyrecord --out demo.ptyrecord <command...>`  |
+| Verify a witness or contract     | `ptyrender verify ...` / `ptytrace check ...`  |
 
 The `ptyrender` crate owns the replay, frame, paint, encode, and witness
 pipeline. The `ptytrace` binary stays focused on producing and checking

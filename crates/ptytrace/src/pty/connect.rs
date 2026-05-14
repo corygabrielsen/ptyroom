@@ -1,8 +1,8 @@
 //! Client side of a shared PTY session.
 //!
-//! This is the implementation behind `ptyroom join`. Interactive stdout
-//! renders into an alternate-screen viewport; non-terminal stdout receives
-//! decoded PTY output bytes for pipeline use.
+//! This is the implementation behind `ptyroom join` and `ptyroom watch`.
+//! Interactive stdout renders into an alternate-screen viewport;
+//! non-terminal stdout receives decoded PTY output bytes for pipeline use.
 
 use std::io;
 use std::io::IsTerminal;
@@ -35,12 +35,51 @@ const RESIZE_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 /// # Errors
 /// TCP connection, terminal mode setup, terminal IO, or socket IO failed.
 pub fn connect(addr: SocketAddr) -> anyhow::Result<()> {
-    let stream = TcpStream::connect(addr)?;
-    stream.set_nodelay(true)?;
-    relay(&stream)
+    connect_with_mode(addr, ClientMode::Join)
 }
 
-fn relay(stream: &TcpStream) -> anyhow::Result<()> {
+/// Watch a shared PTY server without sending local input or geometry.
+///
+/// # Errors
+/// TCP connection, terminal mode setup, terminal IO, or socket IO failed.
+pub fn watch(addr: SocketAddr) -> anyhow::Result<()> {
+    connect_with_mode(addr, ClientMode::Watch)
+}
+
+fn connect_with_mode(addr: SocketAddr, mode: ClientMode) -> anyhow::Result<()> {
+    let stream = TcpStream::connect(addr)?;
+    stream.set_nodelay(true)?;
+    relay(&stream, mode)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClientMode {
+    Join,
+    Watch,
+}
+
+impl ClientMode {
+    const fn relay_opts(self, local_controls: bool) -> RelayOpts {
+        match self {
+            Self::Join => RelayOpts {
+                local_controls,
+                forward_input: true,
+                report_size: true,
+            },
+            Self::Watch => RelayOpts {
+                local_controls,
+                forward_input: false,
+                report_size: false,
+            },
+        }
+    }
+
+    const fn is_read_only(self) -> bool {
+        matches!(self, Self::Watch)
+    }
+}
+
+fn relay(stream: &TcpStream, mode: ClientMode) -> anyhow::Result<()> {
     let stdin = io::stdin();
     let stdout = io::stdout();
     let stdin_fd = stdin.as_raw_fd();
@@ -49,16 +88,27 @@ fn relay(stream: &TcpStream) -> anyhow::Result<()> {
     let stdout_is_terminal = stdout.is_terminal();
     let local_controls = local_controls_enabled(stdin_is_terminal, stdout_is_terminal);
     let _raw = if local_controls {
-        Some(RawModeGuard::enter(stdin_fd).context("enter raw mode for ptyroom join stdin")?)
+        Some(RawModeGuard::enter(stdin_fd).context("enter raw mode for ptyroom client stdin")?)
     } else {
         None
     };
     let mut output = if stdout_is_terminal {
-        OutputSink::viewport(stdout_fd, addr_label(stream), local_controls)?
+        OutputSink::viewport(
+            stdout_fd,
+            addr_label(stream),
+            local_controls,
+            mode.is_read_only(),
+        )?
     } else {
         OutputSink::Raw
     };
-    relay_fds_with_output(stream, stdin_fd, stdout_fd, &mut output, local_controls)
+    relay_fds_with_output(
+        stream,
+        stdin_fd,
+        stdout_fd,
+        &mut output,
+        mode.relay_opts(local_controls),
+    )
 }
 
 const fn local_controls_enabled(stdin_is_terminal: bool, stdout_is_terminal: bool) -> bool {
@@ -68,7 +118,40 @@ const fn local_controls_enabled(stdin_is_terminal: bool, stdout_is_terminal: boo
 #[cfg(test)]
 fn relay_fds(stream: &TcpStream, stdin_fd: RawFd, stdout_fd: RawFd) -> anyhow::Result<()> {
     let mut output = OutputSink::Raw;
-    relay_fds_with_output(stream, stdin_fd, stdout_fd, &mut output, false)
+    relay_fds_with_output(
+        stream,
+        stdin_fd,
+        stdout_fd,
+        &mut output,
+        RelayOpts::join(false),
+    )
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RelayOpts {
+    local_controls: bool,
+    forward_input: bool,
+    report_size: bool,
+}
+
+impl RelayOpts {
+    #[cfg(test)]
+    const fn join(local_controls: bool) -> Self {
+        Self {
+            local_controls,
+            forward_input: true,
+            report_size: true,
+        }
+    }
+
+    #[cfg(test)]
+    const fn watch(local_controls: bool) -> Self {
+        Self {
+            local_controls,
+            forward_input: false,
+            report_size: false,
+        }
+    }
 }
 
 fn relay_fds_with_output(
@@ -76,24 +159,36 @@ fn relay_fds_with_output(
     stdin_fd: RawFd,
     stdout_fd: RawFd,
     output: &mut OutputSink,
-    local_controls: bool,
+    opts: RelayOpts,
 ) -> anyhow::Result<()> {
     let stream_fd = stream.as_raw_fd();
     let mut buf = [0_u8; 4096];
-    let mut stdin_open = true;
+    let mut stdin_open = opts.forward_input || opts.local_controls;
     let mut last_size = None;
     let mut protocol_ready = false;
     let mut input_router = LocalInputRouter::default();
     let mut server_stream = ServerStream::default();
-    let reports_size = output.reports_size();
+    let reports_size = opts.report_size && output.reports_size();
     write_all(stream_fd, &room_protocol::encode_hello_control())?;
-    send_resize_if_changed(stream_fd, output.reported_size(stdout_fd), &mut last_size)?;
+    send_resize_if_changed(
+        stream_fd,
+        reports_size
+            .then(|| output.reported_size(stdout_fd))
+            .flatten(),
+        &mut last_size,
+    )?;
 
     loop {
         if termination_requested() {
             return Ok(());
         }
-        send_resize_if_changed(stream_fd, output.reported_size(stdout_fd), &mut last_size)?;
+        send_resize_if_changed(
+            stream_fd,
+            reports_size
+                .then(|| output.reported_size(stdout_fd))
+                .flatten(),
+            &mut last_size,
+        )?;
         let poll_state = poll_join_fds(stdin_open, stdin_fd, stream_fd)?;
 
         if !drain_join_stdin(
@@ -106,7 +201,7 @@ fn relay_fds_with_output(
                 stdout_fd,
                 output,
                 input_router: &mut input_router,
-                local_controls,
+                opts,
                 reports_size,
             },
             &mut buf,
@@ -160,7 +255,7 @@ fn poll_join_fds(
                 stream_revents: PollFlags::empty(),
             });
         }
-        Err(err) => return Err(anyhow!("poll ptyroom join: {err}")),
+        Err(err) => return Err(anyhow!("poll ptyroom client: {err}")),
     }
 
     Ok(JoinPollState {
@@ -178,7 +273,7 @@ struct JoinStdin<'a> {
     stdout_fd: RawFd,
     output: &'a mut OutputSink,
     input_router: &'a mut LocalInputRouter,
-    local_controls: bool,
+    opts: RelayOpts,
     reports_size: bool,
 }
 
@@ -195,7 +290,7 @@ fn drain_join_stdin(
         stdout_fd,
         output,
         input_router,
-        local_controls,
+        opts,
         reports_size,
     } = io;
     if !*stdin_open || !revents.intersects(PollFlags::POLLIN | PollFlags::POLLHUP) {
@@ -205,19 +300,26 @@ fn drain_join_stdin(
     match read(stdin_borrow, buf) {
         Ok(0) => {
             *stdin_open = false;
-            if !reports_size {
+            if opts.forward_input && !reports_size {
                 let _ = stream.shutdown(Shutdown::Write);
             }
         }
-        Ok(n) if local_controls => {
-            if !handle_local_input(&buf[..n], input_router, stream_fd, stdout_fd, output)? {
+        Ok(n) if opts.local_controls => {
+            if !handle_local_input(
+                &buf[..n],
+                input_router,
+                stream_fd,
+                stdout_fd,
+                output,
+                opts.forward_input,
+            )? {
                 let _ = stream.shutdown(Shutdown::Both);
                 return Ok(false);
             }
         }
-        Ok(n) => write_all(stream_fd, &buf[..n])?,
+        Ok(n) if opts.forward_input => write_all(stream_fd, &buf[..n])?,
         Err(Errno::EINTR) if termination_requested() => return Ok(false),
-        Err(Errno::EINTR) => {}
+        Ok(_) | Err(Errno::EINTR) => {}
         Err(err) => return Err(anyhow!("read stdin: {err}")),
     }
     Ok(true)
@@ -299,22 +401,23 @@ fn handle_local_input(
     stream_fd: RawFd,
     stdout_fd: RawFd,
     output: &mut OutputSink,
+    forward_input: bool,
 ) -> anyhow::Result<bool> {
     let mut remote = Vec::with_capacity(bytes.len());
     for &byte in bytes {
         match router.push(byte) {
             LocalInputAction::Remote(byte) => remote.push(byte),
             LocalInputAction::SetStatus(status) => {
-                flush_remote_input(stream_fd, &mut remote)?;
+                maybe_flush_remote_input(stream_fd, &mut remote, forward_input)?;
                 output.set_status(stdout_fd, status)?;
             }
             LocalInputAction::ForceRedraw => {
-                flush_remote_input(stream_fd, &mut remote)?;
+                maybe_flush_remote_input(stream_fd, &mut remote, forward_input)?;
                 output.set_status(stdout_fd, LocalStatus::Connected)?;
                 output.force_redraw(stdout_fd)?;
             }
             LocalInputAction::Disconnect => {
-                flush_remote_input(stream_fd, &mut remote)?;
+                maybe_flush_remote_input(stream_fd, &mut remote, forward_input)?;
                 return Ok(false);
             }
             LocalInputAction::UnknownCommand(byte) => {
@@ -323,8 +426,21 @@ fn handle_local_input(
             }
         }
     }
-    flush_remote_input(stream_fd, &mut remote)?;
+    maybe_flush_remote_input(stream_fd, &mut remote, forward_input)?;
     Ok(true)
+}
+
+fn maybe_flush_remote_input(
+    stream_fd: RawFd,
+    remote: &mut Vec<u8>,
+    forward_input: bool,
+) -> anyhow::Result<()> {
+    if forward_input {
+        flush_remote_input(stream_fd, remote)
+    } else {
+        remote.clear();
+        Ok(())
+    }
 }
 
 fn flush_remote_input(stream_fd: RawFd, remote: &mut Vec<u8>) -> anyhow::Result<()> {
@@ -372,7 +488,7 @@ mod tests {
     use super::super::room_protocol::{self, TerminalSize};
     use super::control::LOCAL_ESCAPE;
     use super::output::OutputSink;
-    use super::{local_controls_enabled, relay_fds, relay_fds_with_output};
+    use super::{RelayOpts, local_controls_enabled, relay_fds, relay_fds_with_output};
 
     #[test]
     fn relay_continues_reading_socket_after_stdin_eof() {
@@ -452,6 +568,61 @@ mod tests {
     }
 
     #[test]
+    fn read_only_relay_does_not_forward_input_or_resize() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let expected_hello = room_protocol::encode_hello_control();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(std::time::Duration::from_millis(150)))
+                .unwrap();
+            let mut received = Vec::new();
+            let mut buf = [0_u8; 128];
+            loop {
+                match socket.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => received.extend_from_slice(&buf[..n]),
+                    Err(err)
+                        if matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+                    {
+                        break;
+                    }
+                    Err(err) => panic!("server read failed: {err}"),
+                }
+            }
+            assert_eq!(received, expected_hello);
+            socket
+                .write_all(&room_protocol::encode_hello_control())
+                .unwrap();
+        });
+        let stream = TcpStream::connect(addr).unwrap();
+        let (stdin_r, stdin_w) = pipe().unwrap();
+        nix_write(&stdin_w, b"abc\x03\x1b").unwrap();
+        drop(stdin_w);
+        let winsize = Winsize {
+            ws_row: 24,
+            ws_col: 80,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        let pty = openpty(Some(&winsize), None).unwrap();
+        let stdout_fd = pty.slave.as_raw_fd();
+        let mut output = OutputSink::viewport(stdout_fd, "test".to_owned(), true, true).unwrap();
+
+        relay_fds_with_output(
+            &stream,
+            stdin_r.as_raw_fd(),
+            stdout_fd,
+            &mut output,
+            RelayOpts::watch(true),
+        )
+        .unwrap();
+
+        server.join().unwrap();
+    }
+
+    #[test]
     fn local_help_command_is_not_forwarded_and_remote_input_resumes() {
         let mut expected = room_protocol::encode_hello_control();
         expected.extend_from_slice(b"abcd");
@@ -523,9 +694,16 @@ mod tests {
         };
         let pty = openpty(Some(&winsize), None).unwrap();
         let stdout_fd = pty.slave.as_raw_fd();
-        let mut output = OutputSink::viewport(stdout_fd, "test".to_owned(), true).unwrap();
+        let mut output = OutputSink::viewport(stdout_fd, "test".to_owned(), true, false).unwrap();
 
-        relay_fds_with_output(&stream, stdin_r.as_raw_fd(), stdout_fd, &mut output, false).unwrap();
+        relay_fds_with_output(
+            &stream,
+            stdin_r.as_raw_fd(),
+            stdout_fd,
+            &mut output,
+            RelayOpts::join(false),
+        )
+        .unwrap();
 
         server.join().unwrap();
     }
@@ -568,9 +746,16 @@ mod tests {
         };
         let pty = openpty(Some(&winsize), None).unwrap();
         let stdout_fd = pty.slave.as_raw_fd();
-        let mut output = OutputSink::viewport(stdout_fd, "test".to_owned(), true).unwrap();
+        let mut output = OutputSink::viewport(stdout_fd, "test".to_owned(), true, false).unwrap();
 
-        relay_fds_with_output(&stream, stdin_r.as_raw_fd(), stdout_fd, &mut output, false).unwrap();
+        relay_fds_with_output(
+            &stream,
+            stdin_r.as_raw_fd(),
+            stdout_fd,
+            &mut output,
+            RelayOpts::join(false),
+        )
+        .unwrap();
 
         server.join().unwrap();
     }
@@ -650,7 +835,13 @@ mod tests {
         stdout_fd: RawFd,
     ) -> anyhow::Result<()> {
         let mut output = OutputSink::Raw;
-        relay_fds_with_output(stream, stdin_fd, stdout_fd, &mut output, true)
+        relay_fds_with_output(
+            stream,
+            stdin_fd,
+            stdout_fd,
+            &mut output,
+            RelayOpts::join(true),
+        )
     }
 
     fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {

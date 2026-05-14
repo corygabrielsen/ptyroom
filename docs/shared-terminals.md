@@ -1,7 +1,7 @@
 # Shared Terminals
 
-`ptyroom` is the shared-terminal command. It exposes explicit `host` and
-`join` operations:
+`ptyroom` is the shared-terminal command. It exposes explicit `host`,
+`join`, and `watch` operations:
 
 ```bash
 ptyroom host \
@@ -12,6 +12,7 @@ ptyroom host \
     bash
 
 ptyroom join 127.0.0.1:7373
+ptyroom watch 127.0.0.1:7373
 ```
 
 The host terminal participates by default. That means local host typing
@@ -19,6 +20,11 @@ goes into the shared PTY and local host output is rendered in the host
 terminal. Use `--no-local-input` when the host should observe while
 joined clients drive the session. Use `--no-local-output` when the host
 process should run as a headless relay.
+
+`ptyroom watch` is a read-only client: it receives the same broadcast
+output as a join, but never forwards local input bytes and never reports
+its terminal size. A watcher cannot type into the PTY and cannot shrink
+the shared canvas, no matter how small its window is.
 
 ## Local Demo
 
@@ -112,6 +118,13 @@ terminal, `ptyroom join` behaves like a transport filter: stdin bytes go
 to the room, protocol controls are decoded, and raw PTY output bytes go
 to stdout.
 
+`ptyroom watch` reuses the same viewport and local-control machinery, but
+drops every byte that would otherwise be sent to the room. Local stdin is
+still read so that `Ctrl-]` detach, redraw, and help continue to work;
+the `Ctrl-] Ctrl-]` "send literal" affordance is removed because there is
+no upstream input channel. The status line identifies the mode as
+`ptyroom watch <addr> | read-only`.
+
 ## Geometry
 
 `ptyroom host` owns one canonical child PTY size. Rendering participants
@@ -119,6 +132,10 @@ report terminal size:
 
 - the host terminal, when local output is enabled;
 - interactive `ptyroom join` clients.
+
+`ptyroom watch` clients are deliberately excluded from this calculation.
+A watcher's window size has no effect on the shared PTY, so a small
+observer cannot shrink the canvas seen by everyone else.
 
 The canonical size is the smallest known rendering terminal. This is the
 tmux-like rule that prevents a zoomed-in participant from seeing a wider
