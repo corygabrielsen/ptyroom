@@ -141,10 +141,16 @@ Start with `ptyroom` when you want the shared-terminal experience:
 ptyroom host [--listen 127.0.0.1:0] [cmd]
 ptyroom join 127.0.0.1:7000
 ptyroom watch 127.0.0.1:7000
+ptyroom ctl 127.0.0.1:7000 queue add "next prompt"
+ptyroom ctl 127.0.0.1:7000 queue next
 ```
 
 Use `watch` when an observer should see the room without sending input or
-shrinking the shared PTY (demos, recordings, teaching audiences).
+shrinking the shared PTY (demos, recordings, teaching audiences). Use
+`ctl queue` to enqueue text that should later be typed into the shared
+PTY — the original motivation is wiring Claude Code's `Stop` hook to
+`queue next` so queued prompts are auto-submitted at every turn
+boundary (see [`docs/shared-terminals.md`](docs/shared-terminals.md)).
 
 Use the other binaries when you are working with the durable artifact:
 

@@ -132,6 +132,73 @@ the `Ctrl-] Ctrl-]` "send literal" affordance is removed because there is
 no upstream input channel. The status line identifies the mode as
 `ptyroom watch <addr> | read-only`.
 
+## Host-Local Controls
+
+When the host has its own viewport (interactive stdout) and raw-mode
+stdin (interactive stdin, `--no-local-input` not set), `ptyroom host`
+also reserves `Ctrl-]` as a local prefix on the host terminal:
+
+- `Ctrl-] .` ends the session: the child PTY is terminated, the trace
+  is flushed, and `ptyroom host` exits cleanly.
+- `Ctrl-] ?` toggles a help line in the `[HOST]` status bar.
+- `Ctrl-] r` forces a viewport redraw.
+- `Ctrl-] Ctrl-]` passes a literal `Ctrl-]` through to the shared PTY.
+
+The host status bar shows `^] ? help` as a persistent hint. Piped host
+input or `--no-local-input` skips this routing entirely; bytes pass
+straight through to the child PTY.
+
+## Message Queue
+
+`ptyroom host` exposes a local message queue over a Unix socket at
+`/tmp/ptyroom-<port>.sock`, where `<port>` is the host's bound TCP
+port. External processes drive the queue with `ptyroom ctl`:
+
+```bash
+ptyroom ctl 127.0.0.1:7373 queue add "first prompt"
+ptyroom ctl 127.0.0.1:7373 queue add "second prompt"
+ptyroom ctl 127.0.0.1:7373 queue list   # -> ok queue-depth=2
+ptyroom ctl 127.0.0.1:7373 queue next   # -> writes "first prompt\r" to the PTY
+```
+
+`queue add` without a text argument reads the message body from stdin
+until EOF, which keeps multi-line prompts readable in shell scripts.
+
+The `[HOST]` status bar grows a `N queued` segment while the queue is
+non-empty. Queued messages live in host process memory only; they are
+lost if the host exits.
+
+### Claude Code Integration
+
+The original motivation for the queue is Claude Code, which has no
+built-in prompt queue. Wire Claude Code's `Stop` hook to fire `queue
+next` on every turn boundary and the host will inject the next queued
+message as if the user had typed it:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "type": "command",
+        "command": "ptyroom ctl 127.0.0.1:7373 queue next"
+      }
+    ]
+  }
+}
+```
+
+The `Stop` hook fires every time Claude finishes responding and is
+waiting for the next input, including after tool calls. See the [Claude
+Code hooks reference][claude-hooks] for details.
+
+This is a proof-of-concept integration: there is no input-idle
+debounce, no prompt-pattern wait, and the queue is not persisted across
+host restarts. Race-condition mitigations are deliberately deferred
+until real usage justifies them.
+
+[claude-hooks]: https://code.claude.com/docs/en/hooks.md
+
 ## Geometry
 
 `ptyroom host` owns one canonical child PTY size. Rendering participants
