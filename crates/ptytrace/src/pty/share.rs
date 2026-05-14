@@ -140,8 +140,6 @@ impl<'a> Session<'a> {
         let listen_addr = listener.local_addr()?;
         let argv = resolve_argv(opts.argv);
         let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-        let pty = process::spawn(&argv_refs, opts.cols, opts.rows)?;
-        let pty_fd = pty.fd();
         let listener_fd = listener.as_raw_fd();
         let stdin = io::stdin();
         let stdin_fd = stdin.as_raw_fd();
@@ -150,7 +148,10 @@ impl<'a> Session<'a> {
         let (host_viewport, terminal_cleanup) =
             setup_host_terminal(opts.local_output, &argv, listen_addr, &stdout, stdout_fd)?;
         let raw_mode = host_raw_mode_guard(opts.local_input, &stdin, stdin_fd)?;
-        let initial_size = TerminalSize::new(opts.cols, opts.rows);
+        let initial_size =
+            initial_pty_size(opts.cols, opts.rows, host_viewport.as_ref(), stdout_fd);
+        let pty = process::spawn(&argv_refs, initial_size.cols, initial_size.rows)?;
+        let pty_fd = pty.fd();
         let host_size = initial_host_size(
             opts.local_output,
             &stdout,
@@ -541,6 +542,20 @@ fn sync_canonical_size(
         viewport.resize(stdout_fd, size)?;
     }
     Ok(())
+}
+
+fn initial_pty_size(
+    cols: u16,
+    rows: u16,
+    host_viewport: Option<&HostViewport>,
+    stdout_fd: i32,
+) -> TerminalSize {
+    if host_viewport.is_some()
+        && let Some(size) = HostViewport::reported_size(stdout_fd)
+    {
+        return size;
+    }
+    TerminalSize::new(cols, rows)
 }
 
 fn initial_host_size(
