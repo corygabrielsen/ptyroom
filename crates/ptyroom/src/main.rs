@@ -123,6 +123,10 @@ fn host(args: HostArgs) -> anyhow::Result<()> {
         summary.clients_disconnected,
         summary.clients_dropped_for_backlog
     );
+    println!(
+        "render with: ptyrender {} room.gif",
+        summary.trace_path.display()
+    );
     Ok(())
 }
 
