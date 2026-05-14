@@ -17,6 +17,7 @@ pub mod connect;
 pub mod share;
 
 mod drainer;
+mod input_router;
 mod keys;
 mod live;
 mod osc;

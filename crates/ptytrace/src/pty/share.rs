@@ -24,6 +24,7 @@ use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use nix::sys::termios::{SetArg, Termios, cfmakeraw, tcgetattr, tcsetattr};
 use nix::unistd::{read, write};
 
+use super::input_router::{LOCAL_ESCAPE_NAME, LocalInputAction, LocalInputRouter, LocalStatus};
 use super::process;
 use super::room_protocol::{self, ClientControl, TerminalSize};
 use super::status_bar::{Bar, Chip};
@@ -119,7 +120,9 @@ struct Session<'a> {
     host_size: Option<TerminalSize>,
     last_size_check: Instant,
     host_viewport: Option<HostViewport>,
+    input_router: Option<LocalInputRouter>,
     local_stdin_open: bool,
+    should_end: bool,
     clients: Vec<Client>,
     join_replay: JoinReplay,
     stats: ShareStats,
@@ -159,6 +162,12 @@ impl<'a> Session<'a> {
             host_viewport.as_ref(),
         );
         let started = Instant::now();
+        let input_router =
+            (host_viewport.is_some() && raw_mode.is_some()).then(LocalInputRouter::default);
+        let mut host_viewport = host_viewport;
+        if let Some(view) = host_viewport.as_mut() {
+            view.set_controls_enabled(input_router.is_some());
+        }
         Ok(Self {
             listener,
             pty,
@@ -172,7 +181,9 @@ impl<'a> Session<'a> {
             host_size,
             last_size_check: Instant::now(),
             host_viewport,
+            input_router,
             local_stdin_open: opts.local_input,
+            should_end: false,
             clients: Vec::new(),
             join_replay: JoinReplay::default(),
             stats: ShareStats::default(),
@@ -188,7 +199,77 @@ impl<'a> Session<'a> {
     }
 
     fn should_stop(&self) -> bool {
-        termination_requested() || self.started.elapsed() > self.max_runtime
+        self.should_end || termination_requested() || self.started.elapsed() > self.max_runtime
+    }
+
+    fn drain_host_input(&mut self, buf: &mut [u8]) -> anyhow::Result<bool> {
+        let stdin_borrow = unsafe { BorrowedFd::borrow_raw(self.stdin_fd) };
+        match read(stdin_borrow, buf) {
+            Ok(0) | Err(Errno::EIO) => Ok(false),
+            Ok(n) => {
+                self.process_host_input(&buf[..n])?;
+                Ok(true)
+            }
+            Err(Errno::EINTR) => Ok(true),
+            Err(err) => Err(anyhow!("read local stdin: {err}")),
+        }
+    }
+
+    fn process_host_input(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
+        let Some(router) = self.input_router.as_mut() else {
+            return write_all(self.pty_fd, bytes);
+        };
+        let actions: Vec<LocalInputAction> = bytes.iter().map(|&b| router.push(b)).collect();
+        let mut remote = Vec::with_capacity(actions.len());
+        for action in actions {
+            if let LocalInputAction::Remote(b) = action {
+                remote.push(b);
+                continue;
+            }
+            if !remote.is_empty() {
+                write_all(self.pty_fd, &remote)?;
+                remote.clear();
+            }
+            match action {
+                LocalInputAction::SetStatus(status) => {
+                    if let Some(view) = self.host_viewport.as_mut() {
+                        view.set_status(self.stdout_fd, status)?;
+                    }
+                }
+                LocalInputAction::ForceRedraw => {
+                    if let Some(view) = self.host_viewport.as_mut() {
+                        view.set_status(self.stdout_fd, LocalStatus::Connected)?;
+                        view.force_redraw(self.stdout_fd)?;
+                    }
+                }
+                LocalInputAction::Disconnect => {
+                    self.should_end = true;
+                    return Ok(());
+                }
+                LocalInputAction::UnknownCommand(_) => {
+                    if let Some(view) = self.host_viewport.as_mut() {
+                        view.set_status(self.stdout_fd, LocalStatus::Connected)?;
+                    }
+                }
+                LocalInputAction::Remote(_) => unreachable!(),
+            }
+        }
+        if !remote.is_empty() {
+            write_all(self.pty_fd, &remote)?;
+        }
+        Ok(())
+    }
+
+    fn maybe_drain_host_input(
+        &mut self,
+        revents: PollFlags,
+        buf: &mut [u8],
+    ) -> anyhow::Result<bool> {
+        if self.local_stdin_open && revents.intersects(PollFlags::POLLIN | PollFlags::POLLHUP) {
+            self.drain_host_input(buf)
+        } else {
+            Ok(self.local_stdin_open)
+        }
     }
 
     fn tick(&mut self, buf: &mut [u8]) -> anyhow::Result<bool> {
@@ -234,13 +315,7 @@ impl<'a> Session<'a> {
             &mut self.last_event,
             &mut self.stats,
         )?;
-        self.local_stdin_open = maybe_drain_local_input(
-            poll_state.stdin_revents,
-            self.local_stdin_open,
-            self.stdin_fd,
-            self.pty_fd,
-            buf,
-        )?;
+        self.local_stdin_open = self.maybe_drain_host_input(poll_state.stdin_revents, buf)?;
         handle_pty_revents(
             poll_state.pty_revents,
             self.pty_fd,
@@ -413,33 +488,6 @@ fn process_client_revents(
     Ok(())
 }
 
-fn drain_local_input(stdin_fd: i32, pty_fd: i32, buf: &mut [u8]) -> anyhow::Result<bool> {
-    let stdin_borrow = unsafe { BorrowedFd::borrow_raw(stdin_fd) };
-    match read(stdin_borrow, buf) {
-        Ok(0) | Err(Errno::EIO) => Ok(false),
-        Ok(n) => {
-            write_all(pty_fd, &buf[..n])?;
-            Ok(true)
-        }
-        Err(Errno::EINTR) => Ok(true),
-        Err(err) => Err(anyhow!("read local stdin: {err}")),
-    }
-}
-
-fn maybe_drain_local_input(
-    revents: PollFlags,
-    open: bool,
-    stdin_fd: i32,
-    pty_fd: i32,
-    buf: &mut [u8],
-) -> anyhow::Result<bool> {
-    if open && revents.intersects(PollFlags::POLLIN | PollFlags::POLLHUP) {
-        drain_local_input(stdin_fd, pty_fd, buf)
-    } else {
-        Ok(open)
-    }
-}
-
 fn sync_pty_size(
     pty: &mut process::PtyMaster,
     current: &mut TerminalSize,
@@ -578,11 +626,13 @@ struct HostViewport {
     addr: String,
     command: String,
     client_count: usize,
+    status: LocalStatus,
+    controls: bool,
 }
 
 impl HostViewport {
     fn enter(stdout_fd: i32, addr: String, command: String) -> anyhow::Result<Self> {
-        let bar = build_host_bar(&addr, &command, 0);
+        let bar = build_host_bar(&addr, &command, 0, LocalStatus::Connected, false);
         let title = format!("ptyroom host {addr}");
         let inner = ViewportRenderer::enter(stdout_fd, &title, &bar)?;
         Ok(Self {
@@ -590,7 +640,13 @@ impl HostViewport {
             addr,
             command,
             client_count: 0,
+            status: LocalStatus::Connected,
+            controls: false,
         })
+    }
+
+    fn set_controls_enabled(&mut self, enabled: bool) {
+        self.controls = enabled;
     }
 
     fn process_output(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
@@ -609,16 +665,37 @@ impl HostViewport {
         self.inner.redraw_status(&self.bar())
     }
 
+    fn set_status(&mut self, _stdout_fd: i32, status: LocalStatus) -> anyhow::Result<()> {
+        self.status = status;
+        self.inner.redraw_status(&self.bar())
+    }
+
+    fn force_redraw(&mut self, stdout_fd: i32) -> anyhow::Result<()> {
+        self.inner.force_redraw(stdout_fd, &self.bar())
+    }
+
     fn reported_size(stdout_fd: i32) -> Option<TerminalSize> {
         ViewportRenderer::reported_size(stdout_fd)
     }
 
     fn bar(&self) -> Bar {
-        build_host_bar(&self.addr, &self.command, self.client_count)
+        build_host_bar(
+            &self.addr,
+            &self.command,
+            self.client_count,
+            self.status,
+            self.controls,
+        )
     }
 }
 
-fn build_host_bar(addr: &str, command: &str, client_count: usize) -> Bar {
+fn build_host_bar(
+    addr: &str,
+    command: &str,
+    client_count: usize,
+    status: LocalStatus,
+    controls: bool,
+) -> Bar {
     let clients_segment = match client_count {
         0 => "0 clients".to_string(),
         1 => "1 client".to_string(),
@@ -628,7 +705,32 @@ fn build_host_bar(addr: &str, command: &str, client_count: usize) -> Bar {
     if !command.is_empty() {
         bar = bar.segment(command);
     }
-    bar.segment(clients_segment)
+    bar = bar.segment(clients_segment);
+    match status {
+        LocalStatus::Connected => {
+            if controls {
+                bar = bar.segment(format!("{LOCAL_ESCAPE_NAME} ? help"));
+            }
+        }
+        LocalStatus::Command => {
+            bar = bar
+                .segment("command")
+                .segment(". end")
+                .segment("? help")
+                .segment("r redraw")
+                .segment(format!("{LOCAL_ESCAPE_NAME} send"));
+        }
+        LocalStatus::Help => {
+            bar = bar
+                .segment("controls")
+                .segment(format!("{LOCAL_ESCAPE_NAME} . end"))
+                .segment(format!("{LOCAL_ESCAPE_NAME} r redraw"))
+                .segment(format!(
+                    "{LOCAL_ESCAPE_NAME} {LOCAL_ESCAPE_NAME} send {LOCAL_ESCAPE_NAME}"
+                ));
+        }
+    }
+    bar
 }
 
 fn terminal_size(fd: i32) -> Option<TerminalSize> {
@@ -1081,7 +1183,13 @@ mod tests {
 
     #[test]
     fn host_bar_includes_chip_addr_command_and_client_count() {
-        let bar = build_host_bar("127.0.0.1:7373", "bash -i", 0);
+        let bar = build_host_bar(
+            "127.0.0.1:7373",
+            "bash -i",
+            0,
+            LocalStatus::Connected,
+            false,
+        );
         let rendered =
             crate::pty::status_bar::render(&bar, Some(TerminalSize { cols: 80, rows: 24 }));
         let text = String::from_utf8_lossy(&rendered).to_string();
@@ -1095,7 +1203,7 @@ mod tests {
 
     #[test]
     fn host_bar_uses_singular_for_one_client() {
-        let bar = build_host_bar("127.0.0.1:7373", "bash", 1);
+        let bar = build_host_bar("127.0.0.1:7373", "bash", 1, LocalStatus::Connected, false);
         let rendered =
             crate::pty::status_bar::render(&bar, Some(TerminalSize { cols: 80, rows: 24 }));
         let text = String::from_utf8_lossy(&rendered);
@@ -1105,8 +1213,35 @@ mod tests {
     }
 
     #[test]
+    fn host_bar_shows_help_hint_when_controls_enabled() {
+        let bar = build_host_bar("127.0.0.1:7373", "bash", 0, LocalStatus::Connected, true);
+        let rendered =
+            crate::pty::status_bar::render(&bar, Some(TerminalSize { cols: 80, rows: 24 }));
+        let text = String::from_utf8_lossy(&rendered);
+
+        assert!(text.contains("^] ? help"));
+    }
+
+    #[test]
+    fn host_bar_command_state_lists_end_redraw_send() {
+        let bar = build_host_bar("127.0.0.1:7373", "bash", 0, LocalStatus::Command, true);
+        let rendered = crate::pty::status_bar::render(
+            &bar,
+            Some(TerminalSize {
+                cols: 120,
+                rows: 24,
+            }),
+        );
+        let text = String::from_utf8_lossy(&rendered);
+
+        assert!(text.contains(". end"));
+        assert!(text.contains("r redraw"));
+        assert!(text.contains("^] send"));
+    }
+
+    #[test]
     fn host_bar_omits_command_segment_when_empty() {
-        let bar = build_host_bar("127.0.0.1:7373", "", 2);
+        let bar = build_host_bar("127.0.0.1:7373", "", 2, LocalStatus::Connected, false);
         let rendered =
             crate::pty::status_bar::render(&bar, Some(TerminalSize { cols: 80, rows: 24 }));
         let text = String::from_utf8_lossy(&rendered);
