@@ -17,6 +17,7 @@ const SEPARATOR: &str = " | ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Chip {
+    Host,
     Join,
     Watch,
 }
@@ -24,6 +25,7 @@ pub(crate) enum Chip {
 impl Chip {
     const fn fg_sgr(self) -> &'static [u8] {
         match self {
+            Self::Host => b"\x1b[1;32m",
             Self::Join => b"\x1b[1;36m",
             Self::Watch => b"\x1b[1;33m",
         }
@@ -31,6 +33,7 @@ impl Chip {
 
     pub(crate) const fn label(self) -> &'static str {
         match self {
+            Self::Host => "HOST",
             Self::Join => "JOIN",
             Self::Watch => "WATCH",
         }

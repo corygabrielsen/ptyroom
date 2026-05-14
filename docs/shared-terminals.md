@@ -21,6 +21,13 @@ terminal. Use `--no-local-input` when the host should observe while
 joined clients drive the session. Use `--no-local-output` when the host
 process should run as a headless relay.
 
+When the host terminal is an interactive tty and local output is
+enabled, `ptyroom host` enters an alt-screen viewport with a `[HOST]`
+status row at the bottom showing the bound address, the child command,
+and the live client count. Piped host stdout and `--no-local-output`
+keep the old pass-through behavior so non-interactive pipelines are
+unchanged.
+
 `ptyroom watch` is a read-only client: it receives the same broadcast
 output as a join, but never forwards local input bytes and never reports
 its terminal size. A watcher cannot type into the PTY and cannot shrink
@@ -132,6 +139,12 @@ report terminal size:
 
 - the host terminal, when local output is enabled;
 - interactive `ptyroom join` clients.
+
+When the host has its own alt-screen viewport, the host reports its
+local terminal size minus one reserved status row, mirroring the rule
+that applies to interactive join clients. Piped or `--no-local-output`
+host stdout still reports the full terminal size since no status row is
+drawn.
 
 `ptyroom watch` clients are deliberately excluded from this calculation.
 A watcher's window size has no effect on the shared PTY, so a small

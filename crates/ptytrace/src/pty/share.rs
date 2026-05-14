@@ -26,7 +26,9 @@ use nix::unistd::{read, write};
 
 use super::process;
 use super::room_protocol::{self, ClientControl, TerminalSize};
+use super::status_bar::{Bar, Chip};
 use super::terminal_state::{RestoreGuard, child_output_restore_sequence, termination_requested};
+use super::viewport::ViewportRenderer;
 use crate::recording::{DwellMs, TraceBuilder};
 
 const MAX_CLIENT_BACKLOG_BYTES: usize = 1024 * 1024;
@@ -94,111 +96,177 @@ pub const fn host_local_io_notice(local_input: bool, local_output: bool) -> Opti
 /// PTY spawn, listener, client IO, trace construction, or trace write
 /// failed.
 pub fn run(listener: &TcpListener, opts: ShareOpts) -> anyhow::Result<ShareSummary> {
-    ensure_nonzero_size(opts.cols, opts.rows)?;
-    listener.set_nonblocking(true)?;
-    let listen_addr = listener.local_addr()?;
-    let argv = resolve_argv(opts.argv);
-    let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-    let mut pty = process::spawn(&argv_refs, opts.cols, opts.rows)?;
-    let pty_fd = pty.fd();
-    let listener_fd = listener.as_raw_fd();
-    let stdin = io::stdin();
-    let stdin_fd = stdin.as_raw_fd();
-    let stdout = std::io::stdout();
-    let stdout_fd = stdout.as_raw_fd();
-    let _terminal_cleanup = terminal_cleanup_guard(opts.local_output, &stdout, stdout_fd);
-    let mut local_stdin_open = opts.local_input;
-    let _raw_mode = host_raw_mode_guard(opts.local_input, &stdin, stdin_fd)?;
-    let initial_size = TerminalSize::new(opts.cols, opts.rows);
-    let mut current_size = initial_size;
-    let mut host_size = if opts.local_output && stdout.is_terminal() {
-        terminal_size(stdout_fd)
-    } else {
-        None
-    };
-    let mut last_size_check = Instant::now();
-    let mut clients: Vec<Client> = Vec::new();
-    let mut join_replay = JoinReplay::default();
-    let mut stats = ShareStats::default();
-    let mut builder = TraceBuilder::new();
-    let started = Instant::now();
-    let mut last_event = started;
+    let mut session = Session::start(listener, opts)?;
     let mut buf = [0_u8; 4096];
-
-    loop {
-        if termination_requested() || started.elapsed() > opts.max_runtime {
-            break;
-        }
-        refresh_host_size(
-            opts.local_output,
-            stdout_fd,
-            &mut host_size,
-            &mut last_size_check,
-        );
-
-        let poll_state = poll_share_fds(
-            listener_fd,
-            pty_fd,
-            local_stdin_open.then_some(stdin_fd),
-            &clients,
-        )?;
-
-        process_client_revents(pty_fd, &mut clients, &poll_state.client_revents, &mut stats)?;
-
-        if poll_state.listener_readable {
-            stats.accepted +=
-                accept_ready_clients(listener, &mut clients, &join_replay, current_size)?;
-        }
-
-        if let Some(size) = sync_pty_size(
-            &mut pty,
-            &mut current_size,
-            initial_size,
-            host_size,
-            &clients,
-        )? {
-            record_resize_event(&mut builder, &mut last_event, size)?;
-            broadcast_control(
-                &mut clients,
-                &room_protocol::encode_size_control(size),
-                &mut stats,
-            );
-        }
-
-        local_stdin_open = maybe_drain_local_input(
-            poll_state.stdin_revents,
-            local_stdin_open,
-            stdin_fd,
-            pty_fd,
-            &mut buf,
-        )?;
-
-        if !handle_pty_revents(
-            poll_state.pty_revents,
-            pty_fd,
-            &mut buf,
-            PtyOutputSinks {
-                local_output: opts.local_output,
-                stdout_fd,
-                join_replay: &mut join_replay,
-                clients: &mut clients,
-                stats: &mut stats,
-            },
-            &mut builder,
-            &mut last_event,
-        )? {
+    while !session.should_stop() {
+        if !session.tick(&mut buf)? {
             break;
         }
     }
+    session.finish()
+}
 
-    finish_share_run(
-        &mut pty,
-        builder,
-        initial_size,
-        opts.out,
-        listen_addr,
-        &stats,
-    )
+struct Session<'a> {
+    listener: &'a TcpListener,
+    pty: process::PtyMaster,
+    listener_fd: i32,
+    pty_fd: i32,
+    stdin_fd: i32,
+    stdout_fd: i32,
+    local_output: bool,
+    initial_size: TerminalSize,
+    current_size: TerminalSize,
+    host_size: Option<TerminalSize>,
+    last_size_check: Instant,
+    host_viewport: Option<HostViewport>,
+    local_stdin_open: bool,
+    clients: Vec<Client>,
+    join_replay: JoinReplay,
+    stats: ShareStats,
+    builder: TraceBuilder,
+    last_event: Instant,
+    listen_addr: SocketAddr,
+    out_path: PathBuf,
+    started: Instant,
+    max_runtime: Duration,
+    _terminal_cleanup: Option<RestoreGuard>,
+    _raw_mode: Option<RawModeGuard>,
+}
+
+impl<'a> Session<'a> {
+    fn start(listener: &'a TcpListener, opts: ShareOpts) -> anyhow::Result<Self> {
+        ensure_nonzero_size(opts.cols, opts.rows)?;
+        listener.set_nonblocking(true)?;
+        let listen_addr = listener.local_addr()?;
+        let argv = resolve_argv(opts.argv);
+        let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+        let pty = process::spawn(&argv_refs, opts.cols, opts.rows)?;
+        let pty_fd = pty.fd();
+        let listener_fd = listener.as_raw_fd();
+        let stdin = io::stdin();
+        let stdin_fd = stdin.as_raw_fd();
+        let stdout = std::io::stdout();
+        let stdout_fd = stdout.as_raw_fd();
+        let (host_viewport, terminal_cleanup) =
+            setup_host_terminal(opts.local_output, &argv, listen_addr, &stdout, stdout_fd)?;
+        let raw_mode = host_raw_mode_guard(opts.local_input, &stdin, stdin_fd)?;
+        let initial_size = TerminalSize::new(opts.cols, opts.rows);
+        let host_size = initial_host_size(
+            opts.local_output,
+            &stdout,
+            stdout_fd,
+            host_viewport.as_ref(),
+        );
+        let started = Instant::now();
+        Ok(Self {
+            listener,
+            pty,
+            listener_fd,
+            pty_fd,
+            stdin_fd,
+            stdout_fd,
+            local_output: opts.local_output,
+            initial_size,
+            current_size: initial_size,
+            host_size,
+            last_size_check: Instant::now(),
+            host_viewport,
+            local_stdin_open: opts.local_input,
+            clients: Vec::new(),
+            join_replay: JoinReplay::default(),
+            stats: ShareStats::default(),
+            builder: TraceBuilder::new(),
+            last_event: started,
+            listen_addr,
+            out_path: opts.out,
+            started,
+            max_runtime: opts.max_runtime,
+            _terminal_cleanup: terminal_cleanup,
+            _raw_mode: raw_mode,
+        })
+    }
+
+    fn should_stop(&self) -> bool {
+        termination_requested() || self.started.elapsed() > self.max_runtime
+    }
+
+    fn tick(&mut self, buf: &mut [u8]) -> anyhow::Result<bool> {
+        refresh_host_size(
+            self.local_output,
+            self.host_viewport.is_some(),
+            self.stdout_fd,
+            &mut self.host_size,
+            &mut self.last_size_check,
+        );
+        let poll_state = poll_share_fds(
+            self.listener_fd,
+            self.pty_fd,
+            self.local_stdin_open.then_some(self.stdin_fd),
+            &self.clients,
+        )?;
+        process_client_revents(
+            self.pty_fd,
+            &mut self.clients,
+            &poll_state.client_revents,
+            &mut self.stats,
+        )?;
+        if poll_state.listener_readable {
+            self.stats.accepted += accept_ready_clients(
+                self.listener,
+                &mut self.clients,
+                &self.join_replay,
+                self.current_size,
+            )?;
+        }
+        if let Some(viewport) = self.host_viewport.as_mut() {
+            viewport.set_client_count(self.clients.len())?;
+        }
+        sync_canonical_size(
+            &mut self.pty,
+            &mut self.current_size,
+            self.initial_size,
+            self.host_size,
+            &mut self.clients,
+            self.host_viewport.as_mut(),
+            self.stdout_fd,
+            &mut self.builder,
+            &mut self.last_event,
+            &mut self.stats,
+        )?;
+        self.local_stdin_open = maybe_drain_local_input(
+            poll_state.stdin_revents,
+            self.local_stdin_open,
+            self.stdin_fd,
+            self.pty_fd,
+            buf,
+        )?;
+        handle_pty_revents(
+            poll_state.pty_revents,
+            self.pty_fd,
+            buf,
+            PtyOutputSinks {
+                local_output: self.local_output,
+                stdout_fd: self.stdout_fd,
+                host_viewport: self.host_viewport.as_mut(),
+                join_replay: &mut self.join_replay,
+                clients: &mut self.clients,
+                stats: &mut self.stats,
+            },
+            &mut self.builder,
+            &mut self.last_event,
+        )
+    }
+
+    fn finish(mut self) -> anyhow::Result<ShareSummary> {
+        finish_share_run(
+            &mut self.pty,
+            self.builder,
+            self.initial_size,
+            self.out_path,
+            self.listen_addr,
+            &self.stats,
+        )
+    }
 }
 
 fn ensure_nonzero_size(cols: u16, rows: u16) -> anyhow::Result<()> {
@@ -407,12 +475,17 @@ fn desired_session_size(
 
 fn refresh_host_size(
     local_output: bool,
+    viewport_active: bool,
     stdout_fd: i32,
     host_size: &mut Option<TerminalSize>,
     last_size_check: &mut Instant,
 ) {
     if local_output && last_size_check.elapsed() >= SIZE_CHECK_INTERVAL {
-        *host_size = terminal_size(stdout_fd);
+        *host_size = if viewport_active {
+            HostViewport::reported_size(stdout_fd)
+        } else {
+            terminal_size(stdout_fd)
+        };
         *last_size_check = Instant::now();
     }
 }
@@ -427,6 +500,120 @@ fn terminal_cleanup_guard(
     }
     (local_output && stdout.is_terminal())
         .then_some(RestoreGuard::new(fd, child_output_restore_sequence()))
+}
+
+fn setup_host_terminal(
+    local_output: bool,
+    argv: &[String],
+    listen_addr: SocketAddr,
+    stdout: &io::Stdout,
+    stdout_fd: i32,
+) -> anyhow::Result<(Option<HostViewport>, Option<RestoreGuard>)> {
+    let viewport_enabled = local_output && stdout.is_terminal() && !cfg!(test);
+    if viewport_enabled {
+        let viewport = HostViewport::enter(stdout_fd, listen_addr.to_string(), argv.join(" "))?;
+        Ok((Some(viewport), None))
+    } else {
+        let cleanup = terminal_cleanup_guard(local_output, stdout, stdout_fd);
+        Ok((None, cleanup))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sync_canonical_size(
+    pty: &mut process::PtyMaster,
+    current_size: &mut TerminalSize,
+    initial_size: TerminalSize,
+    host_size: Option<TerminalSize>,
+    clients: &mut Vec<Client>,
+    host_viewport: Option<&mut HostViewport>,
+    stdout_fd: i32,
+    builder: &mut TraceBuilder,
+    last_event: &mut Instant,
+    stats: &mut ShareStats,
+) -> anyhow::Result<()> {
+    let Some(size) = sync_pty_size(pty, current_size, initial_size, host_size, clients)? else {
+        return Ok(());
+    };
+    record_resize_event(builder, last_event, size)?;
+    broadcast_control(clients, &room_protocol::encode_size_control(size), stats);
+    if let Some(viewport) = host_viewport {
+        viewport.resize(stdout_fd, size)?;
+    }
+    Ok(())
+}
+
+fn initial_host_size(
+    local_output: bool,
+    stdout: &io::Stdout,
+    stdout_fd: i32,
+    host_viewport: Option<&HostViewport>,
+) -> Option<TerminalSize> {
+    if host_viewport.is_some() {
+        HostViewport::reported_size(stdout_fd)
+    } else if local_output && stdout.is_terminal() {
+        terminal_size(stdout_fd)
+    } else {
+        None
+    }
+}
+
+struct HostViewport {
+    inner: ViewportRenderer,
+    addr: String,
+    command: String,
+    client_count: usize,
+}
+
+impl HostViewport {
+    fn enter(stdout_fd: i32, addr: String, command: String) -> anyhow::Result<Self> {
+        let bar = build_host_bar(&addr, &command, 0);
+        let title = format!("ptyroom host {addr}");
+        let inner = ViewportRenderer::enter(stdout_fd, &title, &bar)?;
+        Ok(Self {
+            inner,
+            addr,
+            command,
+            client_count: 0,
+        })
+    }
+
+    fn process_output(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
+        self.inner.process_output(bytes, &self.bar())
+    }
+
+    fn resize(&mut self, stdout_fd: i32, size: TerminalSize) -> anyhow::Result<()> {
+        self.inner.resize(stdout_fd, size, &self.bar())
+    }
+
+    fn set_client_count(&mut self, count: usize) -> anyhow::Result<()> {
+        if self.client_count == count {
+            return Ok(());
+        }
+        self.client_count = count;
+        self.inner.redraw_status(&self.bar())
+    }
+
+    fn reported_size(stdout_fd: i32) -> Option<TerminalSize> {
+        ViewportRenderer::reported_size(stdout_fd)
+    }
+
+    fn bar(&self) -> Bar {
+        build_host_bar(&self.addr, &self.command, self.client_count)
+    }
+}
+
+fn build_host_bar(addr: &str, command: &str, client_count: usize) -> Bar {
+    let clients_segment = match client_count {
+        0 => "0 clients".to_string(),
+        1 => "1 client".to_string(),
+        n => format!("{n} clients"),
+    };
+    let mut bar = Bar::new(Chip::Host).segment(addr);
+    if !command.is_empty() {
+        bar = bar.segment(command);
+    }
+    bar.segment(clients_segment)
 }
 
 fn terminal_size(fd: i32) -> Option<TerminalSize> {
@@ -753,6 +940,7 @@ fn finish_share_run(
 struct PtyOutputSinks<'a> {
     local_output: bool,
     stdout_fd: i32,
+    host_viewport: Option<&'a mut HostViewport>,
     join_replay: &'a mut JoinReplay,
     clients: &'a mut Vec<Client>,
     stats: &'a mut ShareStats,
@@ -787,11 +975,14 @@ fn handle_pty_output(
     let PtyOutputSinks {
         local_output,
         stdout_fd,
+        host_viewport,
         join_replay,
         clients,
         stats,
     } = sinks;
-    if local_output {
+    if let Some(viewport) = host_viewport {
+        let _ = viewport.process_output(bytes);
+    } else if local_output {
         let _ = write_all(stdout_fd, bytes);
     }
     let client_frame = room_protocol::encode_output_frame(bytes);
@@ -871,6 +1062,42 @@ mod tests {
         .unwrap_err();
 
         assert!(err.to_string().contains("nonzero"));
+    }
+
+    #[test]
+    fn host_bar_includes_chip_addr_command_and_client_count() {
+        let bar = build_host_bar("127.0.0.1:7373", "bash -i", 0);
+        let rendered =
+            crate::pty::status_bar::render(&bar, Some(TerminalSize { cols: 80, rows: 24 }));
+        let text = String::from_utf8_lossy(&rendered).to_string();
+
+        assert!(text.contains(" HOST "));
+        assert!(text.contains("\x1b[1;32m"));
+        assert!(text.contains("127.0.0.1:7373"));
+        assert!(text.contains("bash -i"));
+        assert!(text.contains("0 clients"));
+    }
+
+    #[test]
+    fn host_bar_uses_singular_for_one_client() {
+        let bar = build_host_bar("127.0.0.1:7373", "bash", 1);
+        let rendered =
+            crate::pty::status_bar::render(&bar, Some(TerminalSize { cols: 80, rows: 24 }));
+        let text = String::from_utf8_lossy(&rendered);
+
+        assert!(text.contains("1 client"));
+        assert!(!text.contains("1 clients"));
+    }
+
+    #[test]
+    fn host_bar_omits_command_segment_when_empty() {
+        let bar = build_host_bar("127.0.0.1:7373", "", 2);
+        let rendered =
+            crate::pty::status_bar::render(&bar, Some(TerminalSize { cols: 80, rows: 24 }));
+        let text = String::from_utf8_lossy(&rendered);
+
+        assert!(text.contains("127.0.0.1:7373"));
+        assert!(text.contains("2 clients"));
     }
 
     #[test]
