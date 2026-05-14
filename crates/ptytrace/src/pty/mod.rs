@@ -22,6 +22,7 @@ mod live;
 mod osc;
 mod process;
 mod room_protocol;
+mod status_bar;
 mod terminal_state;
 
 pub use drainer::WatchHandle;

@@ -3,6 +3,7 @@
 use std::os::fd::RawFd;
 
 use super::super::room_protocol::TerminalSize;
+use super::super::status_bar::{self, Bar, Chip};
 use super::super::terminal_state::{RestoreGuard, viewport_restore_sequence};
 use super::control::{LOCAL_ESCAPE_NAME, LocalStatus};
 use super::terminal::{terminal_size, write_all};
@@ -211,45 +212,40 @@ fn render_status_line(
     local_controls: bool,
     read_only: bool,
 ) -> Vec<u8> {
-    let Some(size) = terminal_size else {
-        return Vec::new();
-    };
-    let row = size.rows;
-    let mut text = match status {
-        LocalStatus::Connected if local_controls && read_only => {
-            format!(" ptyroom watch {room_label} | read-only | {LOCAL_ESCAPE_NAME} ? help")
-        }
-        LocalStatus::Connected if local_controls => {
-            format!(" ptyroom {room_label} | {LOCAL_ESCAPE_NAME} ? help")
-        }
-        LocalStatus::Connected if read_only => format!(" ptyroom watch {room_label} | read-only"),
-        LocalStatus::Connected => format!(" ptyroom join {room_label}"),
-        LocalStatus::Command => {
-            if read_only {
-                " ptyroom watch command | . detach | ? help | r redraw".to_owned()
-            } else {
-                format!(
-                    " ptyroom join command | . detach | ? help | r redraw | {LOCAL_ESCAPE_NAME} send"
-                )
+    let chip = if read_only { Chip::Watch } else { Chip::Join };
+    let mut bar = Bar::new(chip).segment(room_label);
+    if read_only {
+        bar = bar.segment("read-only");
+    }
+    match status {
+        LocalStatus::Connected => {
+            if local_controls {
+                bar = bar.segment(format!("{LOCAL_ESCAPE_NAME} ? help"));
             }
         }
-        LocalStatus::Help if read_only => format!(
-            " ptyroom watch controls | {LOCAL_ESCAPE_NAME} . detach | {LOCAL_ESCAPE_NAME} r redraw | read-only"
-        ),
-        LocalStatus::Help => format!(
-            " ptyroom join controls | {LOCAL_ESCAPE_NAME} . detach | {LOCAL_ESCAPE_NAME} r redraw | {LOCAL_ESCAPE_NAME} {LOCAL_ESCAPE_NAME} send {LOCAL_ESCAPE_NAME}"
-        ),
-    };
-    let max_len = usize::from(size.cols.saturating_sub(1));
-    if text.len() > max_len {
-        text.truncate(max_len);
+        LocalStatus::Command => {
+            bar = bar
+                .segment("command")
+                .segment(". detach")
+                .segment("? help")
+                .segment("r redraw");
+            if !read_only {
+                bar = bar.segment(format!("{LOCAL_ESCAPE_NAME} send"));
+            }
+        }
+        LocalStatus::Help => {
+            bar = bar
+                .segment("controls")
+                .segment(format!("{LOCAL_ESCAPE_NAME} . detach"))
+                .segment(format!("{LOCAL_ESCAPE_NAME} r redraw"));
+            if !read_only {
+                bar = bar.segment(format!(
+                    "{LOCAL_ESCAPE_NAME} {LOCAL_ESCAPE_NAME} send {LOCAL_ESCAPE_NAME}"
+                ));
+            }
+        }
     }
-
-    let mut out = Vec::new();
-    out.extend_from_slice(format!("\x1b7\x1b[{row};1H\x1b[7m\x1b[2K").as_bytes());
-    out.extend_from_slice(text.as_bytes());
-    out.extend_from_slice(b"\x1b[0m\x1b8");
-    out
+    status_bar::render(&bar, terminal_size)
 }
 
 fn should_render_full(
@@ -328,7 +324,7 @@ mod tests {
     #[test]
     fn status_line_renders_on_bottom_row_without_newline() {
         let rendered = render_status_line(
-            Some(TerminalSize { cols: 40, rows: 5 }),
+            Some(TerminalSize { cols: 80, rows: 5 }),
             LocalStatus::Command,
             "127.0.0.1:7373",
             true,
@@ -342,7 +338,7 @@ mod tests {
     }
 
     #[test]
-    fn status_line_preserves_cursor_and_visual_state() {
+    fn status_line_preserves_cursor_and_clears_row() {
         let rendered = render_status_line(
             Some(TerminalSize { cols: 40, rows: 5 }),
             LocalStatus::Connected,
@@ -351,8 +347,27 @@ mod tests {
             false,
         );
 
-        assert!(rendered.starts_with(b"\x1b7\x1b[5;1H\x1b[7m\x1b[2K"));
-        assert!(rendered.ends_with(b"\x1b[0m\x1b8"));
+        assert!(rendered.starts_with(b"\x1b7"));
+        assert!(rendered.ends_with(b"\x1b8"));
+        assert!(contains_bytes(&rendered, b"\x1b[5;1H"));
+        assert!(contains_bytes(&rendered, b"\x1b[2K"));
+    }
+
+    #[test]
+    fn join_chip_uses_join_color() {
+        let rendered = render_status_line(
+            Some(TerminalSize { cols: 80, rows: 24 }),
+            LocalStatus::Connected,
+            "127.0.0.1:7373",
+            true,
+            false,
+        );
+        let text = String::from_utf8_lossy(&rendered);
+
+        assert!(text.contains(" JOIN "));
+        assert!(text.contains("\x1b[1;36m"));
+        assert!(text.contains("127.0.0.1:7373"));
+        assert!(text.contains("^] ? help"));
     }
 
     #[test]
@@ -366,7 +381,8 @@ mod tests {
         );
         let text = String::from_utf8_lossy(&rendered);
 
-        assert!(text.contains("ptyroom join 127.0.0.1:7373"));
+        assert!(text.contains(" JOIN "));
+        assert!(text.contains("127.0.0.1:7373"));
         assert!(!text.contains("^]"));
         assert!(!text.contains("help"));
     }
@@ -382,7 +398,9 @@ mod tests {
         );
         let text = String::from_utf8_lossy(&rendered);
 
-        assert!(text.contains("ptyroom watch 127.0.0.1:7373"));
+        assert!(text.contains(" WATCH "));
+        assert!(text.contains("\x1b[1;33m"));
+        assert!(text.contains("127.0.0.1:7373"));
         assert!(text.contains("read-only"));
         assert!(text.contains("^] ? help"));
     }
@@ -396,8 +414,7 @@ mod tests {
             true,
             false,
         );
-        let text = String::from_utf8_lossy(&rendered);
-        let visible = status_visible_text(&text);
+        let visible = status_visible_text(&rendered);
 
         assert!(visible.len() <= 11, "visible status text was {visible:?}");
     }
@@ -489,9 +506,21 @@ mod tests {
             .any(|window| window == needle)
     }
 
-    fn status_visible_text(rendered: &str) -> &str {
-        let start = rendered.find("\x1b[2K").unwrap() + "\x1b[2K".len();
-        let end = rendered[start..].find("\x1b[0m").unwrap() + start;
-        &rendered[start..end]
+    fn status_visible_text(rendered: &[u8]) -> String {
+        let text = String::from_utf8_lossy(rendered);
+        let mut out = String::new();
+        let mut chars = text.chars();
+        while let Some(ch) = chars.next() {
+            if ch == '\x1b' {
+                for inner in chars.by_ref() {
+                    if inner.is_ascii_alphabetic() || inner == '\\' || inner == '\x07' {
+                        break;
+                    }
+                }
+            } else {
+                out.push(ch);
+            }
+        }
+        out
     }
 }
