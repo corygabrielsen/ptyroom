@@ -23,7 +23,9 @@ mod osc;
 mod process;
 mod room_protocol;
 mod status_bar;
+mod terminal_io;
 mod terminal_state;
+mod viewport;
 
 pub use drainer::WatchHandle;
 pub use keys::Key;
