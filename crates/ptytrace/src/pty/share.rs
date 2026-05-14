@@ -11,9 +11,10 @@
 //! session crosses a machine boundary.
 
 use std::collections::VecDeque;
-use std::io::{self, IsTerminal, Read, Write};
+use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::os::fd::{AsRawFd, BorrowedFd};
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -35,6 +36,18 @@ use crate::recording::{DwellMs, TraceBuilder};
 const MAX_CLIENT_BACKLOG_BYTES: usize = 1024 * 1024;
 const MAX_JOIN_REPLAY_BYTES: usize = 256 * 1024;
 const SIZE_CHECK_INTERVAL: Duration = Duration::from_millis(250);
+const CTL_MAX_PAYLOAD_BYTES: usize = 64 * 1024;
+const CTL_IO_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Filesystem path of the local control socket for a ptyroom host bound
+/// to `port`.
+///
+/// Shared between the host (which creates the socket) and the `ptyroom
+/// ctl` subcommand (which connects to it). Localhost only by design.
+#[must_use]
+pub fn ctl_socket_path(port: u16) -> PathBuf {
+    PathBuf::from(format!("/tmp/ptyroom-{port}.sock"))
+}
 
 #[derive(Debug, Clone)]
 pub struct ShareOpts {
@@ -121,6 +134,8 @@ struct Session<'a> {
     last_size_check: Instant,
     host_viewport: Option<HostViewport>,
     input_router: Option<LocalInputRouter>,
+    ctl_socket: Option<CtlSocket>,
+    queue: VecDeque<String>,
     local_stdin_open: bool,
     should_end: bool,
     clients: Vec<Client>,
@@ -168,6 +183,17 @@ impl<'a> Session<'a> {
         if let Some(view) = host_viewport.as_mut() {
             view.set_controls_enabled(input_router.is_some());
         }
+        let ctl_socket = if cfg!(test) {
+            None
+        } else {
+            match CtlSocket::bind(listen_addr.port()) {
+                Ok(socket) => Some(socket),
+                Err(err) => {
+                    eprintln!("[ptyroom: control socket disabled: {err}]");
+                    None
+                }
+            }
+        };
         Ok(Self {
             listener,
             pty,
@@ -182,6 +208,8 @@ impl<'a> Session<'a> {
             last_size_check: Instant::now(),
             host_viewport,
             input_router,
+            ctl_socket,
+            queue: VecDeque::new(),
             local_stdin_open: opts.local_input,
             should_end: false,
             clients: Vec::new(),
@@ -272,6 +300,78 @@ impl<'a> Session<'a> {
         }
     }
 
+    fn drain_ctl_socket(&mut self) -> anyhow::Result<()> {
+        loop {
+            let next = match self.ctl_socket.as_ref() {
+                None => return Ok(()),
+                Some(socket) => socket.listener.accept(),
+            };
+            match next {
+                Ok((stream, _addr)) => self.handle_ctl_connection(stream),
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => return Ok(()),
+                Err(err) => return Err(anyhow!("accept ptyroom control connection: {err}")),
+            }
+        }
+    }
+
+    fn handle_ctl_connection(&mut self, mut stream: UnixStream) {
+        stream.set_read_timeout(Some(CTL_IO_TIMEOUT)).ok();
+        stream.set_write_timeout(Some(CTL_IO_TIMEOUT)).ok();
+        let parse_result = {
+            let mut reader = BufReader::new(&mut stream);
+            parse_ctl_command(&mut reader)
+        };
+        let response = match parse_result {
+            Ok(cmd) => match self.execute_ctl_command(cmd) {
+                Ok(line) => format!("ok {line}\n"),
+                Err(err) => format!("err {err}\n"),
+            },
+            Err(err) => format!("err {err}\n"),
+        };
+        let _ = stream.write_all(response.as_bytes());
+        let _ = stream.shutdown(Shutdown::Both);
+    }
+
+    fn execute_ctl_command(&mut self, cmd: CtlCommand) -> anyhow::Result<String> {
+        match cmd {
+            CtlCommand::Queue(op) => self.execute_queue_op(op),
+        }
+    }
+
+    fn execute_queue_op(&mut self, op: QueueOp) -> anyhow::Result<String> {
+        match op {
+            QueueOp::Add(text) => {
+                self.queue.push_back(text);
+                self.refresh_queue_status()?;
+                Ok(format!("queue-depth={}", self.queue.len()))
+            }
+            QueueOp::Next => {
+                if let Some(text) = self.queue.pop_front() {
+                    write_all(self.pty_fd, text.as_bytes())?;
+                    write_all(self.pty_fd, b"\r")?;
+                    self.refresh_queue_status()?;
+                    Ok(format!("injected-bytes={}", text.len() + 1))
+                } else {
+                    Ok("queue-empty".to_string())
+                }
+            }
+            QueueOp::List => Ok(format!("queue-depth={}", self.queue.len())),
+            QueueOp::Clear => {
+                let n = self.queue.len();
+                self.queue.clear();
+                self.refresh_queue_status()?;
+                Ok(format!("cleared={n}"))
+            }
+        }
+    }
+
+    fn refresh_queue_status(&mut self) -> anyhow::Result<()> {
+        if let Some(view) = self.host_viewport.as_mut() {
+            view.set_queue_depth(self.queue.len())?;
+        }
+        Ok(())
+    }
+
     fn tick(&mut self, buf: &mut [u8]) -> anyhow::Result<bool> {
         refresh_host_size(
             self.local_output,
@@ -280,6 +380,7 @@ impl<'a> Session<'a> {
             &mut self.host_size,
             &mut self.last_size_check,
         );
+        self.drain_ctl_socket()?;
         let poll_state = poll_share_fds(
             self.listener_fd,
             self.pty_fd,
@@ -551,6 +652,33 @@ fn terminal_cleanup_guard(
         .then_some(RestoreGuard::new(fd, child_output_restore_sequence()))
 }
 
+fn parse_ctl_command<R: BufRead>(reader: &mut R) -> anyhow::Result<CtlCommand> {
+    let mut line = String::new();
+    reader.read_line(&mut line).context("read ctl command")?;
+    let trimmed = line.trim_end_matches(['\n', '\r']);
+    let mut parts = trimmed.splitn(2, ' ');
+    let verb = parts.next().unwrap_or("");
+    match verb {
+        "add" => {
+            let len_str = parts.next().context("add requires payload length")?;
+            let len: usize = len_str.parse().context("invalid payload length")?;
+            if len > CTL_MAX_PAYLOAD_BYTES {
+                anyhow::bail!("payload too large (max {CTL_MAX_PAYLOAD_BYTES} bytes)");
+            }
+            let mut payload = vec![0_u8; len];
+            reader
+                .read_exact(&mut payload)
+                .context("read ctl payload")?;
+            let text = String::from_utf8(payload).context("payload is not valid UTF-8")?;
+            Ok(CtlCommand::Queue(QueueOp::Add(text)))
+        }
+        "next" => Ok(CtlCommand::Queue(QueueOp::Next)),
+        "list" => Ok(CtlCommand::Queue(QueueOp::List)),
+        "clear" => Ok(CtlCommand::Queue(QueueOp::Clear)),
+        other => anyhow::bail!("unknown control verb {other:?}"),
+    }
+}
+
 fn setup_host_terminal(
     local_output: bool,
     argv: &[String],
@@ -621,18 +749,54 @@ fn initial_host_size(
     }
 }
 
+struct CtlSocket {
+    listener: UnixListener,
+    path: PathBuf,
+}
+
+impl CtlSocket {
+    fn bind(port: u16) -> anyhow::Result<Self> {
+        let path = ctl_socket_path(port);
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path)
+            .with_context(|| format!("bind ptyroom control socket at {}", path.display()))?;
+        listener.set_nonblocking(true)?;
+        Ok(Self { listener, path })
+    }
+}
+
+impl Drop for CtlSocket {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CtlCommand {
+    Queue(QueueOp),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum QueueOp {
+    Add(String),
+    Next,
+    List,
+    Clear,
+}
+
 struct HostViewport {
     inner: ViewportRenderer,
     addr: String,
     command: String,
     client_count: usize,
+    queue_depth: usize,
     status: LocalStatus,
     controls: bool,
 }
 
 impl HostViewport {
     fn enter(stdout_fd: i32, addr: String, command: String) -> anyhow::Result<Self> {
-        let bar = build_host_bar(&addr, &command, 0, LocalStatus::Connected, false);
+        let bar = build_host_bar(&addr, &command, 0, 0, LocalStatus::Connected, false);
         let title = format!("ptyroom host {addr}");
         let inner = ViewportRenderer::enter(stdout_fd, &title, &bar)?;
         Ok(Self {
@@ -640,6 +804,7 @@ impl HostViewport {
             addr,
             command,
             client_count: 0,
+            queue_depth: 0,
             status: LocalStatus::Connected,
             controls: false,
         })
@@ -665,6 +830,14 @@ impl HostViewport {
         self.inner.redraw_status(&self.bar())
     }
 
+    fn set_queue_depth(&mut self, depth: usize) -> anyhow::Result<()> {
+        if self.queue_depth == depth {
+            return Ok(());
+        }
+        self.queue_depth = depth;
+        self.inner.redraw_status(&self.bar())
+    }
+
     fn set_status(&mut self, _stdout_fd: i32, status: LocalStatus) -> anyhow::Result<()> {
         self.status = status;
         self.inner.redraw_status(&self.bar())
@@ -683,6 +856,7 @@ impl HostViewport {
             &self.addr,
             &self.command,
             self.client_count,
+            self.queue_depth,
             self.status,
             self.controls,
         )
@@ -693,6 +867,7 @@ fn build_host_bar(
     addr: &str,
     command: &str,
     client_count: usize,
+    queue_depth: usize,
     status: LocalStatus,
     controls: bool,
 ) -> Bar {
@@ -706,6 +881,9 @@ fn build_host_bar(
         bar = bar.segment(command);
     }
     bar = bar.segment(clients_segment);
+    if queue_depth > 0 {
+        bar = bar.segment(format!("{queue_depth} queued"));
+    }
     match status {
         LocalStatus::Connected => {
             if controls {
@@ -1187,6 +1365,7 @@ mod tests {
             "127.0.0.1:7373",
             "bash -i",
             0,
+            0,
             LocalStatus::Connected,
             false,
         );
@@ -1199,11 +1378,19 @@ mod tests {
         assert!(text.contains("127.0.0.1:7373"));
         assert!(text.contains("bash -i"));
         assert!(text.contains("0 clients"));
+        assert!(!text.contains("queued"));
     }
 
     #[test]
     fn host_bar_uses_singular_for_one_client() {
-        let bar = build_host_bar("127.0.0.1:7373", "bash", 1, LocalStatus::Connected, false);
+        let bar = build_host_bar(
+            "127.0.0.1:7373",
+            "bash",
+            1,
+            0,
+            LocalStatus::Connected,
+            false,
+        );
         let rendered =
             crate::pty::status_bar::render(&bar, Some(TerminalSize { cols: 80, rows: 24 }));
         let text = String::from_utf8_lossy(&rendered);
@@ -1214,7 +1401,7 @@ mod tests {
 
     #[test]
     fn host_bar_shows_help_hint_when_controls_enabled() {
-        let bar = build_host_bar("127.0.0.1:7373", "bash", 0, LocalStatus::Connected, true);
+        let bar = build_host_bar("127.0.0.1:7373", "bash", 0, 0, LocalStatus::Connected, true);
         let rendered =
             crate::pty::status_bar::render(&bar, Some(TerminalSize { cols: 80, rows: 24 }));
         let text = String::from_utf8_lossy(&rendered);
@@ -1224,7 +1411,7 @@ mod tests {
 
     #[test]
     fn host_bar_command_state_lists_end_redraw_send() {
-        let bar = build_host_bar("127.0.0.1:7373", "bash", 0, LocalStatus::Command, true);
+        let bar = build_host_bar("127.0.0.1:7373", "bash", 0, 0, LocalStatus::Command, true);
         let rendered = crate::pty::status_bar::render(
             &bar,
             Some(TerminalSize {
@@ -1240,8 +1427,81 @@ mod tests {
     }
 
     #[test]
+    fn parse_ctl_next_returns_queue_next() {
+        let mut reader = std::io::Cursor::new(b"next\n".to_vec());
+        assert_eq!(
+            parse_ctl_command(&mut reader).unwrap(),
+            CtlCommand::Queue(QueueOp::Next)
+        );
+    }
+
+    #[test]
+    fn parse_ctl_add_reads_length_prefixed_payload() {
+        let mut reader = std::io::Cursor::new(b"add 5\nhello".to_vec());
+        assert_eq!(
+            parse_ctl_command(&mut reader).unwrap(),
+            CtlCommand::Queue(QueueOp::Add("hello".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_ctl_add_accepts_multiline_payload() {
+        let mut reader = std::io::Cursor::new(b"add 11\nline1\nline2".to_vec());
+        assert_eq!(
+            parse_ctl_command(&mut reader).unwrap(),
+            CtlCommand::Queue(QueueOp::Add("line1\nline2".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_ctl_add_rejects_oversize_payload() {
+        let header = format!("add {}\n", CTL_MAX_PAYLOAD_BYTES + 1);
+        let mut reader = std::io::Cursor::new(header.into_bytes());
+        let err = parse_ctl_command(&mut reader).unwrap_err();
+        assert!(err.to_string().contains("too large"));
+    }
+
+    #[test]
+    fn parse_ctl_unknown_verb_errors() {
+        let mut reader = std::io::Cursor::new(b"frobnicate\n".to_vec());
+        let err = parse_ctl_command(&mut reader).unwrap_err();
+        assert!(err.to_string().contains("unknown"));
+    }
+
+    #[test]
+    fn parse_ctl_clear_and_list_round_trip() {
+        let mut clear = std::io::Cursor::new(b"clear\n".to_vec());
+        let mut list = std::io::Cursor::new(b"list\n".to_vec());
+        assert_eq!(
+            parse_ctl_command(&mut clear).unwrap(),
+            CtlCommand::Queue(QueueOp::Clear)
+        );
+        assert_eq!(
+            parse_ctl_command(&mut list).unwrap(),
+            CtlCommand::Queue(QueueOp::List)
+        );
+    }
+
+    #[test]
+    fn host_bar_shows_queue_depth_when_nonempty() {
+        let bar = build_host_bar(
+            "127.0.0.1:7373",
+            "bash",
+            0,
+            3,
+            LocalStatus::Connected,
+            false,
+        );
+        let rendered =
+            crate::pty::status_bar::render(&bar, Some(TerminalSize { cols: 80, rows: 24 }));
+        let text = String::from_utf8_lossy(&rendered);
+
+        assert!(text.contains("3 queued"));
+    }
+
+    #[test]
     fn host_bar_omits_command_segment_when_empty() {
-        let bar = build_host_bar("127.0.0.1:7373", "", 2, LocalStatus::Connected, false);
+        let bar = build_host_bar("127.0.0.1:7373", "", 2, 0, LocalStatus::Connected, false);
         let rendered =
             crate::pty::status_bar::render(&bar, Some(TerminalSize { cols: 80, rows: 24 }));
         let text = String::from_utf8_lossy(&rendered);

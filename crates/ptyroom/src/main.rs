@@ -1,13 +1,15 @@
 //! `ptyroom` CLI: high-level shared terminal rooms.
 
+use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener};
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::anyhow;
+use anyhow::{Context, anyhow};
 use clap::{Args as ClapArgs, Parser, Subcommand};
 use ptyroom::connect;
-use ptyroom::share::{ShareOpts, host_local_io_notice, run};
+use ptyroom::share::{ShareOpts, ctl_socket_path, host_local_io_notice, run};
 
 #[derive(Parser)]
 #[command(
@@ -35,6 +37,8 @@ enum Command {
     Join(JoinArgs),
     /// Watch an existing room without sending input or resizing it.
     Watch(JoinArgs),
+    /// Send a control command to a running ptyroom host (queue management).
+    Ctl(CtlArgs),
 }
 
 #[derive(ClapArgs)]
@@ -79,12 +83,47 @@ struct JoinArgs {
     addr: SocketAddr,
 }
 
+#[derive(ClapArgs)]
+struct CtlArgs {
+    /// Room host:port printed by `ptyroom host`. Used to locate the
+    /// host's local control socket (`/tmp/ptyroom-<port>.sock`).
+    addr: SocketAddr,
+    /// Control namespace.
+    #[command(subcommand)]
+    namespace: CtlNamespace,
+}
+
+#[derive(Subcommand)]
+enum CtlNamespace {
+    /// Queue operations: enqueue messages and inject them into the PTY.
+    Queue {
+        #[command(subcommand)]
+        op: CtlQueueOp,
+    },
+}
+
+#[derive(Subcommand)]
+enum CtlQueueOp {
+    /// Append a message to the host's queue. Reads stdin when no text is given.
+    Add {
+        /// Message text. If omitted, the text is read from stdin until EOF.
+        text: Option<String>,
+    },
+    /// Inject the next queued message into the shared PTY, followed by Enter.
+    Next,
+    /// Print the current queue depth.
+    List,
+    /// Empty the queue without injecting anything.
+    Clear,
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Host(args) => host(args),
         Command::Join(args) => join(args),
         Command::Watch(args) => watch(args),
+        Command::Ctl(args) => ctl(args),
     }
 }
 
@@ -136,6 +175,44 @@ fn join(args: JoinArgs) -> anyhow::Result<()> {
 
 fn watch(args: JoinArgs) -> anyhow::Result<()> {
     connect::watch(args.addr)
+}
+
+fn ctl(args: CtlArgs) -> anyhow::Result<()> {
+    let socket_path = ctl_socket_path(args.addr.port());
+    let mut stream = UnixStream::connect(&socket_path).with_context(|| {
+        format!(
+            "connect ptyroom control socket at {}",
+            socket_path.display()
+        )
+    })?;
+    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+    let CtlNamespace::Queue { op } = args.namespace;
+    match op {
+        CtlQueueOp::Add { text } => {
+            let payload = if let Some(t) = text {
+                t
+            } else {
+                let mut buf = String::new();
+                std::io::stdin().read_to_string(&mut buf)?;
+                buf
+            };
+            let header = format!("add {}\n", payload.len());
+            stream.write_all(header.as_bytes())?;
+            stream.write_all(payload.as_bytes())?;
+        }
+        CtlQueueOp::Next => stream.write_all(b"next\n")?,
+        CtlQueueOp::List => stream.write_all(b"list\n")?,
+        CtlQueueOp::Clear => stream.write_all(b"clear\n")?,
+    }
+    let mut response = String::new();
+    stream.read_to_string(&mut response)?;
+    let trimmed = response.trim_end();
+    println!("{trimmed}");
+    if trimmed.starts_with("err") {
+        std::process::exit(1);
+    }
+    Ok(())
 }
 
 fn default_trace_path(addr: SocketAddr) -> PathBuf {
