@@ -22,6 +22,9 @@ static SIGNAL_RESTORE_SEQUENCE: AtomicU8 = AtomicU8::new(NO_SEQUENCE);
 const GENERAL_RESTORE_SEQUENCE: &[u8] =
     b"\x1b[0m\x1b[?25h\x1b[?1l\x1b>\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1049l\x1b[?25h";
 
+const VIEWPORT_RESTORE_SEQUENCE: &[u8] =
+    b"\x1b[0m\x1b[?25h\x1b[?1l\x1b>\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1049l\x1b[23;2t\x1b[?25h";
+
 /// Cleanup for frontends that pass child PTY output directly to the
 /// user's terminal.
 #[must_use]
@@ -29,10 +32,12 @@ pub const fn child_output_restore_sequence() -> &'static [u8] {
     GENERAL_RESTORE_SEQUENCE
 }
 
-/// Cleanup for `ptyroom` client viewport mode.
+/// Cleanup for `ptyroom` viewport mode. Includes a window-title pop so
+/// the title set on viewport enter is restored on exit when the
+/// terminal supports the xterm title-stack extension.
 #[must_use]
 pub const fn viewport_restore_sequence() -> &'static [u8] {
-    GENERAL_RESTORE_SEQUENCE
+    VIEWPORT_RESTORE_SEQUENCE
 }
 
 pub struct RestoreGuard {

@@ -95,6 +95,9 @@ impl ViewportRenderer {
         let terminal = terminal_size(stdout_fd).unwrap_or(TerminalSize::new(80, 24));
         let size = remote_view_size(terminal);
         write_all(stdout_fd, b"\x1b[?1049h\x1b[?25l\x1b[H\x1b[2J")?;
+        let title_mode = if read_only { "watch" } else { "join" };
+        let title = format!("ptyroom {title_mode} {room_label}");
+        write_all(stdout_fd, &set_window_title_sequence(&title))?;
         let mut renderer = Self {
             stdout_fd,
             restore: RestoreGuard::new(stdout_fd, viewport_restore_sequence()),
@@ -205,6 +208,19 @@ const fn remote_view_size(size: TerminalSize) -> TerminalSize {
     TerminalSize::new(size.cols, if size.rows > 1 { size.rows - 1 } else { 1 })
 }
 
+fn set_window_title_sequence(title: &str) -> Vec<u8> {
+    let sanitized: String = title
+        .chars()
+        .filter(|ch| *ch != '\x07' && *ch != '\x1b')
+        .collect();
+    let mut out = Vec::with_capacity(sanitized.len() + 12);
+    out.extend_from_slice(b"\x1b[22;2t");
+    out.extend_from_slice(b"\x1b]2;");
+    out.extend_from_slice(sanitized.as_bytes());
+    out.push(b'\x07');
+    out
+}
+
 fn render_status_line(
     terminal_size: Option<TerminalSize>,
     status: LocalStatus,
@@ -293,8 +309,32 @@ fn render_viewport_full(screen: &vt100::Screen, local_size: Option<TerminalSize>
 mod tests {
     use super::{
         LocalStatus, remote_view_size, render_status_line, render_viewport, render_viewport_full,
+        set_window_title_sequence,
     };
     use crate::pty::room_protocol::TerminalSize;
+
+    #[test]
+    fn set_window_title_pushes_then_sets() {
+        let bytes = set_window_title_sequence("ptyroom join 127.0.0.1:7373");
+        let text = String::from_utf8_lossy(&bytes);
+
+        assert!(text.starts_with("\x1b[22;2t"));
+        assert!(text.contains("\x1b]2;ptyroom join 127.0.0.1:7373\x07"));
+        assert!(bytes.ends_with(b"\x07"));
+    }
+
+    #[test]
+    fn set_window_title_strips_control_chars() {
+        let bytes = set_window_title_sequence("evil\x07title\x1bhere");
+        let text = String::from_utf8_lossy(&bytes);
+
+        assert!(text.contains("eviltitlehere"));
+        let body_start = text.find("\x1b]2;").unwrap() + "\x1b]2;".len();
+        let body_end = text.rfind('\x07').unwrap();
+        let body = &text[body_start..body_end];
+        assert!(!body.contains('\x07'));
+        assert!(!body.contains('\x1b'));
+    }
 
     #[test]
     fn viewport_renderer_clips_to_local_terminal_size() {
