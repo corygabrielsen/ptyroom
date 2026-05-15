@@ -331,6 +331,34 @@ mod tests {
         assert_eq!(rec.trace().events[0].data, "A");
     }
 
+    /// Documents the load-bearing dwell contract: a step's `dwell` is
+    /// the duration AFTER its event before the next one (post-step
+    /// interval). `finish()` emits each event at the cumulative sum of
+    /// prior dwells, never including the current step's own dwell.
+    ///
+    /// Live-capture must defer recording by one event to honor this —
+    /// see `pty::live::flush_pending` for the implementation. Pre-fix,
+    /// live mode supplied "dwell since previous event" instead, which
+    /// shifted every cast timestamp by one event.
+    #[test]
+    fn dwell_is_post_step_interval() {
+        let mut b = TraceBuilder::new();
+        b.record_output(b"A".to_vec(), DwellMs::new(100)).unwrap();
+        b.record_output(b"B".to_vec(), DwellMs::new(50)).unwrap();
+        b.record_output(b"C".to_vec(), DwellMs::new(0)).unwrap();
+
+        let rec = b.finish_synthetic(80, 24).unwrap();
+        let events = &rec.trace().events;
+        assert_eq!(events.len(), 3);
+
+        // A at t=0 (no prior dwells)
+        assert!((events[0].time_s - 0.0).abs() < f64::EPSILON);
+        // B at t = A's dwell = 0.100
+        assert!((events[1].time_s - 0.100).abs() < f64::EPSILON);
+        // C at t = A's + B's dwell = 0.150
+        assert!((events[2].time_s - 0.150).abs() < f64::EPSILON);
+    }
+
     #[test]
     fn record_beat_extends_previous_dwell() {
         let mut b = TraceBuilder::new();
