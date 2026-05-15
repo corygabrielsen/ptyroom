@@ -158,9 +158,29 @@ pub fn capture_with_sink(opts: CaptureOpts, sink: &mut impl CaptureSink) -> Resu
 
     let mut builder = TraceBuilder::new();
     let started = Instant::now();
-    let mut last_event = started;
+    // Each step's dwell in the builder is the duration AFTER that step
+    // before the next one (the "post-step interval"). On a PTY-master
+    // read we don't yet know how long the just-read event will stay
+    // before the next arrives, so we hold the read in `pending` and
+    // flush it (recording its dwell against the next event's arrival
+    // time) when the next event comes in. The final pending event is
+    // flushed at loop exit with dwell = 0.
+    //
+    // This is the live-mode answer to a contract mismatch: the
+    // TraceBuilder API treats `dwell` as "time the recorded data
+    // remains on screen", but during live capture we only learn that
+    // interval *retrospectively*, when the next event arrives. The
+    // pending buffer is the off-by-one correction.
+    let mut pending: Option<(Vec<u8>, Instant)> = None;
     let mut trace_time_ms = 0_u64;
-    let mut buf = [0u8; 4096];
+    // 64 KiB buffer: PTY output bursts (e.g. `cargo build`, `ls -R`,
+    // tmux redraws) can dump tens of kilobytes at once. A 4 KiB
+    // buffer requires multiple read() syscalls and multiple cast
+    // events to absorb a single kernel write — wasteful when humans
+    // are watching. Heap-allocated (clippy refuses stack arrays
+    // above 16 KiB and a one-time heap allocation per session is
+    // negligible).
+    let mut buf = vec![0u8; 65_536].into_boxed_slice();
 
     loop {
         if termination_requested() || started.elapsed() > opts.max_runtime {
@@ -174,9 +194,12 @@ pub fn capture_with_sink(opts: CaptureOpts, sink: &mut impl CaptureSink) -> Resu
             PollFd::new(pty_borrow, PollFlags::POLLIN),
         ];
 
-        // 100 ms wakeup so the max_runtime check fires within a beat
-        // even when nobody types.
-        let timeout = PollTimeout::from(100u16);
+        // 20 ms wakeup balances snappy termination response (max
+        // 20 ms before Ctrl-C / max_runtime / SIGWINCH equivalents
+        // are checked) against idle CPU when nobody is typing.
+        // poll is level-triggered, so live throughput is never
+        // bounded by this timeout — only idle wakeup cadence is.
+        let timeout = PollTimeout::from(20u16);
         match poll(&mut fds, timeout) {
             // Timeout (Ok(0)) and EINTR are both "no events; loop again";
             // any other error halts.
@@ -218,19 +241,19 @@ pub fn capture_with_sink(opts: CaptureOpts, sink: &mut impl CaptureSink) -> Resu
                         // misses a frame; the trace still has it.
                         let _ = write_all(stdout_fd, bytes);
                         let now = Instant::now();
-                        let dwell =
-                            DwellMs::from_duration(now.saturating_duration_since(last_event));
-                        let event = CaptureEvent {
-                            time_s: ms_to_seconds(trace_time_ms),
-                            output: bytes.to_vec(),
-                            dwell_ms: dwell.get(),
-                        };
-                        sink.output(&event).context("capture sink output")?;
-                        builder
-                            .record_output(bytes.to_vec(), dwell)
-                            .context("record_output")?;
-                        trace_time_ms = trace_time_ms.saturating_add(u64::from(dwell.get()));
-                        last_event = now;
+                        // Flush the previous pending event with the
+                        // dwell it actually stayed on screen for —
+                        // measured retrospectively as (now - prev_arrival).
+                        if let Some((prev_bytes, prev_time)) = pending.take() {
+                            flush_pending(
+                                &mut builder,
+                                sink,
+                                &mut trace_time_ms,
+                                prev_bytes,
+                                now.saturating_duration_since(prev_time),
+                            )?;
+                        }
+                        pending = Some((bytes.to_vec(), now));
                     }
                     Err(Errno::EINTR) if termination_requested() => break,
                     Err(Errno::EINTR) => {}
@@ -243,9 +266,56 @@ pub fn capture_with_sink(opts: CaptureOpts, sink: &mut impl CaptureSink) -> Resu
         }
     }
 
+    // Flush the final pending event with dwell 0 — no more events will
+    // arrive, so there's no "interval before the next one" to record.
+    // Asciinema players hold the final frame indefinitely.
+    if let Some((bytes, _)) = pending.take() {
+        flush_pending(
+            &mut builder,
+            sink,
+            &mut trace_time_ms,
+            bytes,
+            Duration::ZERO,
+        )?;
+    }
+
     pty.terminate_child();
     let recording = builder.finish_screen(cols, rows)?;
     Ok(recording.into_trace())
+}
+
+/// Flush one buffered PTY-output event into the trace builder and live
+/// sink, assigning the dwell that was measured against the next event's
+/// arrival (or 0 if this is the final event). Updates `trace_time_ms`
+/// so the next event's `CaptureEvent.time_s` reflects cumulative dwell.
+///
+/// The `bytes` Vec is consumed by the builder; the sink sees a
+/// reference and must not retain the buffer past the call.
+fn flush_pending(
+    builder: &mut TraceBuilder,
+    sink: &mut impl CaptureSink,
+    trace_time_ms: &mut u64,
+    bytes: Vec<u8>,
+    elapsed: Duration,
+) -> Result<()> {
+    let dwell = DwellMs::from_duration(elapsed);
+    let time_s = ms_to_seconds(*trace_time_ms);
+    let dwell_ms = dwell.get();
+    // Build the event in place — the sink only borrows it, so we
+    // avoid a redundant clone of the bytes that the builder then
+    // moves. Allocate the Vec once at read time, hand the same
+    // allocation to the builder.
+    let event = CaptureEvent {
+        time_s,
+        output: bytes,
+        dwell_ms,
+    };
+    sink.output(&event).context("capture sink output")?;
+    builder
+        .record_output(event.output, dwell)
+        .context("record_output")?;
+    *trace_time_ms = trace_time_ms.saturating_add(u64::from(dwell_ms));
+    Ok(())
 }
 
 fn write_all(fd: RawFd, mut bytes: &[u8]) -> Result<()> {
