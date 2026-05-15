@@ -6,6 +6,7 @@ use std::process::ExitCode;
 use clap::{CommandFactory, Parser};
 use ptyrender::render_cli as render;
 
+mod pipeline_cmd;
 mod verify_cmd;
 
 #[derive(Parser)]
@@ -38,6 +39,19 @@ struct VerifyCli {
     args: verify_cmd::Args,
 }
 
+#[derive(Parser)]
+#[command(
+    version,
+    about = "ptyrender pipeline — per-stage tools for the goldens contract",
+    long_about = "Materializes the intermediate artifacts (per-frame JSON,\n\
+                  PNGs, encoded media) that tint-scenes/pipeline-test hashes\n\
+                  into per-stage goldens. Not the user-facing surface."
+)]
+struct PipelineCli {
+    #[command(subcommand)]
+    cmd: pipeline_cmd::Cmd,
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(true) => ExitCode::SUCCESS,
@@ -64,6 +78,15 @@ fn run() -> anyhow::Result<bool> {
             }
             let cli = VerifyCli::parse_from(argv);
             verify_cmd::run(&cli.args)
+        }
+        Some("pipeline") => {
+            argv.remove(1);
+            if let Some(program) = argv.get_mut(0) {
+                *program = OsString::from("ptyrender pipeline");
+            }
+            let cli = PipelineCli::parse_from(argv);
+            pipeline_cmd::run(&cli.cmd)?;
+            Ok(true)
         }
         Some(_) => {
             let cli = RenderCli::parse_from(argv);
