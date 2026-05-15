@@ -42,7 +42,7 @@ use anyhow::Context;
 use nix::unistd::write;
 use tempfile::NamedTempFile;
 
-use crate::recording::{DwellMs, TraceBuilder};
+use crate::recording::{Dwell, TraceBuilder};
 use crate::trace::Trace;
 use drainer::Drainer;
 use process::{PtyMaster, spawn_with_env as spawn_pty};
@@ -428,7 +428,7 @@ impl PtyTracer {
         let total_dwell = dwell.saturating_mul(u32::try_from(repeat).unwrap_or(u32::MAX));
         let captured = self.drainer.consume();
         self.recording
-            .record_step(input, captured, DwellMs::from_duration(total_dwell))?;
+            .record_step(input, captured, Dwell::from_duration(total_dwell))?;
         Ok(())
     }
 
@@ -446,10 +446,8 @@ impl PtyTracer {
         dwell: Duration,
     ) -> anyhow::Result<()> {
         self.check_runtime()?;
-        self.recording.record_presentation_output(
-            output.into().into_bytes(),
-            DwellMs::from_duration(dwell),
-        )?;
+        self.recording
+            .record_presentation_output(output.into().into_bytes(), Dwell::from_duration(dwell))?;
         Ok(())
     }
 
@@ -471,7 +469,7 @@ impl PtyTracer {
             let mut buf = [0_u8; 4];
             self.recording.record_presentation_output(
                 ch.encode_utf8(&mut buf).as_bytes().to_vec(),
-                DwellMs::from_duration(per_char),
+                Dwell::from_duration(per_char),
             )?;
         }
         Ok(())
@@ -491,7 +489,7 @@ impl PtyTracer {
         let pending = self.drainer.consume();
         if !pending.is_empty() {
             self.recording
-                .record_output(pending, DwellMs::from_duration(Duration::ZERO))?;
+                .record_output(pending, Dwell::from_duration(Duration::ZERO))?;
         }
 
         let expected = text.as_bytes();
@@ -516,7 +514,7 @@ impl PtyTracer {
         if echo_start > 0 {
             self.recording.record_output(
                 captured[..echo_start].to_vec(),
-                DwellMs::from_duration(Duration::ZERO),
+                Dwell::from_duration(Duration::ZERO),
             )?;
         }
 
@@ -528,12 +526,12 @@ impl PtyTracer {
                 self.recording.record_step(
                     expected.to_vec(),
                     bytes.to_vec(),
-                    DwellMs::from_duration(per_char),
+                    Dwell::from_duration(per_char),
                 )?;
                 is_first_char = false;
             } else {
                 self.recording
-                    .record_output(bytes.to_vec(), DwellMs::from_duration(per_char))?;
+                    .record_output(bytes.to_vec(), Dwell::from_duration(per_char))?;
             }
         }
 
@@ -541,7 +539,7 @@ impl PtyTracer {
         if echo_end < captured.len() {
             self.recording.record_output(
                 captured[echo_end..].to_vec(),
-                DwellMs::from_duration(Duration::ZERO),
+                Dwell::from_duration(Duration::ZERO),
             )?;
         }
         Ok(())
@@ -634,7 +632,7 @@ impl PtyTracer {
         let captured = self.drainer.consume();
         if !captured.is_empty() {
             self.recording
-                .record_output(captured.clone(), DwellMs::from_duration(Duration::ZERO))?;
+                .record_output(captured.clone(), Dwell::from_duration(Duration::ZERO))?;
         }
         Ok(captured)
     }
@@ -679,7 +677,7 @@ impl PtyTracer {
                     return Ok(());
                 }
                 self.recording
-                    .record_output(this_event, DwellMs::from_duration(dwell))?;
+                    .record_output(this_event, Dwell::from_duration(dwell))?;
                 return Ok(());
             }
             if started.elapsed() >= timeout {
@@ -705,7 +703,7 @@ impl PtyTracer {
         std::thread::sleep(settle);
         let captured = self.drainer.consume();
         self.recording
-            .record_step(bytes.to_vec(), captured, DwellMs::from_duration(dwell))?;
+            .record_step(bytes.to_vec(), captured, Dwell::from_duration(dwell))?;
         Ok(())
     }
 
@@ -745,7 +743,7 @@ impl PtyTracer {
             self.drainer.unconsume(leftover.to_vec());
         }
         self.recording
-            .record_step(bytes.to_vec(), this_event, DwellMs::from_duration(dwell))?;
+            .record_step(bytes.to_vec(), this_event, Dwell::from_duration(dwell))?;
         Ok(elapsed)
     }
 

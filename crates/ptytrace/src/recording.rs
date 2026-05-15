@@ -14,29 +14,82 @@ use serde::{Deserialize, Serialize};
 use crate::observer::Predicate;
 use crate::trace::{EventKind, Trace, TraceEvent, TraceHeader};
 
-/// Step dwell time in whole milliseconds.
+/// Step dwell — the post-step interval before the next event.
 ///
-/// Newtype to keep recorded dwell distinct from wall-clock durations
-/// at API boundaries. Millisecond resolution matches asciinema v2.
+/// Internally stored as `u64` nanoseconds so the recorder doesn't
+/// throw away `Instant`'s native precision when converting from
+/// wall-clock measurements. The asciinema v2 cast format encodes
+/// timestamps as `f64` seconds, which has enough mantissa to hold
+/// nanoseconds within a single recording session (`u64::MAX` ns is
+/// ~584 years; `f64` keeps ~15.95 decimal digits, so 1 second of
+/// recording resolves to ~10 ns and 100 hours to ~10 us).
+///
+/// Constructed via `from_duration` (lossless from `Instant` deltas)
+/// or one of the unit-named factory methods. Pre-2026-05 versions
+/// used a `Dwell(u32)` representation that quantized sub-ms input
+/// timing to zero — see commit history for the migration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct DwellMs(u32);
+pub struct Dwell(u64);
 
-impl DwellMs {
+impl Dwell {
+    /// Zero-length dwell. Used for the final event in a live capture
+    /// (no "next event" to space against) and as the identity element.
+    pub const ZERO: Self = Self(0);
+
+    /// Construct from a raw nanosecond count. Prefer
+    /// [`Dwell::from_duration`] when starting from a `Duration`.
     #[must_use]
-    pub const fn new(ms: u32) -> Self {
-        Self(ms)
+    pub const fn from_nanos(ns: u64) -> Self {
+        Self(ns)
     }
 
-    /// Saturating conversion from a [`Duration`] (truncates to ms).
+    /// Construct from microseconds. Saturates on overflow.
+    #[must_use]
+    pub const fn from_micros(us: u64) -> Self {
+        Self(us.saturating_mul(1_000))
+    }
+
+    /// Construct from milliseconds. Saturates on overflow.
+    #[must_use]
+    pub const fn from_millis(ms: u64) -> Self {
+        Self(ms.saturating_mul(1_000_000))
+    }
+
+    /// Lossless conversion from a [`Duration`]. Saturates at
+    /// `u64::MAX` nanoseconds, which is far beyond any sensible
+    /// session length.
     #[must_use]
     pub fn from_duration(d: Duration) -> Self {
-        Self(u32::try_from(d.as_millis()).unwrap_or(u32::MAX))
+        Self(u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
     }
 
+    /// Nanosecond count (raw storage).
     #[must_use]
-    pub const fn get(self) -> u32 {
+    pub const fn as_nanos(self) -> u64 {
         self.0
+    }
+
+    /// Truncating conversion to whole milliseconds (raw u64). Kept
+    /// for callers that emit `dwell_ms` fields in JSON sidecars.
+    #[must_use]
+    pub const fn as_millis_u64(self) -> u64 {
+        self.0 / 1_000_000
+    }
+
+    /// Saturating conversion to whole milliseconds in `u32` for
+    /// JSON fields that have a fixed-width contract.
+    #[must_use]
+    pub const fn as_millis_u32(self) -> u32 {
+        let ms = self.as_millis_u64();
+        if ms > u32::MAX as u64 {
+            u32::MAX
+        } else {
+            #[allow(clippy::cast_possible_truncation)]
+            {
+                ms as u32
+            }
+        }
     }
 }
 
@@ -44,7 +97,7 @@ impl DwellMs {
 struct Step {
     kind: EventKind,
     data: String,
-    dwell: DwellMs,
+    dwell: Dwell,
 }
 
 /// Labeled instant relative to the start of recording.
@@ -103,7 +156,7 @@ impl TraceBuilder {
         &mut self,
         input: impl Into<Vec<u8>>,
         output: impl Into<Vec<u8>>,
-        dwell: DwellMs,
+        dwell: Dwell,
     ) -> anyhow::Result<()> {
         self.record_step_matching(input, output, dwell, None)
     }
@@ -118,7 +171,7 @@ impl TraceBuilder {
         &mut self,
         input: impl Into<Vec<u8>>,
         output: impl Into<Vec<u8>>,
-        dwell: DwellMs,
+        dwell: Dwell,
         predicate: Option<Predicate>,
     ) -> anyhow::Result<()> {
         // Input bytes describe the cause but are not emitted to the
@@ -137,7 +190,7 @@ impl TraceBuilder {
     pub fn record_output(
         &mut self,
         output: impl Into<Vec<u8>>,
-        dwell: DwellMs,
+        dwell: Dwell,
     ) -> anyhow::Result<()> {
         let output = output.into();
         self.record_inner(&output, dwell, None)
@@ -152,7 +205,7 @@ impl TraceBuilder {
     pub fn record_presentation_output(
         &mut self,
         output: impl Into<Vec<u8>>,
-        dwell: DwellMs,
+        dwell: Dwell,
     ) -> anyhow::Result<()> {
         let output = output.into();
         self.record_inner(&output, dwell, None)
@@ -164,7 +217,7 @@ impl TraceBuilder {
     ///
     /// # Errors
     /// Either dimension is zero.
-    pub fn record_resize(&mut self, cols: u16, rows: u16, dwell: DwellMs) -> anyhow::Result<()> {
+    pub fn record_resize(&mut self, cols: u16, rows: u16, dwell: Dwell) -> anyhow::Result<()> {
         if cols == 0 || rows == 0 {
             anyhow::bail!("record_resize requires nonzero dimensions: {cols}x{rows}");
         }
@@ -183,12 +236,12 @@ impl TraceBuilder {
     ///
     /// # Errors
     /// Currently infallible.
-    pub fn record_beat(&mut self, dwell: DwellMs) -> anyhow::Result<()> {
-        if dwell.get() == 0 {
+    pub fn record_beat(&mut self, dwell: Dwell) -> anyhow::Result<()> {
+        if dwell.as_nanos() == 0 {
             return Ok(());
         }
         if let Some(last) = self.steps.last_mut() {
-            last.dwell = DwellMs::new(last.dwell.get().saturating_add(dwell.get()));
+            last.dwell = Dwell::from_nanos(last.dwell.as_nanos().saturating_add(dwell.as_nanos()));
         }
         Ok(())
     }
@@ -204,7 +257,7 @@ impl TraceBuilder {
     fn record_inner(
         &mut self,
         output: &[u8],
-        dwell: DwellMs,
+        dwell: Dwell,
         predicate: Option<Predicate>,
     ) -> anyhow::Result<()> {
         // Empty output is a beat, not a step — extend the previous
@@ -269,14 +322,14 @@ impl TraceBuilder {
         };
 
         let mut events = Vec::new();
-        let mut t_ms: u64 = 0;
+        let mut t_ns: u64 = 0;
         for step in &self.steps {
             events.push(TraceEvent {
-                time_s: ms_to_seconds(t_ms),
+                time_s: ns_to_seconds(t_ns),
                 kind: step.kind,
                 data: step.data.clone(),
             });
-            t_ms = t_ms.saturating_add(u64::from(step.dwell.get()));
+            t_ns = t_ns.saturating_add(step.dwell.as_nanos());
         }
 
         Ok(Recording {
@@ -311,10 +364,10 @@ impl Recording {
     }
 }
 
-fn ms_to_seconds(ms: u64) -> f64 {
+fn ns_to_seconds(ns: u64) -> f64 {
     #[allow(clippy::cast_precision_loss)]
-    let n = ms as f64;
-    n / 1000.0
+    let n = ns as f64;
+    n / 1_000_000_000.0
 }
 
 #[cfg(test)]
@@ -324,7 +377,7 @@ mod tests {
     #[test]
     fn record_step_appends_event() {
         let mut b = TraceBuilder::new();
-        b.record_step(b"a".to_vec(), b"A".to_vec(), DwellMs::new(10))
+        b.record_step(b"a".to_vec(), b"A".to_vec(), Dwell::from_millis(10))
             .unwrap();
         let rec = b.finish_synthetic(80, 24).unwrap();
         assert_eq!(rec.trace().events.len(), 1);
@@ -343,9 +396,12 @@ mod tests {
     #[test]
     fn dwell_is_post_step_interval() {
         let mut b = TraceBuilder::new();
-        b.record_output(b"A".to_vec(), DwellMs::new(100)).unwrap();
-        b.record_output(b"B".to_vec(), DwellMs::new(50)).unwrap();
-        b.record_output(b"C".to_vec(), DwellMs::new(0)).unwrap();
+        b.record_output(b"A".to_vec(), Dwell::from_millis(100))
+            .unwrap();
+        b.record_output(b"B".to_vec(), Dwell::from_millis(50))
+            .unwrap();
+        b.record_output(b"C".to_vec(), Dwell::from_millis(0))
+            .unwrap();
 
         let rec = b.finish_synthetic(80, 24).unwrap();
         let events = &rec.trace().events;
@@ -359,13 +415,37 @@ mod tests {
         assert!((events[2].time_s - 0.150).abs() < f64::EPSILON);
     }
 
+    /// Regression: pre-2026-05 the dwell was `u32` milliseconds, so
+    /// any input cadence below 1ms got quantized to a zero gap and
+    /// the cast timeline collapsed adjacent events to the same
+    /// `time_s`. Nanosecond storage preserves the input precision.
+    #[test]
+    fn sub_millisecond_dwells_survive_finish() {
+        let mut b = TraceBuilder::new();
+        // 100us between events — under the old quantum.
+        b.record_output(b"A".to_vec(), Dwell::from_micros(100))
+            .unwrap();
+        b.record_output(b"B".to_vec(), Dwell::from_micros(100))
+            .unwrap();
+        b.record_output(b"C".to_vec(), Dwell::ZERO).unwrap();
+
+        let rec = b.finish_synthetic(80, 24).unwrap();
+        let events = &rec.trace().events;
+        assert_eq!(events.len(), 3);
+        assert!(events[1].time_s > events[0].time_s);
+        assert!(events[2].time_s > events[1].time_s);
+        // 100us = 0.0001s; well above f64 mantissa noise.
+        assert!((events[1].time_s - 0.000_1).abs() < 1e-9);
+        assert!((events[2].time_s - 0.000_2).abs() < 1e-9);
+    }
+
     #[test]
     fn record_beat_extends_previous_dwell() {
         let mut b = TraceBuilder::new();
-        b.record_step(b"a".to_vec(), b"A".to_vec(), DwellMs::new(10))
+        b.record_step(b"a".to_vec(), b"A".to_vec(), Dwell::from_millis(10))
             .unwrap();
-        b.record_beat(DwellMs::new(5)).unwrap();
-        b.record_step(b"b".to_vec(), b"B".to_vec(), DwellMs::new(10))
+        b.record_beat(Dwell::from_millis(5)).unwrap();
+        b.record_step(b"b".to_vec(), b"B".to_vec(), Dwell::from_millis(10))
             .unwrap();
         let rec = b.finish_synthetic(80, 24).unwrap();
         // Second event timestamp = first dwell (10) + beat (5) = 15ms.
@@ -375,10 +455,10 @@ mod tests {
     #[test]
     fn record_resize_emits_asciicast_resize_event() {
         let mut b = TraceBuilder::new();
-        b.record_output(b"first".to_vec(), DwellMs::new(50))
+        b.record_output(b"first".to_vec(), Dwell::from_millis(50))
             .unwrap();
-        b.record_resize(100, 30, DwellMs::new(25)).unwrap();
-        b.record_output(b"second".to_vec(), DwellMs::new(10))
+        b.record_resize(100, 30, Dwell::from_millis(25)).unwrap();
+        b.record_output(b"second".to_vec(), Dwell::from_millis(10))
             .unwrap();
 
         let rec = b.finish_synthetic(80, 24).unwrap();
@@ -407,7 +487,7 @@ mod tests {
             .record_step_matching(
                 Vec::new(),
                 b"hello".to_vec(),
-                DwellMs::new(1),
+                Dwell::from_millis(1),
                 Some(Predicate::ContainsText {
                     text: "WORLD".into(),
                 }),
@@ -422,7 +502,7 @@ mod tests {
         b.record_step_matching(
             Vec::new(),
             b"hello world".to_vec(),
-            DwellMs::new(1),
+            Dwell::from_millis(1),
             Some(Predicate::ContainsText {
                 text: "hello".into(),
             }),
@@ -435,9 +515,9 @@ mod tests {
     #[test]
     fn empty_output_with_dwell_extends_previous() {
         let mut b = TraceBuilder::new();
-        b.record_step(b"a".to_vec(), b"A".to_vec(), DwellMs::new(10))
+        b.record_step(b"a".to_vec(), b"A".to_vec(), Dwell::from_millis(10))
             .unwrap();
-        b.record_step(Vec::new(), Vec::new(), DwellMs::new(7))
+        b.record_step(Vec::new(), Vec::new(), Dwell::from_millis(7))
             .unwrap();
         let rec = b.finish_synthetic(80, 24).unwrap();
         assert_eq!(rec.trace().events.len(), 1);
@@ -446,7 +526,7 @@ mod tests {
     #[test]
     fn presentation_output_emitted_in_trace() {
         let mut b = TraceBuilder::new();
-        b.record_presentation_output(b"# note".to_vec(), DwellMs::new(10))
+        b.record_presentation_output(b"# note".to_vec(), Dwell::from_millis(10))
             .unwrap();
         let rec = b.finish_synthetic(80, 24).unwrap();
         assert_eq!(rec.trace().events[0].data, "# note");

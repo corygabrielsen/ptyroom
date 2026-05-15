@@ -31,7 +31,7 @@ use super::room_protocol::{self, ClientControl, TerminalSize};
 use super::status_bar::{Bar, Chip};
 use super::terminal_state::{RestoreGuard, child_output_restore_sequence, termination_requested};
 use super::viewport::ViewportRenderer;
-use crate::recording::{DwellMs, TraceBuilder};
+use crate::recording::{Dwell, TraceBuilder};
 
 const MAX_CLIENT_BACKLOG_BYTES: usize = 1024 * 1024;
 const MAX_JOIN_REPLAY_BYTES: usize = 256 * 1024;
@@ -1284,7 +1284,7 @@ fn handle_pty_output(
     join_replay.remember(&client_frame);
     broadcast(clients, &client_frame, stats);
     let now = Instant::now();
-    let dwell = DwellMs::from_duration(now.saturating_duration_since(*last_event));
+    let dwell = Dwell::from_duration(now.saturating_duration_since(*last_event));
     builder.record_output(bytes.to_vec(), dwell)?;
     *last_event = now;
     Ok(())
@@ -1296,7 +1296,7 @@ fn record_resize_event(
     size: TerminalSize,
 ) -> anyhow::Result<()> {
     let now = Instant::now();
-    let dwell = DwellMs::from_duration(now.saturating_duration_since(*last_event));
+    let dwell = Dwell::from_duration(now.saturating_duration_since(*last_event));
     builder.record_resize(size.cols, size.rows, dwell)?;
     *last_event = now;
     Ok(())

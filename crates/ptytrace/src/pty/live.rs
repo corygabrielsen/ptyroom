@@ -30,7 +30,7 @@ use nix::unistd::{read, write};
 
 use super::process;
 use super::terminal_state::{RestoreGuard, child_output_restore_sequence, termination_requested};
-use crate::recording::{DwellMs, TraceBuilder};
+use crate::recording::{Dwell, TraceBuilder};
 use crate::trace::Trace;
 
 /// Options for [`capture`].
@@ -172,7 +172,13 @@ pub fn capture_with_sink(opts: CaptureOpts, sink: &mut impl CaptureSink) -> Resu
     // interval *retrospectively*, when the next event arrives. The
     // pending buffer is the off-by-one correction.
     let mut pending: Option<(Vec<u8>, Instant)> = None;
-    let mut trace_time_ms = 0_u64;
+    // Cast timeline is accumulated in nanoseconds so a fast burst of
+    // events doesn't get rounded to the same `time_s` when downstream
+    // sinks compare adjacent events. `Instant::now()` is already
+    // nanosecond-resolution on Linux/macOS; mirroring that precision
+    // through the builder and out into the asciinema `time_s` field
+    // costs nothing.
+    let mut trace_time_ns = 0_u64;
     // 64 KiB buffer: PTY output bursts (e.g. `cargo build`, `ls -R`,
     // tmux redraws) can dump tens of kilobytes at once. A 4 KiB
     // buffer requires multiple read() syscalls and multiple cast
@@ -248,7 +254,7 @@ pub fn capture_with_sink(opts: CaptureOpts, sink: &mut impl CaptureSink) -> Resu
                             flush_pending(
                                 &mut builder,
                                 sink,
-                                &mut trace_time_ms,
+                                &mut trace_time_ns,
                                 prev_bytes,
                                 now.saturating_duration_since(prev_time),
                             )?;
@@ -273,7 +279,7 @@ pub fn capture_with_sink(opts: CaptureOpts, sink: &mut impl CaptureSink) -> Resu
         flush_pending(
             &mut builder,
             sink,
-            &mut trace_time_ms,
+            &mut trace_time_ns,
             bytes,
             Duration::ZERO,
         )?;
@@ -286,7 +292,7 @@ pub fn capture_with_sink(opts: CaptureOpts, sink: &mut impl CaptureSink) -> Resu
 
 /// Flush one buffered PTY-output event into the trace builder and live
 /// sink, assigning the dwell that was measured against the next event's
-/// arrival (or 0 if this is the final event). Updates `trace_time_ms`
+/// arrival (or 0 if this is the final event). Updates `trace_time_ns`
 /// so the next event's `CaptureEvent.time_s` reflects cumulative dwell.
 ///
 /// The `bytes` Vec is consumed by the builder; the sink sees a
@@ -294,13 +300,17 @@ pub fn capture_with_sink(opts: CaptureOpts, sink: &mut impl CaptureSink) -> Resu
 fn flush_pending(
     builder: &mut TraceBuilder,
     sink: &mut impl CaptureSink,
-    trace_time_ms: &mut u64,
+    trace_time_ns: &mut u64,
     bytes: Vec<u8>,
     elapsed: Duration,
 ) -> Result<()> {
-    let dwell = DwellMs::from_duration(elapsed);
-    let time_s = ms_to_seconds(*trace_time_ms);
-    let dwell_ms = dwell.get();
+    let dwell = Dwell::from_duration(elapsed);
+    let time_s = ns_to_seconds(*trace_time_ns);
+    // Sink consumers (frame rendering, ffmpeg piping) work in
+    // milliseconds — sub-ms precision wouldn't survive the video
+    // pipeline anyway. Internally the builder keeps the full ns
+    // dwell so cast `time_s` retains its precision.
+    let dwell_ms = dwell.as_millis_u32();
     // Build the event in place — the sink only borrows it, so we
     // avoid a redundant clone of the bytes that the builder then
     // moves. Allocate the Vec once at read time, hand the same
@@ -314,7 +324,7 @@ fn flush_pending(
     builder
         .record_output(event.output, dwell)
         .context("record_output")?;
-    *trace_time_ms = trace_time_ms.saturating_add(u64::from(dwell_ms));
+    *trace_time_ns = trace_time_ns.saturating_add(dwell.as_nanos());
     Ok(())
 }
 
@@ -331,10 +341,10 @@ fn write_all(fd: RawFd, mut bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn ms_to_seconds(ms: u64) -> f64 {
+fn ns_to_seconds(ns: u64) -> f64 {
     #[allow(clippy::cast_precision_loss)]
-    let n = ms as f64;
-    n / 1000.0
+    let n = ns as f64;
+    n / 1_000_000_000.0
 }
 
 fn resolve_argv(argv: Vec<String>) -> Vec<String> {
