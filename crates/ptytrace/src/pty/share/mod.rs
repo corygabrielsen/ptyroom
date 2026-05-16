@@ -10,11 +10,13 @@
 //! SSH, `WireGuard`, or another authenticated tunnel in front when the
 //! session crosses a machine boundary.
 
+mod ctl;
+
 use std::collections::VecDeque;
-use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
+use std::io::{self, BufReader, IsTerminal, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::os::fd::{AsRawFd, BorrowedFd};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -25,6 +27,7 @@ use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use nix::sys::termios::{SetArg, Termios, cfmakeraw, tcgetattr, tcsetattr};
 use nix::unistd::{read, write};
 
+use self::ctl::{CtlCommand, CtlSocket, QueueOp, parse_ctl_command};
 use super::input_router::{LOCAL_ESCAPE_NAME, LocalInputAction, LocalInputRouter, LocalStatus};
 use super::process;
 use super::room_protocol::{self, ClientControl, TerminalSize};
@@ -36,7 +39,6 @@ use crate::recording::{Dwell, TraceBuilder};
 const MAX_CLIENT_BACKLOG_BYTES: usize = 1024 * 1024;
 const MAX_JOIN_REPLAY_BYTES: usize = 256 * 1024;
 const SIZE_CHECK_INTERVAL: Duration = Duration::from_millis(250);
-const CTL_MAX_PAYLOAD_BYTES: usize = 64 * 1024;
 const CTL_IO_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Filesystem path of the local control socket for a ptyroom host bound
@@ -640,33 +642,6 @@ fn refresh_host_size(
     }
 }
 
-fn parse_ctl_command<R: BufRead>(reader: &mut R) -> anyhow::Result<CtlCommand> {
-    let mut line = String::new();
-    reader.read_line(&mut line).context("read ctl command")?;
-    let trimmed = line.trim_end_matches(['\n', '\r']);
-    let mut parts = trimmed.splitn(2, ' ');
-    let verb = parts.next().unwrap_or("");
-    match verb {
-        "add" => {
-            let len_str = parts.next().context("add requires payload length")?;
-            let len: usize = len_str.parse().context("invalid payload length")?;
-            if len > CTL_MAX_PAYLOAD_BYTES {
-                anyhow::bail!("payload too large (max {CTL_MAX_PAYLOAD_BYTES} bytes)");
-            }
-            let mut payload = vec![0_u8; len];
-            reader
-                .read_exact(&mut payload)
-                .context("read ctl payload")?;
-            let text = String::from_utf8(payload).context("payload is not valid UTF-8")?;
-            Ok(CtlCommand::Queue(QueueOp::Add(text)))
-        }
-        "next" => Ok(CtlCommand::Queue(QueueOp::Next)),
-        "list" => Ok(CtlCommand::Queue(QueueOp::List)),
-        "clear" => Ok(CtlCommand::Queue(QueueOp::Clear)),
-        other => anyhow::bail!("unknown control verb {other:?}"),
-    }
-}
-
 fn setup_host_terminal(
     local_output: bool,
     argv: &[String],
@@ -735,41 +710,6 @@ fn initial_host_size(
     } else {
         None
     }
-}
-
-struct CtlSocket {
-    listener: UnixListener,
-    path: PathBuf,
-}
-
-impl CtlSocket {
-    fn bind(port: u16) -> anyhow::Result<Self> {
-        let path = ctl_socket_path(port);
-        let _ = std::fs::remove_file(&path);
-        let listener = UnixListener::bind(&path)
-            .with_context(|| format!("bind ptyroom control socket at {}", path.display()))?;
-        listener.set_nonblocking(true)?;
-        Ok(Self { listener, path })
-    }
-}
-
-impl Drop for CtlSocket {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum CtlCommand {
-    Queue(QueueOp),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum QueueOp {
-    Add(String),
-    Next,
-    List,
-    Clear,
 }
 
 struct HostViewport {
@@ -1443,7 +1383,7 @@ mod tests {
 
     #[test]
     fn parse_ctl_add_rejects_oversize_payload() {
-        let header = format!("add {}\n", CTL_MAX_PAYLOAD_BYTES + 1);
+        let header = format!("add {}\n", ctl::CTL_MAX_PAYLOAD_BYTES + 1);
         let mut reader = std::io::Cursor::new(header.into_bytes());
         let err = parse_ctl_command(&mut reader).unwrap_err();
         assert!(err.to_string().contains("too large"));
