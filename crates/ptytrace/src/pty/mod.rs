@@ -39,6 +39,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context;
 
+use self::room_protocol::find_subslice;
 use self::terminal_io::write_all;
 use tempfile::NamedTempFile;
 
@@ -726,15 +727,6 @@ impl PtyTracer {
         // Drop fields in order: drainer joins, _rcfile unlinks.
         Ok(trace)
     }
-}
-
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() {
-        return Some(0);
-    }
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
 }
 
 fn escape_bytes(bytes: &[u8]) -> String {

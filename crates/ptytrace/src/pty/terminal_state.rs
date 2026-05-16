@@ -515,9 +515,5 @@ mod tests {
         assert!(sequence.ends_with(show_cursor));
     }
 
-    fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-        haystack
-            .windows(needle.len())
-            .position(|window| window == needle)
-    }
+    use super::super::room_protocol::find_subslice;
 }
