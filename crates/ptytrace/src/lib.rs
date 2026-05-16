@@ -17,7 +17,6 @@
 //! and PTY mechanics that lower and sibling crates can safely depend on.
 
 pub mod attestation;
-#[doc(hidden)]
 pub mod attestation_io;
 pub mod color;
 pub mod contract;

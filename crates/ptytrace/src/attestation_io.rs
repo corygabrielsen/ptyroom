@@ -1,4 +1,10 @@
-//! Shared CLI helpers for attestation sidecars.
+//! Filesystem helpers for the [`crate::attestation`] types.
+//!
+//! Used cross-crate by the `ptytrace` and `ptyrender` binaries to
+//! build, write, and verify attestation sidecars. Kept separate from
+//! [`crate::attestation`] so the core types stay free of IO
+//! concerns — `attestation` is data + signing; this module is the
+//! file-based interface.
 
 use std::path::Path;
 
@@ -11,11 +17,18 @@ use crate::attestation::{
 
 const DEFAULT_FILE_ISSUER: &str = "ptytrace file provider";
 
+/// Read the trace at `path` and return its `(sha256_hex, size_bytes)`.
+///
+/// # Errors
+/// IO error reading the trace file.
 pub fn trace_sha256(path: &Path) -> anyhow::Result<(String, usize)> {
     let bytes = std::fs::read(path).with_context(|| format!("read trace {}", path.display()))?;
     Ok((sha256_hex(&bytes), bytes.len()))
 }
 
+/// Default `subject` field for attestations targeting `path` — the
+/// path's file name, or `"trace"` if extraction fails.
+#[must_use]
 pub fn default_file_subject(path: &Path) -> String {
     path.file_name()
         .and_then(std::ffi::OsStr::to_str)
@@ -23,6 +36,13 @@ pub fn default_file_subject(path: &Path) -> String {
         .to_string()
 }
 
+/// Build an unsigned local-file attestation for the trace at
+/// `trace_path`. `issuer`/`subject`/`nonce` default to internal
+/// values when `None`.
+///
+/// # Errors
+/// Attestation construction failure from
+/// [`crate::attestation::AttestationProvider::attest`].
 pub fn file_attestation(
     trace_path: &Path,
     trace_sha256: &str,
@@ -48,6 +68,12 @@ pub fn file_attestation(
     provider.attest(trace_sha256)
 }
 
+/// Serialize `attestation` to JSON, write it to `path`, return the
+/// SHA-256 hex of the written bytes (suitable for embedding as a
+/// receipt's `attestation_sha256` claim).
+///
+/// # Errors
+/// JSON serialization failure or IO error writing the file.
 pub fn write_attestation(path: &Path, attestation: &Attestation) -> anyhow::Result<String> {
     let bytes = attestation.to_json_bytes()?;
     let sha256 = sha256_hex(&bytes);
@@ -55,6 +81,12 @@ pub fn write_attestation(path: &Path, attestation: &Attestation) -> anyhow::Resu
     Ok(sha256)
 }
 
+/// Read the attestation at `attestation_path`, return its SHA-256 hex
+/// after confirming it targets `trace_sha256`.
+///
+/// # Errors
+/// IO error, JSON parse error, unsupported attestation version, or
+/// target mismatch (attestation claims a different trace hash).
 pub fn attestation_sha256_for_trace(
     attestation_path: &Path,
     trace_sha256: &str,

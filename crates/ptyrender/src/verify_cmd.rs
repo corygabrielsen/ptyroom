@@ -29,16 +29,11 @@ pub struct Args {
 /// Returns true when the witness's claims are all confirmed.
 pub fn run(args: &Args) -> anyhow::Result<bool> {
     let witness = Witness::read(&args.witness)?;
-    let outcome =
-        match (&args.contract, &args.attestation) {
-            (Some(contract_path), Some(attestation_path)) => witness
-                .verify_with_spec_and_attestation(&args.trace, contract_path, attestation_path)?,
-            (Some(contract_path), None) => witness.verify_with_spec(&args.trace, contract_path)?,
-            (None, Some(attestation_path)) => {
-                witness.verify_with_attestation(&args.trace, attestation_path)?
-            }
-            (None, None) => witness.verify(&args.trace)?,
-        };
+    let outcome = witness.verify(
+        &args.trace,
+        args.contract.as_deref(),
+        args.attestation.as_deref(),
+    )?;
     println!("{outcome}");
     Ok(matches!(outcome, VerifyOutcome::Match))
 }

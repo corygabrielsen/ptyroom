@@ -45,7 +45,7 @@ pub struct Witness {
     pub output_filename: String,
     /// Optional behavioral attestation hash. When present, the
     /// receipt promises that the trace satisfies a [`ptytrace::contract::Contract`]
-    /// whose file bytes hash to this value. [`Witness::verify_with_spec`]
+    /// whose file bytes hash to this value. [`Witness::verify`] with `contract`
     /// confirms the spec hash matches and re-runs `Contract::check`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contract_sha256: Option<String>,
@@ -204,7 +204,7 @@ pub enum VerifyOutcome {
     /// Re-rendered output bytes hash to a different value.
     OutputDiffers { expected: String, got: String },
     /// Witness has a `contract_sha256` claim but no spec was provided to
-    /// the verifier. Use [`Witness::verify_with_spec`].
+    /// the verifier. Use [`Witness::verify`] with `contract`.
     ContractRequired,
     /// Provided spec file's hash differs from the receipt's claim.
     ContractDiffers { expected: String, got: String },
@@ -213,8 +213,8 @@ pub enum VerifyOutcome {
     ContractFailed { failed: usize, total: usize },
     /// Witness has an `attestation_sha256` claim but no attestation
     /// sidecar was provided to the verifier. Use
-    /// [`Witness::verify_with_attestation`] or
-    /// [`Witness::verify_with_spec_and_attestation`].
+    /// [`Witness::verify`] with `attestation` or
+    /// [`Witness::verify`] with both.
     AttestationRequired,
     /// Provided attestation file's hash differs from the receipt's claim.
     AttestationDiffers { expected: String, got: String },
@@ -344,7 +344,7 @@ impl Witness {
     ) -> anyhow::Result<Self> {
         let trace_path = trace_path.as_ref();
         let witness = Self::from_rendered_output(trace_path, output_path, render)?;
-        let outcome = witness.verify(trace_path)?;
+        let outcome = witness.verify(trace_path, None, None)?;
         if matches!(outcome, VerifyOutcome::Match) {
             Ok(witness)
         } else {
@@ -387,142 +387,96 @@ impl Witness {
     /// If the receipt carries a [`Self::contract_sha256`] claim, this
     /// method returns [`VerifyOutcome::ContractRequired`] without doing
     /// the re-render — full verification needs the spec, so call
-    /// [`Self::verify_with_spec`] instead.
+    /// [`Self::verify`] with `contract` instead.
     /// If the receipt carries a [`Self::attestation_sha256`] claim, this
     /// method returns [`VerifyOutcome::AttestationRequired`] without
     /// doing the re-render — full verification needs the attestation
-    /// sidecar, so call [`Self::verify_with_attestation`] instead.
+    /// sidecar, so call [`Self::verify`] with `attestation` instead.
     ///
     /// # Errors
     /// Trace file missing, ffmpeg invocation failed, or other IO error
     /// during re-render. Witness-claim mismatches return
     /// `Ok(VerifyOutcome::*)`, not `Err`.
-    pub fn verify(&self, trace_path: impl AsRef<Path>) -> anyhow::Result<VerifyOutcome> {
-        if self.contract_sha256.is_some() {
-            return Ok(VerifyOutcome::ContractRequired);
-        }
-        if self.attestation_sha256.is_some() {
-            return Ok(VerifyOutcome::AttestationRequired);
-        }
-        self.verify_b(trace_path.as_ref())
-    }
-
-    /// Verify the receipt with a spec file. Performs the B-check
-    /// (trace hash, environment, re-render output match) plus the
-    /// C-check (spec file hashes to the receipt's claim, and re-running
-    /// [`ptytrace::contract::Contract::check`] passes every predicate).
+    /// Verify the receipt. Performs the B-check (trace hash,
+    /// environment, re-render output match) and, when `contract` /
+    /// `attestation` paths are provided, the matching C-check and
+    /// provenance-anchor check.
     ///
-    /// Calling this when the receipt has no `contract_sha256` claim still
-    /// runs the spec check against the trace — the receipt is silent
-    /// on the spec relationship, but the verifier confirms the spec
-    /// holds against the trace anyway.
+    /// **Required claims.** If the receipt carries a
+    /// `contract_sha256` claim but `contract` is `None`, returns
+    /// [`VerifyOutcome::ContractRequired`]. Same for `attestation`
+    /// claims and `AttestationRequired`. The verifier cannot complete
+    /// a receipt's anchored claims without the underlying file.
+    ///
+    /// **Optional checks.** Passing a `contract` or `attestation` when
+    /// the receipt has no matching `_sha256` claim still runs the
+    /// check against the trace — the receipt is silent on that
+    /// relationship, but the verifier confirms it holds.
     ///
     /// ```no_run
     /// use ptyrender::witness::{Witness, VerifyOutcome};
+    /// use std::path::Path;
     ///
     /// let receipt = Witness::read("demo.gif.receipt.json")?;
-    /// let outcome = receipt.verify_with_spec("demo.ptytrace", "demo.spec.json")?;
-    /// assert!(matches!(outcome, VerifyOutcome::Match));
+    /// // Minimal: B-check only.
+    /// let _ = receipt.verify(Path::new("demo.ptytrace"), None, None)?;
+    /// // With spec: B + C.
+    /// let _ = receipt.verify(
+    ///     Path::new("demo.ptytrace"),
+    ///     Some(Path::new("demo.spec.json")),
+    ///     None,
+    /// )?;
     /// # Ok::<(), anyhow::Error>(())
     /// ```
     ///
     /// # Errors
-    /// Trace or spec file missing, ffmpeg invocation failed, JSON parse
-    /// error on the spec, or other IO error.
-    pub fn verify_with_spec(
+    /// Trace, spec, or attestation file missing; spec or attestation
+    /// JSON parse error; unsupported attestation version; ffmpeg
+    /// invocation failed; or other IO error. Witness-claim mismatches
+    /// return `Ok(VerifyOutcome::*)`, not `Err`.
+    pub fn verify(
         &self,
-        trace_path: impl AsRef<Path>,
-        spec_path: impl AsRef<Path>,
+        trace_path: &Path,
+        contract: Option<&Path>,
+        attestation: Option<&Path>,
     ) -> anyhow::Result<VerifyOutcome> {
-        let trace_path = trace_path.as_ref();
-        let spec_path = spec_path.as_ref();
-
-        if self.attestation_sha256.is_some() {
+        // Required-claim short-circuits: if the receipt anchors
+        // something the caller didn't supply, we can't finish.
+        if self.contract_sha256.is_some() && contract.is_none() {
+            return Ok(VerifyOutcome::ContractRequired);
+        }
+        if self.attestation_sha256.is_some() && attestation.is_none() {
             return Ok(VerifyOutcome::AttestationRequired);
         }
 
-        let spec_bytes = match self.read_spec_claim(spec_path)? {
-            Ok(spec_bytes) => spec_bytes,
-            Err(outcome) => return Ok(outcome),
+        // Spec hash check up-front (cheap) so caller learns of a
+        // mismatch before we spend time re-rendering.
+        let spec_bytes = if let Some(spec_path) = contract {
+            match self.read_spec_claim(spec_path)? {
+                Ok(bytes) => Some(bytes),
+                Err(outcome) => return Ok(outcome),
+            }
+        } else {
+            None
         };
 
+        // Attestation hash + target check.
+        if let Some(att_path) = attestation
+            && let Some(outcome) = self.verify_attestation_claim(att_path)?
+        {
+            return Ok(outcome);
+        }
+
+        // B-check (re-render, compare).
         match self.verify_b(trace_path)? {
             VerifyOutcome::Match => {}
             other => return Ok(other),
         }
 
-        if let Some(outcome) = Self::verify_contract_bytes(trace_path, &spec_bytes)? {
-            return Ok(outcome);
-        }
-
-        Ok(VerifyOutcome::Match)
-    }
-
-    /// Verify the receipt with an attestation sidecar. Performs the
-    /// B-check (trace hash, environment, re-render output match) plus
-    /// the provenance-anchor check (attestation file hashes to the
-    /// receipt's claim, when present, and targets this receipt's trace
-    /// digest).
-    ///
-    /// Calling this when the receipt has no `attestation_sha256` claim
-    /// still checks that the provided attestation targets the receipt's
-    /// trace hash — the receipt is silent on sidecar identity, but the
-    /// verifier confirms the sidecar is relevant.
-    ///
-    /// # Errors
-    /// Trace or attestation file missing, attestation JSON parse error,
-    /// unsupported attestation version, ffmpeg invocation failed, or
-    /// other IO error.
-    pub fn verify_with_attestation(
-        &self,
-        trace_path: impl AsRef<Path>,
-        attestation_path: impl AsRef<Path>,
-    ) -> anyhow::Result<VerifyOutcome> {
-        let trace_path = trace_path.as_ref();
-        let attestation_path = attestation_path.as_ref();
-
-        if let Some(outcome) = self.verify_attestation_claim(attestation_path)? {
-            return Ok(outcome);
-        }
-
-        if self.contract_sha256.is_some() {
-            return Ok(VerifyOutcome::ContractRequired);
-        }
-
-        self.verify_b(trace_path)
-    }
-
-    /// Verify the receipt with both a behavioral spec and an attestation
-    /// sidecar.
-    ///
-    /// # Errors
-    /// Trace, spec, or attestation file missing; spec or attestation JSON
-    /// parse error; unsupported attestation version; ffmpeg invocation
-    /// failed; or other IO error.
-    pub fn verify_with_spec_and_attestation(
-        &self,
-        trace_path: impl AsRef<Path>,
-        spec_path: impl AsRef<Path>,
-        attestation_path: impl AsRef<Path>,
-    ) -> anyhow::Result<VerifyOutcome> {
-        let trace_path = trace_path.as_ref();
-        let spec_path = spec_path.as_ref();
-        let attestation_path = attestation_path.as_ref();
-
-        let spec_bytes = match self.read_spec_claim(spec_path)? {
-            Ok(spec_bytes) => spec_bytes,
-            Err(outcome) => return Ok(outcome),
-        };
-        if let Some(outcome) = self.verify_attestation_claim(attestation_path)? {
-            return Ok(outcome);
-        }
-
-        match self.verify_b(trace_path)? {
-            VerifyOutcome::Match => {}
-            other => return Ok(other),
-        }
-
-        if let Some(outcome) = Self::verify_contract_bytes(trace_path, &spec_bytes)? {
+        // C-check (predicates).
+        if let Some(bytes) = spec_bytes
+            && let Some(outcome) = Self::verify_contract_bytes(trace_path, &bytes)?
+        {
             return Ok(outcome);
         }
 
@@ -866,7 +820,7 @@ mod tests {
         // get an EnvironmentDiffers diff first.
         r.tool = ToolIdentity::current().expect("ffmpeg present in test env");
 
-        let outcome = r.verify(tmp.path()).unwrap();
+        let outcome = r.verify(tmp.path(), None, None).unwrap();
         match outcome {
             VerifyOutcome::EncoderNotVerifiable { encoder } => {
                 assert_eq!(encoder, "h264_nvenc");
@@ -1043,7 +997,7 @@ mod tests {
         let mut r = fixture_receipt();
         r.attestation_sha256 = Some("a".repeat(64));
 
-        let outcome = r.verify("unused.ptytrace").unwrap();
+        let outcome = r.verify(Path::new("unused.ptytrace"), None, None).unwrap();
 
         assert!(matches!(outcome, VerifyOutcome::AttestationRequired));
         assert_eq!(
@@ -1058,7 +1012,11 @@ mod tests {
         r.attestation_sha256 = Some("a".repeat(64));
 
         let outcome = r
-            .verify_with_spec("unused.ptytrace", "unused.spec.json")
+            .verify(
+                Path::new("unused.ptytrace"),
+                Some(Path::new("unused.spec.json")),
+                None,
+            )
             .unwrap();
 
         assert!(matches!(outcome, VerifyOutcome::AttestationRequired));
@@ -1071,7 +1029,7 @@ mod tests {
         let attestation = write_attestation(&r.trace_sha256);
 
         let outcome = r
-            .verify_with_attestation("unused.ptytrace", attestation.path())
+            .verify(Path::new("unused.ptytrace"), None, Some(attestation.path()))
             .unwrap();
 
         match outcome {
@@ -1091,7 +1049,7 @@ mod tests {
         r.attestation_sha256 = Some(sha256_hex(&attestation_bytes));
 
         let outcome = r
-            .verify_with_attestation("unused.ptytrace", attestation.path())
+            .verify(Path::new("unused.ptytrace"), None, Some(attestation.path()))
             .unwrap();
 
         match outcome {
