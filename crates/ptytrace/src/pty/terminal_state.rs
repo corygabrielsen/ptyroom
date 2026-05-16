@@ -53,7 +53,7 @@ const ALT_SCREEN_ENTER: &[u8] = b"\x1b[?1049h\x1b[H";
 /// installing a [`RestoreGuard`] keyed on
 /// [`child_output_restore_sequence`].
 #[must_use]
-pub const fn child_output_enter_sequence() -> &'static [u8] {
+pub(super) const fn child_output_enter_sequence() -> &'static [u8] {
     ALT_SCREEN_ENTER
 }
 
@@ -68,7 +68,7 @@ pub const fn child_output_enter_sequence() -> &'static [u8] {
 /// Construction returns the bare `nix` error; the caller decides
 /// what context to attach (e.g., "is stdin a tty?" for `live`,
 /// "ptyroom host stdin" for `share`).
-pub struct RawModeGuard {
+pub(super) struct RawModeGuard {
     fd: RawFd,
     original: nix::sys::termios::Termios,
 }
@@ -81,7 +81,7 @@ impl RawModeGuard {
     /// # Errors
     /// `tcgetattr` (non-tty fd) or `tcsetattr` (kernel rejected the
     /// raw mode write).
-    pub fn enter(fd: RawFd) -> nix::Result<Self> {
+    pub(super) fn enter(fd: RawFd) -> nix::Result<Self> {
         use nix::sys::termios::{SetArg, cfmakeraw, tcgetattr, tcsetattr};
         let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
         let original = tcgetattr(borrowed)?;
@@ -116,7 +116,7 @@ impl Drop for RawModeGuard {
 /// or `enabled` is `false`. The `None` case is non-fatal — callers
 /// just skip the restore.
 #[must_use]
-pub fn child_output_cleanup_guard(enabled: bool, fd: RawFd) -> Option<RestoreGuard> {
+pub(super) fn child_output_cleanup_guard(enabled: bool, fd: RawFd) -> Option<RestoreGuard> {
     if cfg!(test) || !enabled {
         return None;
     }
@@ -128,7 +128,7 @@ pub fn child_output_cleanup_guard(enabled: bool, fd: RawFd) -> Option<RestoreGua
 /// Cleanup for frontends that pass child PTY output directly to the
 /// user's terminal.
 #[must_use]
-pub const fn child_output_restore_sequence() -> &'static [u8] {
+pub(super) const fn child_output_restore_sequence() -> &'static [u8] {
     GENERAL_RESTORE_SEQUENCE
 }
 
@@ -136,11 +136,11 @@ pub const fn child_output_restore_sequence() -> &'static [u8] {
 /// the title set on viewport enter is restored on exit when the
 /// terminal supports the xterm title-stack extension.
 #[must_use]
-pub const fn viewport_restore_sequence() -> &'static [u8] {
+pub(super) const fn viewport_restore_sequence() -> &'static [u8] {
     VIEWPORT_RESTORE_SEQUENCE
 }
 
-pub struct RestoreGuard {
+pub(super) struct RestoreGuard {
     fd: RawFd,
     sequence: &'static [u8],
     _signal_handlers: Option<SignalHandlers>,
@@ -148,7 +148,7 @@ pub struct RestoreGuard {
 
 impl RestoreGuard {
     #[must_use]
-    pub fn new(fd: RawFd, sequence: &'static [u8]) -> Self {
+    pub(super) fn new(fd: RawFd, sequence: &'static [u8]) -> Self {
         clear_termination_request();
         SIGNAL_RESTORE_FD.store(fd, Ordering::SeqCst);
         SIGNAL_RESTORE_SEQUENCE.store(sequence_kind(sequence), Ordering::SeqCst);
@@ -159,7 +159,7 @@ impl RestoreGuard {
         }
     }
 
-    pub fn set_fd(&mut self, fd: RawFd) {
+    pub(super) fn set_fd(&mut self, fd: RawFd) {
         self.fd = fd;
         SIGNAL_RESTORE_FD.store(fd, Ordering::SeqCst);
     }
@@ -175,15 +175,15 @@ impl Drop for RestoreGuard {
 }
 
 #[must_use]
-pub fn termination_requested() -> bool {
+pub(super) fn termination_requested() -> bool {
     TERMINATION_REQUESTED.load(Ordering::SeqCst)
 }
 
-pub fn clear_termination_request() {
+pub(super) fn clear_termination_request() {
     TERMINATION_REQUESTED.store(false, Ordering::SeqCst);
 }
 
-pub fn restore_fd_best_effort(fd: RawFd, sequence: &'static [u8]) {
+pub(super) fn restore_fd_best_effort(fd: RawFd, sequence: &'static [u8]) {
     let _ = super::terminal_io::write_all(fd, sequence);
 }
 
