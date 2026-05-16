@@ -11,10 +11,11 @@
 //! the host keeps so a late-joining client sees the current screen
 //! state, not just bytes that arrive after their connection.
 //!
-//! Free functions that ITERATE Vec<Client> live in `share/mod.rs`
-//! (`broadcast`, `broadcast_control`) — they need `ShareStats` from
-//! mod.rs and the per-client API exposed here is what they call
-//! through.
+//! [`ShareStats`] (broadcast outcome counters) + the free
+//! [`broadcast`] / [`broadcast_control`] helpers live here too —
+//! they exist *because* of the per-client backlog/disconnect rules
+//! defined above. Session owns a `ShareStats` value but mutating it
+//! is this module's job.
 
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
@@ -278,4 +279,42 @@ impl Client {
     pub(super) fn fd(&self) -> RawFd {
         self.stream.as_raw_fd()
     }
+}
+
+/// Broadcast outcome counters owned by `Session` and mutated by
+/// [`broadcast`]/[`broadcast_control`] every time a tee'd frame
+/// reaches the client fan-out.
+#[derive(Debug, Default)]
+pub(super) struct ShareStats {
+    pub(super) accepted: usize,
+    pub(super) disconnected: usize,
+    pub(super) dropped_for_backlog: usize,
+}
+
+/// Fan `bytes` out to every connected client. Clients whose backlog
+/// exceeds the per-client budget are dropped on the spot (counter:
+/// `dropped_for_backlog`); clients whose stream write fails are
+/// dropped (`disconnected`). Surviving clients stay in `clients`.
+pub(super) fn broadcast(clients: &mut Vec<Client>, bytes: &[u8], stats: &mut ShareStats) {
+    let mut kept = Vec::with_capacity(clients.len());
+    for mut client in clients.drain(..) {
+        if !client.enqueue(bytes) {
+            client.disconnect();
+            stats.disconnected += 1;
+            stats.dropped_for_backlog += 1;
+        } else if client.flush_pending() {
+            kept.push(client);
+        } else {
+            client.disconnect();
+            stats.disconnected += 1;
+        }
+    }
+    *clients = kept;
+}
+
+/// Fan out a control frame (room-protocol size or hello). Same
+/// semantics as [`broadcast`] — kept as a separate name for
+/// caller-side clarity.
+pub(super) fn broadcast_control(clients: &mut Vec<Client>, bytes: &[u8], stats: &mut ShareStats) {
+    broadcast(clients, bytes, stats);
 }

@@ -30,7 +30,7 @@ use nix::libc;
 use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use nix::unistd::{read, write};
 
-use self::client::{Client, JoinReplay};
+use self::client::{Client, JoinReplay, ShareStats, broadcast, broadcast_control};
 use self::ctl::{CtlCommand, CtlSocket, QueueOp, parse_ctl_command};
 use self::host_viewport::HostViewport;
 use super::input_router::{LocalInputAction, LocalInputRouter, LocalStatus};
@@ -471,13 +471,6 @@ fn host_raw_mode_guard(
     Ok(None)
 }
 
-#[derive(Debug, Default)]
-struct ShareStats {
-    accepted: usize,
-    disconnected: usize,
-    dropped_for_backlog: usize,
-}
-
 #[derive(Debug)]
 struct PollState {
     listener_readable: bool,
@@ -728,27 +721,6 @@ fn terminal_size(fd: i32) -> Option<TerminalSize> {
     } else {
         None
     }
-}
-
-fn broadcast(clients: &mut Vec<Client>, bytes: &[u8], stats: &mut ShareStats) {
-    let mut kept = Vec::with_capacity(clients.len());
-    for mut client in clients.drain(..) {
-        if !client.enqueue(bytes) {
-            client.disconnect();
-            stats.disconnected += 1;
-            stats.dropped_for_backlog += 1;
-        } else if client.flush_pending() {
-            kept.push(client);
-        } else {
-            client.disconnect();
-            stats.disconnected += 1;
-        }
-    }
-    *clients = kept;
-}
-
-fn broadcast_control(clients: &mut Vec<Client>, bytes: &[u8], stats: &mut ShareStats) {
-    broadcast(clients, bytes, stats);
 }
 
 fn write_all(fd: i32, mut bytes: &[u8]) -> anyhow::Result<()> {
