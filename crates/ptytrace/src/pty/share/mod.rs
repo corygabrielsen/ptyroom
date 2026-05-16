@@ -11,6 +11,7 @@
 //! session crosses a machine boundary.
 
 mod ctl;
+mod host_viewport;
 
 use std::collections::VecDeque;
 use std::io::{self, BufReader, IsTerminal, Read, Write};
@@ -28,12 +29,11 @@ use nix::sys::termios::{SetArg, Termios, cfmakeraw, tcgetattr, tcsetattr};
 use nix::unistd::{read, write};
 
 use self::ctl::{CtlCommand, CtlSocket, QueueOp, parse_ctl_command};
-use super::input_router::{LOCAL_ESCAPE_NAME, LocalInputAction, LocalInputRouter, LocalStatus};
+use self::host_viewport::HostViewport;
+use super::input_router::{LocalInputAction, LocalInputRouter, LocalStatus};
 use super::process;
 use super::room_protocol::{self, ClientControl, TerminalSize};
-use super::status_bar::{Bar, Chip};
 use super::terminal_state::{RestoreGuard, child_output_cleanup_guard, termination_requested};
-use super::viewport::ViewportRenderer;
 use crate::recording::{Dwell, TraceBuilder};
 
 const MAX_CLIENT_BACKLOG_BYTES: usize = 1024 * 1024;
@@ -712,133 +712,6 @@ fn initial_host_size(
     }
 }
 
-struct HostViewport {
-    inner: ViewportRenderer,
-    addr: String,
-    command: String,
-    client_count: usize,
-    queue_depth: usize,
-    status: LocalStatus,
-    controls: bool,
-}
-
-impl HostViewport {
-    fn enter(stdout_fd: i32, addr: String, command: String) -> anyhow::Result<Self> {
-        let bar = build_host_bar(&addr, &command, 0, 0, LocalStatus::Connected, false);
-        let title = format!("ptyroom host {addr}");
-        let inner = ViewportRenderer::enter(stdout_fd, &title, &bar)?;
-        Ok(Self {
-            inner,
-            addr,
-            command,
-            client_count: 0,
-            queue_depth: 0,
-            status: LocalStatus::Connected,
-            controls: false,
-        })
-    }
-
-    fn set_controls_enabled(&mut self, enabled: bool) {
-        self.controls = enabled;
-    }
-
-    fn process_output(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
-        self.inner.process_output(bytes, &self.bar())
-    }
-
-    fn resize(&mut self, stdout_fd: i32, size: TerminalSize) -> anyhow::Result<()> {
-        self.inner.resize(stdout_fd, size, &self.bar())
-    }
-
-    fn set_client_count(&mut self, count: usize) -> anyhow::Result<()> {
-        if self.client_count == count {
-            return Ok(());
-        }
-        self.client_count = count;
-        self.inner.redraw_status(&self.bar())
-    }
-
-    fn set_queue_depth(&mut self, depth: usize) -> anyhow::Result<()> {
-        if self.queue_depth == depth {
-            return Ok(());
-        }
-        self.queue_depth = depth;
-        self.inner.redraw_status(&self.bar())
-    }
-
-    fn set_status(&mut self, _stdout_fd: i32, status: LocalStatus) -> anyhow::Result<()> {
-        self.status = status;
-        self.inner.redraw_status(&self.bar())
-    }
-
-    fn force_redraw(&mut self, stdout_fd: i32) -> anyhow::Result<()> {
-        self.inner.force_redraw(stdout_fd, &self.bar())
-    }
-
-    fn reported_size(stdout_fd: i32) -> Option<TerminalSize> {
-        ViewportRenderer::reported_size(stdout_fd)
-    }
-
-    fn bar(&self) -> Bar {
-        build_host_bar(
-            &self.addr,
-            &self.command,
-            self.client_count,
-            self.queue_depth,
-            self.status,
-            self.controls,
-        )
-    }
-}
-
-fn build_host_bar(
-    addr: &str,
-    command: &str,
-    client_count: usize,
-    queue_depth: usize,
-    status: LocalStatus,
-    controls: bool,
-) -> Bar {
-    let clients_segment = match client_count {
-        0 => "0 clients".to_string(),
-        1 => "1 client".to_string(),
-        n => format!("{n} clients"),
-    };
-    let mut bar = Bar::new(Chip::Host).segment(addr);
-    if !command.is_empty() {
-        bar = bar.segment(command);
-    }
-    bar = bar.segment(clients_segment);
-    if queue_depth > 0 {
-        bar = bar.segment(format!("{queue_depth} queued"));
-    }
-    match status {
-        LocalStatus::Connected => {
-            if controls {
-                bar = bar.segment(format!("{LOCAL_ESCAPE_NAME} ? help"));
-            }
-        }
-        LocalStatus::Command => {
-            bar = bar
-                .segment("command")
-                .segment(". end")
-                .segment("? help")
-                .segment("r redraw")
-                .segment(format!("{LOCAL_ESCAPE_NAME} send"));
-        }
-        LocalStatus::Help => {
-            bar = bar
-                .segment("controls")
-                .segment(format!("{LOCAL_ESCAPE_NAME} . end"))
-                .segment(format!("{LOCAL_ESCAPE_NAME} r redraw"))
-                .segment(format!(
-                    "{LOCAL_ESCAPE_NAME} {LOCAL_ESCAPE_NAME} send {LOCAL_ESCAPE_NAME}"
-                ));
-        }
-    }
-    bar
-}
-
 fn terminal_size(fd: i32) -> Option<TerminalSize> {
     let mut size = libc::winsize {
         ws_row: 0,
@@ -1289,7 +1162,7 @@ mod tests {
 
     #[test]
     fn host_bar_includes_chip_addr_command_and_client_count() {
-        let bar = build_host_bar(
+        let bar = host_viewport::build_host_bar(
             "127.0.0.1:7373",
             "bash -i",
             0,
@@ -1311,7 +1184,7 @@ mod tests {
 
     #[test]
     fn host_bar_uses_singular_for_one_client() {
-        let bar = build_host_bar(
+        let bar = host_viewport::build_host_bar(
             "127.0.0.1:7373",
             "bash",
             1,
@@ -1329,7 +1202,14 @@ mod tests {
 
     #[test]
     fn host_bar_shows_help_hint_when_controls_enabled() {
-        let bar = build_host_bar("127.0.0.1:7373", "bash", 0, 0, LocalStatus::Connected, true);
+        let bar = host_viewport::build_host_bar(
+            "127.0.0.1:7373",
+            "bash",
+            0,
+            0,
+            LocalStatus::Connected,
+            true,
+        );
         let rendered =
             crate::pty::status_bar::render(&bar, Some(TerminalSize { cols: 80, rows: 24 }));
         let text = String::from_utf8_lossy(&rendered);
@@ -1339,7 +1219,14 @@ mod tests {
 
     #[test]
     fn host_bar_command_state_lists_end_redraw_send() {
-        let bar = build_host_bar("127.0.0.1:7373", "bash", 0, 0, LocalStatus::Command, true);
+        let bar = host_viewport::build_host_bar(
+            "127.0.0.1:7373",
+            "bash",
+            0,
+            0,
+            LocalStatus::Command,
+            true,
+        );
         let rendered = crate::pty::status_bar::render(
             &bar,
             Some(TerminalSize {
@@ -1412,7 +1299,7 @@ mod tests {
 
     #[test]
     fn host_bar_shows_queue_depth_when_nonempty() {
-        let bar = build_host_bar(
+        let bar = host_viewport::build_host_bar(
             "127.0.0.1:7373",
             "bash",
             0,
@@ -1429,7 +1316,14 @@ mod tests {
 
     #[test]
     fn host_bar_omits_command_segment_when_empty() {
-        let bar = build_host_bar("127.0.0.1:7373", "", 2, 0, LocalStatus::Connected, false);
+        let bar = host_viewport::build_host_bar(
+            "127.0.0.1:7373",
+            "",
+            2,
+            0,
+            LocalStatus::Connected,
+            false,
+        );
         let rendered =
             crate::pty::status_bar::render(&bar, Some(TerminalSize { cols: 80, rows: 24 }));
         let text = String::from_utf8_lossy(&rendered);
