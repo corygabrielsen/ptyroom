@@ -10,6 +10,28 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+/// Emit the ANSI "clear current row + carriage-return" sequence when
+/// stdout is a tty. Use immediately before any `println!` that runs
+/// after a PTY-captured session ends. Defends against bleed-through
+/// from any pre-existing terminal content that survived on the row
+/// the post-session restore-sequence cursor advance landed on (cargo
+/// progress draws, outer shell prompt redraws, partial alt-screen
+/// restore residue). No-op when stdout is piped/redirected so escape
+/// bytes don't pollute scripted consumers. Regression covered by
+/// `crates/ptyrecord/tests/output_cleanliness.rs`.
+fn clear_row_if_tty() {
+    if std::io::stdout().is_terminal() {
+        print!("\x1b[2K\r");
+    }
+}
+
+/// Print one persistent-artifact "wrote X" line, defensively
+/// clearing the row first when output is interactive.
+fn print_wrote(path: impl std::fmt::Display) {
+    clear_row_if_tty();
+    println!("wrote {path}");
+}
+
 use clap::Parser;
 use ptyrecord::{LiveFrameStitcher, LiveStitchConfig, PtyRecord};
 use ptyrender::encode::{EncodeRequest, Mp4Encoder, encode};
@@ -98,6 +120,7 @@ struct Args {
     command: Vec<String>,
 }
 
+#[allow(clippy::too_many_lines)]
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
@@ -113,6 +136,7 @@ fn main() -> anyhow::Result<()> {
         let witness = args.witness_in.as_ref().map(Witness::read).transpose()?;
         let record = PtyRecord::from_paths(trace_path, media_path, witness.as_ref())?;
         record.write(&out)?;
+        clear_row_if_tty();
         println!(
             "wrote {} + embedded trace {} + media {}",
             out.display(),
@@ -210,15 +234,15 @@ fn main() -> anyhow::Result<()> {
     let record = PtyRecord::from_paths(&trace_path, &media_path, witness.as_ref())?;
     record.write(&out)?;
 
-    println!("wrote {}", out.display());
+    print_wrote(out.display());
     if media_is_sidecar {
-        println!("wrote {}", media_path.display());
+        print_wrote(media_path.display());
     }
     if trace_is_sidecar {
-        println!("wrote {}", trace_path.display());
+        print_wrote(trace_path.display());
     }
     if let Some(witness_out) = &args.witness_out {
-        println!("wrote {}", witness_out.display());
+        print_wrote(witness_out.display());
     }
 
     Ok(())

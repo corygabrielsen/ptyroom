@@ -54,6 +54,14 @@ pub fn capture_to_path(out: &Path, argv: Vec<String>, max_secs: u64) -> anyhow::
     })?;
 
     trace.write(out)?;
+    // Wipe the current row before drawing. After a live PTY session
+    // exits, the cursor may be parked on a row that still holds
+    // pre-session content (cargo progress draws, shell prompt
+    // redraws, etc.). The `\x1b[2K\r` defends against bleed-through.
+    // Gated on tty so escape bytes don't pollute piped output.
+    if std::io::stdout().is_terminal() {
+        print!("\x1b[2K\r");
+    }
     println!(
         "wrote {} ({} bytes, {} events)",
         out.display(),

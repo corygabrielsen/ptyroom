@@ -1,11 +1,26 @@
 //! `ptyroom` CLI: high-level shared terminal rooms.
 
 use std::ffi::OsStr;
-use std::io::{Read, Write};
+use std::io::{IsTerminal, Read, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+/// Wipe the current terminal row before drawing post-session output.
+/// Same defense as `ptyrecord::print_wrote` — see that helper's doc
+/// comment and `crates/ptyrecord/tests/output_cleanliness.rs` for the
+/// reproducer and the failure mode it catches. No-op for piped output.
+fn clear_row_if_tty() {
+    if std::io::stdout().is_terminal() {
+        print!("\x1b[2K\r");
+    }
+}
+
+fn print_wrote(path: impl std::fmt::Display) {
+    clear_row_if_tty();
+    println!("wrote {path}");
+}
 
 use anyhow::{Context, anyhow};
 use clap::{Args as ClapArgs, Parser, Subcommand};
@@ -231,7 +246,7 @@ fn host(args: HostArgs) -> anyhow::Result<()> {
     // `--trace-out`, since otherwise we'd produce zero artifacts.
     if summary.events == 0 {
         eprintln!("[no output events captured; skipping render + bundle]");
-        println!("wrote {}", trace_path.display());
+        print_wrote(trace_path.display());
         return Ok(());
     }
 
@@ -266,15 +281,15 @@ fn host(args: HostArgs) -> anyhow::Result<()> {
     let record = PtyRecord::from_paths(&trace_path, &media_path, witness.as_ref())?;
     record.write(&out)?;
 
-    println!("wrote {}", out.display());
+    print_wrote(out.display());
     if media_is_sidecar {
-        println!("wrote {}", media_path.display());
+        print_wrote(media_path.display());
     }
     if trace_is_sidecar {
-        println!("wrote {}", trace_path.display());
+        print_wrote(trace_path.display());
     }
     if let Some(witness_out) = &args.witness_out {
-        println!("wrote {}", witness_out.display());
+        print_wrote(witness_out.display());
     }
 
     Ok(())
