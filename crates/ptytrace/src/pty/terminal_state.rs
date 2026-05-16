@@ -1,5 +1,6 @@
 //! Terminal state cleanup shared by interactive PTY frontends.
 
+use std::io::IsTerminal;
 use std::os::fd::{BorrowedFd, RawFd};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering};
 
@@ -56,6 +57,30 @@ const ALT_SCREEN_ENTER: &[u8] = b"\x1b[?1049h\x1b[H";
 #[must_use]
 pub const fn child_output_enter_sequence() -> &'static [u8] {
     ALT_SCREEN_ENTER
+}
+
+/// Install a [`RestoreGuard`] for the child-output restore sequence
+/// on `fd`, gated on the host's stdout being a tty (and not running
+/// under `cfg(test)`, where the restore would inject ANSI noise into
+/// captured-output assertions).
+///
+/// `enabled` is an additional caller-side precondition: pass `true`
+/// to always install when tty-eligible, or `false` to skip
+/// installation regardless. `share.rs` uses it to skip restoration
+/// when the host suppressed local output (no tee → nothing to clean
+/// up); `live.rs` always passes `true` because it always tees.
+///
+/// Returns `None` in three cases: `cfg(test)`, stdout isn't a tty,
+/// or `enabled` is `false`. The `None` case is non-fatal — callers
+/// just skip the restore.
+#[must_use]
+pub fn child_output_cleanup_guard(enabled: bool, fd: RawFd) -> Option<RestoreGuard> {
+    if cfg!(test) || !enabled {
+        return None;
+    }
+    std::io::stdout()
+        .is_terminal()
+        .then(|| RestoreGuard::new(fd, child_output_restore_sequence()))
 }
 
 /// Cleanup for frontends that pass child PTY output directly to the

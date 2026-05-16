@@ -29,7 +29,7 @@ use super::input_router::{LOCAL_ESCAPE_NAME, LocalInputAction, LocalInputRouter,
 use super::process;
 use super::room_protocol::{self, ClientControl, TerminalSize};
 use super::status_bar::{Bar, Chip};
-use super::terminal_state::{RestoreGuard, child_output_restore_sequence, termination_requested};
+use super::terminal_state::{RestoreGuard, child_output_cleanup_guard, termination_requested};
 use super::viewport::ViewportRenderer;
 use crate::recording::{Dwell, TraceBuilder};
 
@@ -640,18 +640,6 @@ fn refresh_host_size(
     }
 }
 
-fn terminal_cleanup_guard(
-    local_output: bool,
-    stdout: &io::Stdout,
-    fd: i32,
-) -> Option<RestoreGuard> {
-    if cfg!(test) {
-        return None;
-    }
-    (local_output && stdout.is_terminal())
-        .then_some(RestoreGuard::new(fd, child_output_restore_sequence()))
-}
-
 fn parse_ctl_command<R: BufRead>(reader: &mut R) -> anyhow::Result<CtlCommand> {
     let mut line = String::new();
     reader.read_line(&mut line).context("read ctl command")?;
@@ -691,7 +679,7 @@ fn setup_host_terminal(
         let viewport = HostViewport::enter(stdout_fd, listen_addr.to_string(), argv.join(" "))?;
         Ok((Some(viewport), None))
     } else {
-        let cleanup = terminal_cleanup_guard(local_output, stdout, stdout_fd);
+        let cleanup = child_output_cleanup_guard(local_output, stdout_fd);
         Ok((None, cleanup))
     }
 }

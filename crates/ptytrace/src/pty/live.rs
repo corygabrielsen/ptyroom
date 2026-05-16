@@ -30,7 +30,7 @@ use nix::unistd::{read, write};
 
 use super::process;
 use super::terminal_state::{
-    RestoreGuard, child_output_enter_sequence, child_output_restore_sequence, termination_requested,
+    child_output_cleanup_guard, child_output_enter_sequence, termination_requested,
 };
 use crate::recording::{Dwell, TraceBuilder};
 use crate::trace::Trace;
@@ -151,7 +151,7 @@ pub fn capture_with_sink(opts: CaptureOpts, sink: &mut impl CaptureSink) -> Resu
     let stdin_fd = io::stdin().as_raw_fd();
     let stdout = io::stdout();
     let stdout_fd = stdout.as_raw_fd();
-    let _terminal_cleanup = terminal_cleanup_guard(&stdout, stdout_fd);
+    let _terminal_cleanup = child_output_cleanup_guard(true, stdout_fd);
 
     // Wrap the entire captured session in xterm alt-screen mode —
     // the same pattern tmux/screen/vim use to leave the user's
@@ -395,15 +395,6 @@ fn resolve_argv(argv: Vec<String>) -> Vec<String> {
 fn resolve_geometry(cols: Option<u16>, rows: Option<u16>) -> (u16, u16) {
     let (auto_c, auto_r) = detect_tty_size().unwrap_or((80, 24));
     (cols.unwrap_or(auto_c), rows.unwrap_or(auto_r))
-}
-
-fn terminal_cleanup_guard(stdout: &io::Stdout, fd: RawFd) -> Option<RestoreGuard> {
-    if cfg!(test) {
-        return None;
-    }
-    stdout
-        .is_terminal()
-        .then_some(RestoreGuard::new(fd, child_output_restore_sequence()))
 }
 
 fn detect_tty_size() -> Option<(u16, u16)> {
