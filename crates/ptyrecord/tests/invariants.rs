@@ -34,6 +34,7 @@ use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 fn ptyrecord_invariants() {
     let fixtures = Fixtures::generate();
 
+    captured_session_in_alt_screen();
     contract_files_exist();
     piped_stdout_is_plain(&fixtures);
     no_screen_clear_sequences();
@@ -95,6 +96,69 @@ impl Fixtures {
             media,
         }
     }
+}
+
+// =====================================================================
+// INVARIANT_CAPTURED_SESSION_IN_ALT_SCREEN
+// =====================================================================
+
+/// `INVARIANT_CAPTURED_SESSION_IN_ALT_SCREEN`: ptyrecord enters the
+/// xterm alternate screen buffer before running the captured PTY and
+/// the captured session's bytes are emitted while we are in that
+/// buffer. On exit the restore sequence flips back to the primary
+/// buffer.
+///
+/// Detection: spawn ptyrecord under a controlled PTY, run a
+/// captured shell that emits a unique sentinel byte. In the output
+/// stream, the sentinel must appear AFTER `\x1b[?1049h` and BEFORE
+/// the next `\x1b[?1049l`.
+fn captured_session_in_alt_screen() {
+    eprintln!("\n=== INVARIANT_CAPTURED_SESSION_IN_ALT_SCREEN ===");
+    let pair = open_pty(80, 24);
+    let bytes = run_ptyrecord_under_pty(pair, "printf '@CAPTURED@'");
+
+    let enter = b"\x1b[?1049h";
+    let exit = b"\x1b[?1049l";
+    let sentinel = b"@CAPTURED@";
+
+    let enter_pos = find_subslice(&bytes, enter).unwrap_or_else(|| {
+        panic!(
+            "alt-screen enter (`\\x1b[?1049h`) never appeared in the output. \
+             violates INVARIANT_CAPTURED_SESSION_IN_ALT_SCREEN.\n\
+             full stream: {}",
+            String::from_utf8_lossy(&bytes).escape_debug(),
+        )
+    });
+    let sentinel_pos = find_subslice(&bytes, sentinel).unwrap_or_else(|| {
+        panic!(
+            "captured-session sentinel never appeared in the output. \
+             full stream: {}",
+            String::from_utf8_lossy(&bytes).escape_debug(),
+        )
+    });
+    // The exit MUST come after the sentinel — i.e. we don't leave
+    // alt-screen until after the captured session has finished.
+    let exit_after_sentinel = find_subslice(&bytes[sentinel_pos..], exit).map_or_else(
+        || {
+            panic!(
+                "alt-screen exit (`\\x1b[?1049l`) never appeared after the \
+                 captured-session sentinel. \
+                 violates INVARIANT_CAPTURED_SESSION_IN_ALT_SCREEN.\n\
+                 full stream: {}",
+                String::from_utf8_lossy(&bytes).escape_debug(),
+            )
+        },
+        |p| p + sentinel_pos,
+    );
+
+    assert!(
+        enter_pos < sentinel_pos && sentinel_pos < exit_after_sentinel,
+        "expected ordering: alt-screen enter ({enter_pos}) < sentinel \
+         ({sentinel_pos}) < alt-screen exit ({exit_after_sentinel}). \
+         violates INVARIANT_CAPTURED_SESSION_IN_ALT_SCREEN.\n\
+         full stream: {}",
+        String::from_utf8_lossy(&bytes).escape_debug(),
+    );
 }
 
 // =====================================================================

@@ -16,6 +16,36 @@ writing (commit message + this file) before being landed.
 
 ## Hard invariants (must hold)
 
+### `INVARIANT_CAPTURED_SESSION_IN_ALT_SCREEN`
+
+ptyrecord wraps the entire captured PTY session in xterm's alternate
+screen buffer (`\x1b[?1049h` … `\x1b[?1049l`). The captured session's
+output — prompts, command output, scrolling, vt100 escapes — all
+happens on the alternate buffer, leaving the user's primary screen
+and its scrollback untouched. On exit, the alternate buffer is
+discarded and the primary screen is restored exactly as it was, with
+the cursor at the position where alt-screen was entered (a fresh row
+right below the calling binary's banner).
+
+**Rationale.** This is the same pattern tmux, screen, vim, less, and
+fzf use. It is the canonical answer to "I want to take over the
+user's terminal for a while without destroying their pre-session
+state." Without it, ptyrecord forwards the captured session's bytes
+to the primary screen — every command's output piles up, the user's
+shell history scrolls off, and post-session printlns land on top of
+whatever state the captured session left behind. With it, the
+captured session is a self-contained transient view that vanishes on
+exit. The user's terminal state at exit is bit-identical to its
+state at ptyrecord launch, modulo whatever ptyrecord itself printed
+to stderr (a banner before, a `wrote PATH` line after).
+
+This invariant is what makes `INVARIANT_NOTIFICATION_BEST_EFFORT`
+nearly always clean in practice: when alt-screen-exit restores the
+cursor to a known-fresh row, the `wrote` println has no stale row
+content to bleed past.
+
+**Verified by:** `tests/invariants.rs::captured_session_in_alt_screen`.
+
 ### `INVARIANT_CONTRACT_FILES_EXIST`
 
 After ptyrecord exits with status 0, every path it announces on stdout

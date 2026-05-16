@@ -32,27 +32,25 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Print one persistent-artifact `wrote PATH` line.
 ///
-/// Honors the invariants documented in `INVARIANTS.md`:
+/// The primary defense for clean output is upstream in
+/// `ptytrace::pty::capture_with_sink`, which wraps the captured PTY
+/// session in xterm's alternate screen buffer
+/// (`INVARIANT_CAPTURED_SESSION_IN_ALT_SCREEN`). On exit, alt-screen
+/// is discarded and the primary screen + cursor are restored to the
+/// state they had when alt-screen was entered. That puts our cursor
+/// on a fresh row right below the calling binary's banner — no
+/// bleed possible from the captured session.
 ///
-/// - `INVARIANT_PIPED_STDOUT_IS_PLAIN`: ANSI escapes are gated on
-///   `IsTerminal::is_terminal()`. Piped consumers get plain
-///   `wrote PATH\n` text.
-/// - `INVARIANT_USER_SCROLLBACK_PRESERVED` /
-///   `INVARIANT_USER_TERMINAL_NOT_CLEARED`: the only escape we emit
-///   is `\x1b[2K\r` (clear current row + return to col 0). This is
-///   non-destructive — it only affects the row we're about to
-///   overwrite with our println content, which we would have
-///   partially overwritten anyway.
-/// - `INVARIANT_NOTIFICATION_BEST_EFFORT`: the per-row clear handles
-///   the common single-row bleed case. Multi-row scenarios
-///   (alt-screen restore landing on a row with content below, wrap
-///   onto a row with content, etc.) may still leave minor visual
-///   artifacts. The files on disk are authoritative.
+/// `\x1b[2K\r` here is belt-and-suspenders for the rare terminal
+/// that doesn't honor `\x1b[?1049`. It clears the current row before
+/// drawing — non-destructive because it only touches the row we
+/// immediately overwrite. Gated on tty so piped consumers stay
+/// plain (`INVARIANT_PIPED_STDOUT_IS_PLAIN`).
 ///
 /// Commit `208ad80` violated `INVARIANT_USER_SCROLLBACK_PRESERVED`
-/// in an attempt to fix the multi-row bleed by emitting `2 × rows`
-/// padding newlines. That destroyed the user's view of pre-session
-/// work and was reverted. Do not re-introduce that pattern.
+/// by emitting `2 × rows` padding newlines to "scroll into
+/// scrollback." That destroyed the user's pre-session work. Do not
+/// re-introduce that pattern.
 fn print_wrote(path: impl std::fmt::Display) {
     if std::io::stdout().is_terminal() {
         print!("\x1b[2K\r");

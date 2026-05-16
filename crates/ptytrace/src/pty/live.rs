@@ -151,6 +151,34 @@ pub fn capture_with_sink(opts: CaptureOpts, sink: &mut impl CaptureSink) -> Resu
     let stdout_fd = stdout.as_raw_fd();
     let _terminal_cleanup = terminal_cleanup_guard(&stdout, stdout_fd);
 
+    // Wrap the entire captured session in xterm alt-screen mode —
+    // the same pattern tmux/screen/vim use to leave the user's
+    // primary screen (and its scrollback) untouched. After we exit:
+    //
+    //   1. The captured session's bytes (prompts, command output,
+    //      cursor moves, scroll-induced loss of primary content)
+    //      all happen on the alternate buffer.
+    //   2. On exit, the `terminal_cleanup_guard`'s
+    //      `GENERAL_RESTORE_SEQUENCE` emits `\x1b[?1049l`, which
+    //      flips back to the primary buffer and restores the
+    //      cursor to the position where we entered alt-screen.
+    //   3. The calling binary's post-session `wrote PATH` printlns
+    //      then land at that position — guaranteed to be a fresh
+    //      row right below whatever banner the binary emitted
+    //      before calling into capture.
+    //
+    // This satisfies `INVARIANT_USER_SCROLLBACK_PRESERVED` and
+    // `INVARIANT_USER_TERMINAL_NOT_CLEARED` from
+    // `ptyrecord/INVARIANTS.md` by construction: nothing the
+    // captured session does can scroll or clear the user's primary
+    // screen, because the captured session isn't on it.
+    //
+    // Gated on `is_terminal()` so the bytes don't pollute piped
+    // stdout — see `INVARIANT_PIPED_STDOUT_IS_PLAIN`.
+    if stdout.is_terminal() {
+        let _ = write_all(stdout_fd, b"\x1b[?1049h");
+    }
+
     // RAII: original termios is restored when this drops, even on
     // error paths or panics. SIGKILL is the only way to leave the
     // host terminal stuck in raw mode.
