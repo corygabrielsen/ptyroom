@@ -599,14 +599,12 @@ dependencies = [
  "anyhow",
  "base64",
  "clap",
- "nix 0.31.2",
  "portable-pty",
  "ptyrender",
  "ptytrace",
  "serde",
  "serde_json",
  "tempfile",
- "vt100",
 ]
 
 [[package]]

@@ -54,18 +54,14 @@ pub fn capture_to_path(out: &Path, argv: Vec<String>, max_secs: u64) -> anyhow::
     })?;
 
     trace.write(out)?;
-    // After a PTY-captured session, the terminal can be in any
-    // state — cursor anywhere, mid-row, alt-screen residue, stale
-    // content on the rows below. Scroll prior visible content into
-    // scrollback by emitting 2× rows newlines, then home the cursor
-    // on the now-blank viewport. Scrollback is preserved so the
-    // user can scroll up to review the captured session. No-op when
-    // stdout is piped. See `ptyrecord::prepare_clean_substrate_if_tty`
-    // for the long-form rationale + regression test.
+    // Per-row clear before the println. See `ptyrecord/INVARIANTS.md`
+    // for the contract — `INVARIANT_USER_SCROLLBACK_PRESERVED` and
+    // `INVARIANT_USER_TERMINAL_NOT_CLEARED` forbid screen-wide
+    // manipulation; per-row clear is permitted because it only touches
+    // the row we're about to overwrite.
+    // `INVARIANT_PIPED_STDOUT_IS_PLAIN` gates the escape on tty.
     if std::io::stdout().is_terminal() {
-        let rows = detect_tty_rows().unwrap_or(24);
-        let padding = (rows as usize).saturating_mul(2);
-        print!("{}\x1b[H", "\n".repeat(padding));
+        print!("\x1b[2K\r");
     }
     println!(
         "wrote {} ({} bytes, {} events)",
@@ -74,19 +70,6 @@ pub fn capture_to_path(out: &Path, argv: Vec<String>, max_secs: u64) -> anyhow::
         trace.events.len()
     );
     Ok(())
-}
-
-fn detect_tty_rows() -> Option<u16> {
-    use nix::libc;
-    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
-    // SAFETY: `ws` is a valid &mut winsize; STDOUT_FILENO is a valid
-    // fd in any hosted process.
-    let ret = unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &raw mut ws) };
-    if ret == 0 && ws.ws_row > 0 {
-        Some(ws.ws_row)
-    } else {
-        None
-    }
 }
 
 pub fn default_out_path() -> PathBuf {

@@ -5,61 +5,58 @@
 //! `.ptyrecord` bundle containing the trace, media, selectable text, and
 //! a reproducibility witness by default. It can also bundle an existing trace,
 //! MP4, and witness.
+//!
+//! # Invariants
+//!
+//! See `INVARIANTS.md` (sibling of this crate's `Cargo.toml`) for the
+//! full contracts. The named invariants this binary touches:
+//!
+//! - `INVARIANT_CONTRACT_FILES_EXIST` (hard) — files on disk are the
+//!   source of truth.
+//! - `INVARIANT_USER_SCROLLBACK_PRESERVED` (hard) — never push prior
+//!   visible content out of the user's viewport via padding newlines.
+//! - `INVARIANT_USER_TERMINAL_NOT_CLEARED` (hard) — never emit
+//!   screen-clearing control sequences. Per-row clear is allowed
+//!   because it only touches the row we're about to overwrite.
+//! - `INVARIANT_PIPED_STDOUT_IS_PLAIN` (hard) — no escape sequences
+//!   in stdout when stdout is not a tty.
+//! - `INVARIANT_NOTIFICATION_BEST_EFFORT` (soft) — `wrote PATH` lines
+//!   are best-effort visual notifications; minor artifacts in extreme
+//!   terminal states are accepted in favor of the hard invariants.
+//!
+//! Verified by `tests/invariants.rs`.
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// Prepare a known-clean terminal substrate for post-session
-/// output. The pattern (and why it has to be this aggressive):
+/// Print one persistent-artifact `wrote PATH` line.
 ///
-/// After a PTY-captured session, the terminal can be in ANY state —
-/// alt-screen on/off, cursor anywhere, scrolled, resized mid-session,
-/// rows still holding cargo compile-progress lines, shell prompts, or
-/// `[recording → ...]` banner residue. Per-line `\x1b[2K\r` defends
-/// against the current row but not against wrapped multi-row text or
-/// content on rows below. The robust answer: emit enough newlines to
-/// guarantee EVERY row on the visible screen scrolled into scrollback,
-/// then home the cursor on the now-blank viewport.
+/// Honors the invariants documented in `INVARIANTS.md`:
 ///
-/// Why `2 × rows` newlines: when cursor starts at row K, the first
-/// `(rows - 1 - K)` newlines just advance without scrolling. Only
-/// newlines beyond that scroll the viewport. `2 × rows` guarantees at
-/// least `rows + 1` actual scrolls regardless of starting cursor row,
-/// which is enough to push any starting screen content into scrollback.
+/// - `INVARIANT_PIPED_STDOUT_IS_PLAIN`: ANSI escapes are gated on
+///   `IsTerminal::is_terminal()`. Piped consumers get plain
+///   `wrote PATH\n` text.
+/// - `INVARIANT_USER_SCROLLBACK_PRESERVED` /
+///   `INVARIANT_USER_TERMINAL_NOT_CLEARED`: the only escape we emit
+///   is `\x1b[2K\r` (clear current row + return to col 0). This is
+///   non-destructive — it only affects the row we're about to
+///   overwrite with our println content, which we would have
+///   partially overwritten anyway.
+/// - `INVARIANT_NOTIFICATION_BEST_EFFORT`: the per-row clear handles
+///   the common single-row bleed case. Multi-row scenarios
+///   (alt-screen restore landing on a row with content below, wrap
+///   onto a row with content, etc.) may still leave minor visual
+///   artifacts. The files on disk are authoritative.
 ///
-/// Scrollback is preserved — the user can scroll up to review the
-/// captured session. The current viewport is freshly blank, cursor at
-/// (0, 0). Subsequent printlns land deterministically.
-///
-/// No-op when stdout is piped/redirected so escape bytes + newline
-/// padding don't pollute scripted consumers.
-///
-/// Regression covered by `crates/ptyrecord/tests/output_cleanliness.rs`.
-fn prepare_clean_substrate_if_tty() {
-    if !std::io::stdout().is_terminal() {
-        return;
-    }
-    let (_cols, rows) = detect_tty_size().unwrap_or((80, 24));
-    let padding = (rows as usize).saturating_mul(2);
-    print!("{}\x1b[H", "\n".repeat(padding));
-}
-
-fn detect_tty_size() -> Option<(u16, u16)> {
-    use nix::libc;
-    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
-    // SAFETY: `ws` is a valid &mut winsize; STDOUT_FILENO is a valid
-    // fd in any hosted process (closed-stdio is UB territory).
-    let ret = unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &raw mut ws) };
-    if ret == 0 && ws.ws_col > 0 && ws.ws_row > 0 {
-        Some((ws.ws_col, ws.ws_row))
-    } else {
-        None
-    }
-}
-
-/// Print one persistent-artifact "wrote X" line.
+/// Commit `208ad80` violated `INVARIANT_USER_SCROLLBACK_PRESERVED`
+/// in an attempt to fix the multi-row bleed by emitting `2 × rows`
+/// padding newlines. That destroyed the user's view of pre-session
+/// work and was reverted. Do not re-introduce that pattern.
 fn print_wrote(path: impl std::fmt::Display) {
+    if std::io::stdout().is_terminal() {
+        print!("\x1b[2K\r");
+    }
     println!("wrote {path}");
 }
 
@@ -267,7 +264,6 @@ fn main() -> anyhow::Result<()> {
     let record = PtyRecord::from_paths(&trace_path, &media_path, witness.as_ref())?;
     record.write(&out)?;
 
-    prepare_clean_substrate_if_tty();
     print_wrote(out.display());
     if media_is_sidecar {
         print_wrote(media_path.display());

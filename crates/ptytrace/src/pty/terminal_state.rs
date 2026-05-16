@@ -19,18 +19,20 @@ static TERMINATION_REQUESTED: AtomicBool = AtomicBool::new(false);
 static SIGNAL_RESTORE_FD: AtomicI32 = AtomicI32::new(-1);
 static SIGNAL_RESTORE_SEQUENCE: AtomicU8 = AtomicU8::new(NO_SEQUENCE);
 
-// Trailing `\r\n` is the asciinema-style "land on a fresh row" tail:
-// after `\x1b[?1049l` (exit alt-screen) restores the pre-session
-// cursor position, the cursor can be partway through a row that still
-// holds the original shell prompt + invocation text. A bare CRLF
-// advances past it so any post-session println (in main.rs / capture
-// binaries / ptyrecord) starts on a clean row. Harmless when the row
-// was already empty — just adds one blank line.
+// No trailing CRLF: `\x1b[?25h` is the last byte. A `\r\n` tail would
+// advance the cursor one row, and at viewport bottom that scrolls
+// one row of the user's content into scrollback (or off entirely on
+// terminals without scrollback). That's a violation of
+// `INVARIANT_USER_SCROLLBACK_PRESERVED` in `ptyrecord/INVARIANTS.md`.
+// The cost-vs-benefit is bad: one row of cleaner post-session output
+// is not worth one row of destroyed user state. Bleed risk in the
+// calling binary's post-session printlns is mitigated by per-row
+// `\x1b[2K\r` there (see `ptyrecord::print_wrote`).
 const GENERAL_RESTORE_SEQUENCE: &[u8] =
-    b"\x1b[0m\x1b[?25h\x1b[?1l\x1b>\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1049l\x1b[?25h\r\n";
+    b"\x1b[0m\x1b[?25h\x1b[?1l\x1b>\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1049l\x1b[?25h";
 
 const VIEWPORT_RESTORE_SEQUENCE: &[u8] =
-    b"\x1b[0m\x1b[?25h\x1b[?1l\x1b>\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1049l\x1b[23;2t\x1b[?25h\r\n";
+    b"\x1b[0m\x1b[?25h\x1b[?1l\x1b>\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1049l\x1b[23;2t\x1b[?25h";
 
 /// Cleanup for frontends that pass child PTY output directly to the
 /// user's terminal.
@@ -250,23 +252,20 @@ mod tests {
     fn assert_cursor_visible_after_alt_screen_exit(sequence: &[u8]) {
         let alt_screen_exit = b"\x1b[?1049l";
         let show_cursor = b"\x1b[?25h";
-        let crlf = b"\r\n";
         let alt_pos = find_subslice(sequence, alt_screen_exit).unwrap();
         let final_show_pos = sequence
             .windows(show_cursor.len())
             .rposition(|window| window == show_cursor)
             .unwrap();
 
+        // Show-cursor must come after alt-screen-exit and must be the
+        // last byte of the sequence, so the cursor ends up visible
+        // and the restore sequence does not advance the cursor (which
+        // would risk scrolling user state — see
+        // `INVARIANT_USER_SCROLLBACK_PRESERVED` in
+        // `ptyrecord/INVARIANTS.md`).
         assert!(alt_pos < final_show_pos);
-        // Show-cursor must be the last terminal-state control code so
-        // the cursor ends up visible. A `\r\n` tail is permitted (and
-        // expected) — it lands the cursor on a fresh row so the
-        // calling binary's post-session output starts cleanly.
-        assert!(sequence.ends_with(show_cursor) || sequence.ends_with(crlf));
-        if sequence.ends_with(crlf) {
-            let without_crlf = &sequence[..sequence.len() - crlf.len()];
-            assert!(without_crlf.ends_with(show_cursor));
-        }
+        assert!(sequence.ends_with(show_cursor));
     }
 
     fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
