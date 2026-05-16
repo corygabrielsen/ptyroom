@@ -33,13 +33,13 @@ pub use keys::Key;
 pub use live::{CaptureEvent, CaptureOpts, CaptureSink, capture, capture_with_sink};
 pub use osc::StubColors;
 
-use std::os::fd::BorrowedFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
-use nix::unistd::write;
+
+use self::terminal_io::write_all;
 use tempfile::NamedTempFile;
 
 use crate::recording::{Dwell, TraceBuilder};
@@ -726,20 +726,6 @@ impl PtyTracer {
         // Drop fields in order: drainer joins, _rcfile unlinks.
         Ok(trace)
     }
-}
-
-fn write_all(fd: i32, mut bytes: &[u8]) -> anyhow::Result<()> {
-    while !bytes.is_empty() {
-        // Safety: caller holds an OwnedFd whose lifetime exceeds this call.
-        let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
-        match write(borrowed, bytes) {
-            Ok(0) => anyhow::bail!("pty write returned 0"),
-            Ok(n) => bytes = &bytes[n..],
-            Err(nix::errno::Errno::EINTR) => {}
-            Err(e) => return Err(e.into()),
-        }
-    }
-    Ok(())
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {

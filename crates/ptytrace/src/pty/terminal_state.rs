@@ -4,10 +4,8 @@ use std::io::IsTerminal;
 use std::os::fd::{BorrowedFd, RawFd};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering};
 
-use nix::errno::Errno;
 #[cfg(not(test))]
 use nix::libc;
-use nix::unistd::write;
 
 const NO_SEQUENCE: u8 = 0;
 const CHILD_OUTPUT_SEQUENCE: u8 = 1;
@@ -186,7 +184,7 @@ pub fn clear_termination_request() {
 }
 
 pub fn restore_fd_best_effort(fd: RawFd, sequence: &'static [u8]) {
-    let _ = write_all(fd, sequence);
+    let _ = super::terminal_io::write_all(fd, sequence);
 }
 
 fn sequence_kind(sequence: &'static [u8]) -> u8 {
@@ -229,19 +227,6 @@ fn write_signal_safe(fd: RawFd, mut bytes: &[u8]) {
         };
         bytes = &bytes[written..];
     }
-}
-
-fn write_all(fd: RawFd, mut bytes: &[u8]) -> anyhow::Result<()> {
-    while !bytes.is_empty() {
-        let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
-        match write(borrowed, bytes) {
-            Ok(0) => anyhow::bail!("terminal restore write returned 0"),
-            Ok(n) => bytes = &bytes[n..],
-            Err(Errno::EINTR) => {}
-            Err(err) => return Err(anyhow::anyhow!("terminal restore write failed: {err}")),
-        }
-    }
-    Ok(())
 }
 
 #[cfg(not(test))]

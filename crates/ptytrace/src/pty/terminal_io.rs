@@ -1,4 +1,11 @@
-//! Raw-fd terminal helpers shared by `ptyroom` host and client viewports.
+//! Raw-fd terminal helpers shared across `pty::*`.
+//!
+//! [`write_all`] is the canonical EINTR-retrying write loop used by
+//! every byte-writing surface in `pty/` — share host, live capture,
+//! signal-safe restore, recorder driver. Five separate copies of the
+//! same loop existed before consolidation; this is the seam.
+//! Callers attach call-site context via `.with_context(|| "...")`
+//! since the error message here is intentionally generic.
 
 use std::os::fd::{BorrowedFd, RawFd};
 
@@ -24,14 +31,24 @@ pub(crate) fn terminal_size(fd: RawFd) -> Option<TerminalSize> {
     }
 }
 
+/// EINTR-retrying write loop over a raw fd. Returns `Ok(())` when
+/// every byte has been written; bails on `Ok(0)` (kernel closed
+/// the fd mid-write) or any non-EINTR error.
+///
+/// Generic error messages — callers add their own context with
+/// `.with_context(|| "...")` to identify which fd / which surface
+/// failed.
+///
+/// # Errors
+/// `write(2)` returned 0 or a non-`EINTR` error.
 pub(crate) fn write_all(fd: RawFd, mut bytes: &[u8]) -> anyhow::Result<()> {
     while !bytes.is_empty() {
         let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
         match write(borrowed, bytes) {
-            Ok(0) => anyhow::bail!("ptyroom viewport write returned 0"),
+            Ok(0) => anyhow::bail!("write_all: write returned 0"),
             Ok(n) => bytes = &bytes[n..],
             Err(Errno::EINTR) => {}
-            Err(err) => return Err(anyhow!("ptyroom viewport write failed: {err}")),
+            Err(err) => return Err(anyhow!("write_all failed: {err}")),
         }
     }
     Ok(())

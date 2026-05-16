@@ -19,15 +19,16 @@
 //! arrow.
 
 use std::io::{self, IsTerminal};
-use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
+use std::os::fd::{AsRawFd, BorrowedFd};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use nix::errno::Errno;
 use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
-use nix::unistd::{read, write};
+use nix::unistd::read;
 
 use super::process;
+use super::terminal_io::write_all;
 use super::terminal_state::{
     RawModeGuard, child_output_cleanup_guard, child_output_enter_sequence, termination_requested,
 };
@@ -358,19 +359,6 @@ fn flush_pending(
         .record_output(event.output, dwell)
         .context("record_output")?;
     *trace_time_ns = trace_time_ns.saturating_add(dwell.as_nanos());
-    Ok(())
-}
-
-fn write_all(fd: RawFd, mut bytes: &[u8]) -> Result<()> {
-    while !bytes.is_empty() {
-        let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
-        match write(borrowed, bytes) {
-            Ok(0) => anyhow::bail!("live capture write returned 0"),
-            Ok(n) => bytes = &bytes[n..],
-            Err(Errno::EINTR) => {}
-            Err(err) => return Err(anyhow!("live capture write failed: {err}")),
-        }
-    }
     Ok(())
 }
 

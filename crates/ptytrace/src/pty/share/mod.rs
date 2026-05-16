@@ -28,7 +28,7 @@ use anyhow::{Context, anyhow};
 use nix::errno::Errno;
 use nix::libc;
 use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
-use nix::unistd::{read, write};
+use nix::unistd::read;
 
 use self::client::{Client, JoinReplay, ShareStats, broadcast, broadcast_control};
 use self::ctl::{CtlCommand, CtlSocket, QueueOp, parse_ctl_command};
@@ -36,6 +36,7 @@ use self::host_viewport::HostViewport;
 use super::input_router::{LocalInputAction, LocalInputRouter, LocalStatus};
 use super::process;
 use super::room_protocol::{self, TerminalSize};
+use super::terminal_io::write_all;
 use super::terminal_state::{
     RawModeGuard, RestoreGuard, child_output_cleanup_guard, termination_requested,
 };
@@ -721,19 +722,6 @@ fn terminal_size(fd: i32) -> Option<TerminalSize> {
     } else {
         None
     }
-}
-
-fn write_all(fd: i32, mut bytes: &[u8]) -> anyhow::Result<()> {
-    while !bytes.is_empty() {
-        let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
-        match write(borrowed, bytes) {
-            Ok(0) => anyhow::bail!("pty share write returned 0"),
-            Ok(n) => bytes = &bytes[n..],
-            Err(Errno::EINTR) => {}
-            Err(err) => return Err(anyhow!("write shared input to PTY: {err}")),
-        }
-    }
-    Ok(())
 }
 
 fn write_trace(trace: &crate::trace::Trace, path: &Path) -> anyhow::Result<()> {
