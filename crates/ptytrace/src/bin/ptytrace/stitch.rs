@@ -60,5 +60,12 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
         header: traces[0].header.clone(),
         events,
     };
-    stitched.write_with_summary(&args.out)
+    stitched.write(&args.out)?;
+    println!(
+        "wrote {} ({} bytes, {} events)",
+        args.out.display(),
+        std::fs::metadata(&args.out)?.len(),
+        stitched.events.len()
+    );
+    Ok(())
 }

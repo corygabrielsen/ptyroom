@@ -128,24 +128,6 @@ impl Trace {
         std::fs::write(path, self.to_string())?;
         Ok(())
     }
-
-    /// Convenience for callers: write the trace and print a one-line
-    /// summary (`wrote PATH (BYTES bytes, N events)`).
-    ///
-    /// # Errors
-    /// Same as [`Trace::write`]; additionally fails if file metadata can't
-    /// be read for the byte-count summary.
-    pub fn write_with_summary(&self, path: impl AsRef<Path>) -> anyhow::Result<()> {
-        let path = path.as_ref();
-        self.write(path)?;
-        println!(
-            "wrote {} ({} bytes, {} events)",
-            path.display(),
-            std::fs::metadata(path)?.len(),
-            self.events.len()
-        );
-        Ok(())
-    }
 }
 
 impl std::fmt::Display for Trace {

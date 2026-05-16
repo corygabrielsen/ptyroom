@@ -173,7 +173,12 @@ fn main() -> anyhow::Result<()> {
         },
         &mut stitcher,
     )?;
-    trace.write_with_summary(&trace_path)?;
+    // Write the trace to disk so the encoder + bundler can read it back.
+    // No announcement: when no `--trace-out` was passed, the path is
+    // inside the `TempDir` and won't survive past this `main` — telling
+    // the user "wrote /tmp/.tmpXXX/...ptytrace" is misleading. The
+    // post-bundle print at the bottom enumerates only persistent files.
+    trace.write(&trace_path)?;
 
     let prepared_frames = stitcher.finish()?;
     if prepared_frames.timing.is_empty() {

@@ -53,7 +53,13 @@ pub fn capture_to_path(out: &Path, argv: Vec<String>, max_secs: u64) -> anyhow::
         max_runtime: Duration::from_secs(max_secs),
     })?;
 
-    trace.write_with_summary(out)?;
+    trace.write(out)?;
+    println!(
+        "wrote {} ({} bytes, {} events)",
+        out.display(),
+        std::fs::metadata(out)?.len(),
+        trace.events.len()
+    );
     Ok(())
 }
 

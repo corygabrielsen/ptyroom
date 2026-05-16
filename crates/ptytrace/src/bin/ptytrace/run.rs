@@ -24,8 +24,13 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
         );
     }
 
-    trace.write_with_summary(&args.out)?;
-    println!("wrote {}", args.out.display());
+    trace.write(&args.out)?;
+    println!(
+        "wrote {} ({} bytes, {} events)",
+        args.out.display(),
+        std::fs::metadata(&args.out)?.len(),
+        trace.events.len()
+    );
     Ok(())
 }
 
