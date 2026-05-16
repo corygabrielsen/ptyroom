@@ -140,7 +140,7 @@ pub fn capture(opts: CaptureOpts) -> Result<Trace> {
 /// # Errors
 /// Same as [`capture`], plus sink initialization or output errors.
 pub fn capture_with_sink(opts: CaptureOpts, sink: &mut impl CaptureSink) -> Result<Trace> {
-    let argv = resolve_argv(opts.argv);
+    let argv = process::resolve_argv(opts.argv);
     let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
     let (cols, rows) = resolve_geometry(opts.cols, opts.rows);
     sink.start(cols, rows)?;
@@ -366,18 +366,6 @@ fn ns_to_seconds(ns: u64) -> f64 {
     #[allow(clippy::cast_precision_loss)]
     let n = ns as f64;
     n / 1_000_000_000.0
-}
-
-fn resolve_argv(argv: Vec<String>) -> Vec<String> {
-    if !argv.is_empty() {
-        return argv;
-    }
-    if let Ok(sh) = std::env::var("SHELL")
-        && !sh.is_empty()
-    {
-        return vec![sh];
-    }
-    vec!["bash".into()]
 }
 
 fn resolve_geometry(cols: Option<u16>, rows: Option<u16>) -> (u16, u16) {

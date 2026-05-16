@@ -104,7 +104,7 @@ impl WatchHandle {
 
 /// Render a byte slice with escape sequences readable: `\e` for ESC,
 /// `\xNN` for other non-printables, printable ASCII as-is.
-fn escape_bytes(bytes: &[u8]) -> String {
+pub(super) fn escape_bytes(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     let mut s = String::with_capacity(bytes.len() + 2);
     s.push('"');

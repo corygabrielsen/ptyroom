@@ -117,11 +117,27 @@ pub fn spawn_with_env(
     })
 }
 
-fn ensure_nonzero_size(cols: u16, rows: u16) -> anyhow::Result<()> {
+pub(super) fn ensure_nonzero_size(cols: u16, rows: u16) -> anyhow::Result<()> {
     if cols == 0 || rows == 0 {
         anyhow::bail!("PTY size must be nonzero; got {cols}x{rows}");
     }
     Ok(())
+}
+
+/// Resolve a PTY child argv: caller-provided argv wins; otherwise fall
+/// back to `$SHELL`; final fallback is `bash`. Shared by `pty::live`
+/// (capture flow) and `pty::share` (host flow) so both surfaces honor
+/// the same SHELL convention.
+pub(super) fn resolve_argv(argv: Vec<String>) -> Vec<String> {
+    if !argv.is_empty() {
+        return argv;
+    }
+    if let Ok(shell) = std::env::var("SHELL")
+        && !shell.is_empty()
+    {
+        return vec![shell];
+    }
+    vec!["bash".into()]
 }
 
 #[cfg(test)]

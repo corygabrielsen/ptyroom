@@ -158,10 +158,10 @@ struct Session<'a> {
 
 impl<'a> Session<'a> {
     fn start(listener: &'a TcpListener, opts: ShareOpts) -> anyhow::Result<Self> {
-        ensure_nonzero_size(opts.cols, opts.rows)?;
+        process::ensure_nonzero_size(opts.cols, opts.rows)?;
         listener.set_nonblocking(true)?;
         let listen_addr = listener.local_addr()?;
-        let argv = resolve_argv(opts.argv);
+        let argv = process::resolve_argv(opts.argv);
         let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
         let listener_fd = listener.as_raw_fd();
         let stdin = io::stdin();
@@ -449,13 +449,6 @@ impl<'a> Session<'a> {
             &self.stats,
         )
     }
-}
-
-fn ensure_nonzero_size(cols: u16, rows: u16) -> anyhow::Result<()> {
-    if cols == 0 || rows == 0 {
-        anyhow::bail!("ptyroom initial terminal size must be nonzero; got {cols}x{rows}");
-    }
-    Ok(())
 }
 
 fn host_raw_mode_guard(
@@ -813,18 +806,6 @@ fn finish_share_trace(
     let events = trace.events.len();
     write_trace(&trace, &out)?;
     Ok((out, events))
-}
-
-fn resolve_argv(argv: Vec<String>) -> Vec<String> {
-    if !argv.is_empty() {
-        return argv;
-    }
-    if let Ok(shell) = std::env::var("SHELL")
-        && !shell.is_empty()
-    {
-        return vec![shell];
-    }
-    vec!["bash".into()]
 }
 
 #[cfg(test)]

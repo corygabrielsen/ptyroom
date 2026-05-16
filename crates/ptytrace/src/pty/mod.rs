@@ -39,6 +39,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context;
 
+use self::drainer::escape_bytes;
 use self::room_protocol::find_subslice;
 use self::terminal_io::write_all;
 use tempfile::NamedTempFile;
@@ -727,24 +728,6 @@ impl PtyTracer {
         // Drop fields in order: drainer joins, _rcfile unlinks.
         Ok(trace)
     }
-}
-
-fn escape_bytes(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-
-    let mut s = String::with_capacity(bytes.len() + 2);
-    s.push('"');
-    for &b in bytes {
-        match b {
-            0x1b => s.push_str("\\e"),
-            b'\\' => s.push_str("\\\\"),
-            b'"' => s.push_str("\\\""),
-            0x20..=0x7e => s.push(b as char),
-            _ => write!(s, "\\x{b:02x}").expect("infallible String fmt"),
-        }
-    }
-    s.push('"');
-    s
 }
 
 /// Write the rcfile bash will source at startup.
