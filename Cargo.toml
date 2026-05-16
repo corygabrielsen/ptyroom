@@ -26,6 +26,7 @@ clap = { version = "4", features = ["derive"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 nix = { version = "0.31", features = ["poll", "term"] }
 portable-pty = "0.9.0"
+ptyrecord = { version = "0.1.0", path = "crates/ptyrecord" }
 ptyrender = { version = "0.1.0", path = "crates/ptyrender" }
 ptytrace = { version = "0.1.0", path = "crates/ptytrace" }
 rayon = "1"

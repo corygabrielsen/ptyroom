@@ -1,15 +1,19 @@
 //! `ptyroom` CLI: high-level shared terminal rooms.
 
+use std::ffi::OsStr;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, anyhow};
 use clap::{Args as ClapArgs, Parser, Subcommand};
+use ptyrecord::PtyRecord;
+use ptyrender::witness::{RenderOptions, Witness};
 use ptyroom::connect;
 use ptyroom::share::{ShareOpts, ctl_socket_path, host_local_io_notice, run};
+use tempfile::TempDir;
 
 #[derive(Parser)]
 #[command(
@@ -42,13 +46,45 @@ enum Command {
 }
 
 #[derive(ClapArgs)]
+#[allow(clippy::struct_excessive_bools)]
 struct HostArgs {
     /// Address to listen on. Defaults to loopback with an OS-assigned port.
     #[arg(long, default_value = "127.0.0.1:0")]
     listen: SocketAddr,
-    /// Output trace path.
+    /// Output `.ptyrecord` bundle path. Defaults to
+    /// `ptyroom-<ip>-<port>.ptyrecord` in the current directory.
     #[arg(short, long)]
     out: Option<PathBuf>,
+    /// Optional sidecar copy of the raw `.ptytrace`. By default the
+    /// trace is bundled inside the `.ptyrecord` and the mid-session
+    /// scratch file is deleted on clean shutdown.
+    #[arg(long)]
+    trace_out: Option<PathBuf>,
+    /// Optional sidecar copy of the rendered MP4 media.
+    #[arg(long, conflicts_with = "bundle_only")]
+    media_out: Option<PathBuf>,
+    /// Optional sidecar copy of the witness JSON embedded in the bundle.
+    #[arg(long, conflicts_with = "no_witness")]
+    witness_out: Option<PathBuf>,
+    /// Do not embed a reproducibility witness.
+    #[arg(long)]
+    no_witness: bool,
+    /// Suppress the default `<stem>.mp4` sidecar; write only the
+    /// `.ptyrecord` bundle.
+    #[arg(long)]
+    bundle_only: bool,
+    /// Font size in pixels for the rendered media.
+    #[arg(long, default_value_t = 14.0)]
+    font_size: f32,
+    /// Padding around the rendered grid in pixels.
+    #[arg(long, default_value_t = 12)]
+    padding: u32,
+    /// Optional output width in pixels (lanczos scaling).
+    #[arg(long)]
+    width: Option<u32>,
+    /// Output frame rate.
+    #[arg(long, default_value_t = 25)]
+    fps: u32,
     /// Terminal columns.
     #[arg(long, default_value_t = 80)]
     cols: u16,
@@ -141,31 +177,106 @@ fn host(args: HostArgs) -> anyhow::Result<()> {
     if let Some(notice) = host_local_io_notice(!args.no_local_input, !args.no_local_output) {
         eprintln!("{notice}");
     }
-    let out = args.out.unwrap_or_else(|| default_trace_path(bound_addr));
+
+    let out = args.out.unwrap_or_else(|| default_bundle_path(bound_addr));
+    let stem = bundle_stem(&out);
+
+    let work = TempDir::new()?;
+    // Trace is written incrementally during the session. When the
+    // user passed `--trace-out`, write to that user-visible path so
+    // they get a durable copy. Otherwise route through the TempDir;
+    // bundle building reads it back at session end before `work`
+    // drops, and a SIGKILL/SIGSEGV mid-session leaves the trace in
+    // /tmp until next OS cleanup. Matches ptyrecord's default model.
+    let trace_path = args
+        .trace_out
+        .clone()
+        .unwrap_or_else(|| work.path().join(format!("{stem}.ptytrace")));
+    let trace_is_sidecar = args.trace_out.is_some();
+    let media_path = match (&args.media_out, args.bundle_only) {
+        (Some(p), _) => p.clone(),
+        (None, false) => out.with_extension("mp4"),
+        (None, true) => work.path().join(format!("{stem}.mp4")),
+    };
+    let media_is_sidecar = args.media_out.is_some() || !args.bundle_only;
+    ensure_mp4_path(&media_path)?;
+    ensure_parent(&out)?;
+    ensure_parent(&trace_path)?;
+    ensure_parent(&media_path)?;
+
     let summary = run(
         &listener,
         ShareOpts {
             argv: args.command,
             cols: args.cols,
             rows: args.rows,
-            out,
+            out: trace_path.clone(),
             max_runtime: Duration::from_secs(args.max_secs),
             local_output: !args.no_local_output,
             local_input: !args.no_local_input,
         },
     )?;
-    println!(
-        "wrote {} ({} events, {} client(s), {} disconnect(s), {} backlog drop(s))",
-        summary.trace_path.display(),
+    eprintln!(
+        "[session ended: {} events, {} client(s), {} disconnect(s), {} backlog drop(s)]",
         summary.events,
         summary.clients_accepted,
         summary.clients_disconnected,
         summary.clients_dropped_for_backlog
     );
-    println!(
-        "render with: ptyrender {} room.gif",
-        summary.trace_path.display()
-    );
+
+    // No-output session = no encodable frames. The encoder would error
+    // with "timing has no frames". Skip media + bundle entirely; the
+    // trace itself is fine to keep around as evidence of the empty
+    // session. Always keep it even if the user didn't pass
+    // `--trace-out`, since otherwise we'd produce zero artifacts.
+    if summary.events == 0 {
+        eprintln!("[no output events captured; skipping render + bundle]");
+        println!("wrote {}", trace_path.display());
+        return Ok(());
+    }
+
+    eprintln!("[rendering media → {}…]", media_path.display());
+
+    let mut render = ptyrender::render(&trace_path)
+        .context("load trace for render")?
+        .font_size(args.font_size)
+        .padding(args.padding)
+        .fps(args.fps);
+    if let Some(w) = args.width {
+        render = render.width(w);
+    }
+    render
+        .to_path(&media_path)
+        .context("render trace to media")?;
+
+    let witness = (!args.no_witness)
+        .then(|| {
+            Witness::from_rendered_output(
+                &trace_path,
+                &media_path,
+                RenderOptions::libx264(args.font_size, args.padding, args.width, args.fps),
+            )
+        })
+        .transpose()?;
+    if let (Some(witness), Some(witness_out)) = (&witness, &args.witness_out) {
+        ensure_parent(witness_out)?;
+        witness.write(witness_out)?;
+    }
+
+    let record = PtyRecord::from_paths(&trace_path, &media_path, witness.as_ref())?;
+    record.write(&out)?;
+
+    println!("wrote {}", out.display());
+    if media_is_sidecar {
+        println!("wrote {}", media_path.display());
+    }
+    if trace_is_sidecar {
+        println!("wrote {}", trace_path.display());
+    }
+    if let Some(witness_out) = &args.witness_out {
+        println!("wrote {}", witness_out.display());
+    }
+
     Ok(())
 }
 
@@ -215,8 +326,38 @@ fn ctl(args: CtlArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn default_trace_path(addr: SocketAddr) -> PathBuf {
-    PathBuf::from(format!("ptyroom-{}-{}.ptytrace", addr.ip(), addr.port()))
+fn default_bundle_path(addr: SocketAddr) -> PathBuf {
+    PathBuf::from(format!("ptyroom-{}-{}.ptyrecord", addr.ip(), addr.port()))
+}
+
+fn bundle_stem(path: &Path) -> String {
+    path.file_stem()
+        .and_then(OsStr::to_str)
+        .unwrap_or("ptyroom")
+        .to_string()
+}
+
+fn ensure_parent(path: &Path) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    Ok(())
+}
+
+fn ensure_mp4_path(path: &Path) -> anyhow::Result<()> {
+    let ext = path
+        .extension()
+        .and_then(OsStr::to_str)
+        .map(str::to_ascii_lowercase);
+    if ext.as_deref() != Some("mp4") {
+        anyhow::bail!(
+            "ptyroom embeds browser-controllable MP4 media; got {}",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 fn validate_terminal_size(cols: u16, rows: u16) -> anyhow::Result<()> {
@@ -244,7 +385,7 @@ mod tests {
 
     use clap::{CommandFactory, Parser};
 
-    use super::{Cli, Command, default_trace_path, validate_listen_addr, validate_terminal_size};
+    use super::{Cli, Command, default_bundle_path, validate_listen_addr, validate_terminal_size};
 
     #[test]
     fn parses_host_command_after_options() {
@@ -286,10 +427,13 @@ mod tests {
     }
 
     #[test]
-    fn default_trace_path_uses_ptyroom_name() {
-        let path = default_trace_path(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8022));
+    fn default_bundle_path_uses_ptyroom_name() {
+        let path = default_bundle_path(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8022));
 
-        assert_eq!(path.file_name().unwrap(), "ptyroom-127.0.0.1-8022.ptytrace");
+        assert_eq!(
+            path.file_name().unwrap(),
+            "ptyroom-127.0.0.1-8022.ptyrecord"
+        );
     }
 
     #[test]

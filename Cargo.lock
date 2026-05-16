@@ -631,6 +631,8 @@ dependencies = [
  "anyhow",
  "clap",
  "nix 0.31.2",
+ "ptyrecord",
+ "ptyrender",
  "ptytrace",
  "serde_json",
  "tempfile",

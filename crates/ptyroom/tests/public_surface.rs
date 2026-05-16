@@ -53,6 +53,26 @@ fn root_workspace_members_match_command_algebra() {
 
 #[test]
 fn member_dependencies_follow_command_algebra() {
+    // Dep algebra (DAG, strict partial order):
+    //
+    //   ptytrace   <- the trace primitive; depends on nothing
+    //   ptyrender  <- adds rendering; depends on ptytrace
+    //   ptyrecord  <- adds bundling; depends on ptytrace + ptyrender
+    //   ptyroom    <- live multi-client share + record umbrella;
+    //                 depends on all three (it owns the user-facing
+    //                 `host` binary that produces .ptyrecord + .mp4
+    //                 alongside the trace, mirroring ptyrecord's
+    //                 solo-session output set for symmetry)
+    //
+    // The rule was previously stricter — ptyroom depended only on
+    // ptytrace, with rendering deferred to a manual `ptyrender X`
+    // step. That made `ptyroom host` produce a `.ptytrace` that
+    // users couldn't play without running a second command and
+    // having the other binaries on $PATH. Library composability
+    // (single `cargo install ptyroom` ships the whole thing,
+    // version-locked at one workspace commit) outweighed the
+    // separation. The dep graph remains a DAG; ptyroom is just at
+    // the top of the poset now.
     let metadata = workspace_metadata();
 
     assert_dependencies(
@@ -76,8 +96,8 @@ fn member_dependencies_follow_command_algebra() {
     assert_dependencies(
         &metadata,
         "ptyroom",
-        &["ptytrace"],
-        &["ptyrender", "ptyrecord"],
+        &["ptytrace", "ptyrender", "ptyrecord"],
+        &[],
     );
 }
 
