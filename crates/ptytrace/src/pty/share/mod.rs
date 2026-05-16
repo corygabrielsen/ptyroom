@@ -26,7 +26,6 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow};
 use nix::errno::Errno;
-use nix::libc;
 use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use nix::unistd::read;
 
@@ -36,7 +35,7 @@ use self::host_viewport::HostViewport;
 use super::input_router::{LocalInputAction, LocalInputRouter, LocalStatus};
 use super::process;
 use super::room_protocol::{self, TerminalSize};
-use super::terminal_io::write_all;
+use super::terminal_io::{terminal_size, write_all};
 use super::terminal_state::{
     RawModeGuard, RestoreGuard, child_output_cleanup_guard, termination_requested,
 };
@@ -704,21 +703,6 @@ fn initial_host_size(
         HostViewport::reported_size(stdout_fd)
     } else if local_output && stdout.is_terminal() {
         terminal_size(stdout_fd)
-    } else {
-        None
-    }
-}
-
-fn terminal_size(fd: i32) -> Option<TerminalSize> {
-    let mut size = libc::winsize {
-        ws_row: 0,
-        ws_col: 0,
-        ws_xpixel: 0,
-        ws_ypixel: 0,
-    };
-    let rc = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut size) };
-    if rc == 0 && size.ws_col > 0 && size.ws_row > 0 {
-        Some(TerminalSize::new(size.ws_col, size.ws_row))
     } else {
         None
     }
