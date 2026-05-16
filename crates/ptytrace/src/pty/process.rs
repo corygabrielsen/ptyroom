@@ -10,7 +10,7 @@ use std::os::fd::RawFd;
 use anyhow::{Context, anyhow};
 use portable_pty::{Child, CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
 
-pub struct PtyMaster {
+pub(super) struct PtyMaster {
     // Field order matters: `child` is killed/reaped via `terminate_child`
     // before drop, then `master` closes the master fd on drop, which sends
     // SIGHUP to any descendants still attached to the slave.
@@ -21,7 +21,7 @@ pub struct PtyMaster {
 
 impl PtyMaster {
     #[must_use]
-    pub fn fd(&self) -> RawFd {
+    pub(super) fn fd(&self) -> RawFd {
         self.fd
     }
 
@@ -30,7 +30,7 @@ impl PtyMaster {
     ///
     /// # Errors
     /// The platform PTY resize operation failed.
-    pub fn resize(&mut self, cols: u16, rows: u16) -> anyhow::Result<()> {
+    pub(super) fn resize(&mut self, cols: u16, rows: u16) -> anyhow::Result<()> {
         ensure_nonzero_size(cols, rows)?;
         self.master
             .resize(PtySize {
@@ -44,7 +44,7 @@ impl PtyMaster {
 
     /// Send SIGKILL to the child and reap it. Idempotent — safe to call
     /// after the child has already exited.
-    pub fn terminate_child(&mut self) {
+    pub(super) fn terminate_child(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -64,7 +64,7 @@ impl std::fmt::Debug for PtyMaster {
 /// # Errors
 /// Empty `argv`, `openpty` failure, child spawn failure, or master fd
 /// not exposable as a raw fd.
-pub fn spawn(argv: &[&str], cols: u16, rows: u16) -> anyhow::Result<PtyMaster> {
+pub(super) fn spawn(argv: &[&str], cols: u16, rows: u16) -> anyhow::Result<PtyMaster> {
     spawn_with_env(argv, &[], cols, rows)
 }
 
@@ -75,7 +75,7 @@ pub fn spawn(argv: &[&str], cols: u16, rows: u16) -> anyhow::Result<PtyMaster> {
 /// # Errors
 /// Empty `argv`, `openpty` failure, child spawn failure, or master fd
 /// not exposable as a raw fd.
-pub fn spawn_with_env(
+pub(super) fn spawn_with_env(
     argv: &[&str],
     env: &[(String, String)],
     cols: u16,
