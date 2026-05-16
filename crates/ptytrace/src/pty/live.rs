@@ -25,12 +25,11 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow};
 use nix::errno::Errno;
 use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
-use nix::sys::termios::{SetArg, Termios, cfmakeraw, tcgetattr, tcsetattr};
 use nix::unistd::{read, write};
 
 use super::process;
 use super::terminal_state::{
-    child_output_cleanup_guard, child_output_enter_sequence, termination_requested,
+    RawModeGuard, child_output_cleanup_guard, child_output_enter_sequence, termination_requested,
 };
 use crate::recording::{Dwell, TraceBuilder};
 use crate::trace::Trace;
@@ -187,7 +186,8 @@ pub fn capture_with_sink(opts: CaptureOpts, sink: &mut impl CaptureSink) -> Resu
     // RAII: original termios is restored when this drops, even on
     // error paths or panics. SIGKILL is the only way to leave the
     // host terminal stuck in raw mode.
-    let _raw = RawModeGuard::enter(stdin_fd)?;
+    let _raw = RawModeGuard::enter(stdin_fd)
+        .context("tcgetattr/tcsetattr — is stdin a tty? (live mode requires one)")?;
 
     let mut builder = TraceBuilder::new();
     let started = Instant::now();
@@ -408,32 +408,5 @@ fn detect_tty_size() -> Option<(u16, u16)> {
         Some((ws.ws_col, ws.ws_row))
     } else {
         None
-    }
-}
-
-/// RAII guard that puts a tty fd into raw mode on construction and
-/// restores the original termios on drop.
-struct RawModeGuard {
-    fd: RawFd,
-    original: Termios,
-}
-
-impl RawModeGuard {
-    fn enter(fd: RawFd) -> Result<Self> {
-        let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
-        let original =
-            tcgetattr(borrowed).context("tcgetattr — is stdin a tty? (live mode requires one)")?;
-        let mut raw = original.clone();
-        cfmakeraw(&mut raw);
-        let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
-        tcsetattr(borrowed, SetArg::TCSAFLUSH, &raw).context("tcsetattr to raw")?;
-        Ok(Self { fd, original })
-    }
-}
-
-impl Drop for RawModeGuard {
-    fn drop(&mut self) {
-        let borrowed = unsafe { BorrowedFd::borrow_raw(self.fd) };
-        let _ = tcsetattr(borrowed, SetArg::TCSAFLUSH, &self.original);
     }
 }

@@ -28,7 +28,6 @@ use anyhow::{Context, anyhow};
 use nix::errno::Errno;
 use nix::libc;
 use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
-use nix::sys::termios::{SetArg, Termios, cfmakeraw, tcgetattr, tcsetattr};
 use nix::unistd::{read, write};
 
 use self::client::{Client, JoinReplay};
@@ -37,7 +36,9 @@ use self::host_viewport::HostViewport;
 use super::input_router::{LocalInputAction, LocalInputRouter, LocalStatus};
 use super::process;
 use super::room_protocol::{self, TerminalSize};
-use super::terminal_state::{RestoreGuard, child_output_cleanup_guard, termination_requested};
+use super::terminal_state::{
+    RawModeGuard, RestoreGuard, child_output_cleanup_guard, termination_requested,
+};
 use crate::recording::{Dwell, TraceBuilder};
 
 const SIZE_CHECK_INTERVAL: Duration = Duration::from_millis(250);
@@ -748,30 +749,6 @@ fn broadcast(clients: &mut Vec<Client>, bytes: &[u8], stats: &mut ShareStats) {
 
 fn broadcast_control(clients: &mut Vec<Client>, bytes: &[u8], stats: &mut ShareStats) {
     broadcast(clients, bytes, stats);
-}
-
-struct RawModeGuard {
-    fd: i32,
-    original: Termios,
-}
-
-impl RawModeGuard {
-    fn enter(fd: i32) -> anyhow::Result<Self> {
-        let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
-        let original = tcgetattr(borrowed)?;
-        let mut raw = original.clone();
-        cfmakeraw(&mut raw);
-        let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
-        tcsetattr(borrowed, SetArg::TCSAFLUSH, &raw)?;
-        Ok(Self { fd, original })
-    }
-}
-
-impl Drop for RawModeGuard {
-    fn drop(&mut self) {
-        let borrowed = unsafe { BorrowedFd::borrow_raw(self.fd) };
-        let _ = tcsetattr(borrowed, SetArg::TCSAFLUSH, &self.original);
-    }
 }
 
 fn write_all(fd: i32, mut bytes: &[u8]) -> anyhow::Result<()> {

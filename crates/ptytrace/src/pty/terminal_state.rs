@@ -59,6 +59,50 @@ pub const fn child_output_enter_sequence() -> &'static [u8] {
     ALT_SCREEN_ENTER
 }
 
+/// RAII guard that puts a tty fd into raw mode on construction and
+/// restores the original termios on drop.
+///
+/// Both the live-capture path (`pty::live`) and the share path
+/// (`pty::share`) need exactly this guard around the host's stdin
+/// fd for the duration of an interactive session. Single
+/// definition lives here so the two callers can't drift.
+///
+/// Construction returns the bare `nix` error; the caller decides
+/// what context to attach (e.g., "is stdin a tty?" for `live`,
+/// "ptyroom host stdin" for `share`).
+pub struct RawModeGuard {
+    fd: RawFd,
+    original: nix::sys::termios::Termios,
+}
+
+impl RawModeGuard {
+    /// Enter raw mode on `fd`. Returns `Err` if `fd` isn't a tty or
+    /// `tcsetattr` fails. The original termios is captured for
+    /// restoration on drop.
+    ///
+    /// # Errors
+    /// `tcgetattr` (non-tty fd) or `tcsetattr` (kernel rejected the
+    /// raw mode write).
+    pub fn enter(fd: RawFd) -> nix::Result<Self> {
+        use nix::sys::termios::{SetArg, cfmakeraw, tcgetattr, tcsetattr};
+        let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+        let original = tcgetattr(borrowed)?;
+        let mut raw = original.clone();
+        cfmakeraw(&mut raw);
+        let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+        tcsetattr(borrowed, SetArg::TCSAFLUSH, &raw)?;
+        Ok(Self { fd, original })
+    }
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        use nix::sys::termios::{SetArg, tcsetattr};
+        let borrowed = unsafe { BorrowedFd::borrow_raw(self.fd) };
+        let _ = tcsetattr(borrowed, SetArg::TCSAFLUSH, &self.original);
+    }
+}
+
 /// Install a [`RestoreGuard`] for the child-output restore sequence
 /// on `fd`, gated on the host's stdout being a tty (and not running
 /// under `cfg(test)`, where the restore would inject ANSI noise into
