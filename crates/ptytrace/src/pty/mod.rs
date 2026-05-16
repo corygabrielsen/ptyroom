@@ -34,7 +34,7 @@ pub use live::{CaptureEvent, CaptureOpts, CaptureSink, capture, capture_with_sin
 pub use osc::StubColors;
 
 use std::os::fd::BorrowedFd;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -272,61 +272,13 @@ impl PtyTracer {
         } else {
             Some(build_rcfile(&cfg.shell).context("write rcfile")?)
         };
-        let lines_env = format!("LINES={}", cfg.rows);
-        let cols_env = format!("COLUMNS={}", cfg.cols);
-        let home_env;
-        let mount;
-        let argv: Vec<String> = if let Some(container) = &cfg.container {
-            let seq = CONTAINER_HOME_SEQ.fetch_add(1, Ordering::Relaxed);
-            let home = cfg
-                .warm_home_root
-                .join(format!(".ptytrace-home-{}-{seq}", std::process::id()))
-                .to_string_lossy()
-                .into_owned();
-            home_env = format!("HOME={home}");
-            let mut argv = vec![
-                "docker".into(),
-                "exec".into(),
-                "-i".into(),
-                "-t".into(),
-                "-e".into(),
-                lines_env.clone(),
-                "-e".into(),
-                cols_env.clone(),
-                "-e".into(),
-                home_env,
-            ];
-            append_docker_env(&mut argv, &cfg.env);
-            argv.push(container.clone());
-            argv.extend(cfg.warm_command.iter().cloned());
-            argv
+        let argv = if let Some(container) = &cfg.container {
+            warm_docker_argv(&cfg, container)
         } else {
-            let Some(rcfile) = &rcfile else {
+            let Some(rcfile_handle) = &rcfile else {
                 anyhow::bail!("cold recorder missing rcfile");
             };
-            mount = format!("{}:/tmp/recorderrc:ro", rcfile.path().display());
-            let mut argv = vec![
-                "docker".into(),
-                "run".into(),
-                "--rm".into(),
-                "-i".into(),
-                "-t".into(),
-                "-e".into(),
-                lines_env,
-                "-e".into(),
-                cols_env,
-            ];
-            append_docker_env(&mut argv, &cfg.env);
-            argv.extend([
-                "-v".into(),
-                mount,
-                cfg.image.clone(),
-                "bash".into(),
-                "--rcfile".into(),
-                "/tmp/recorderrc".into(),
-                "-i".into(),
-            ]);
-            argv
+            cold_docker_argv(&cfg, rcfile_handle.path())
         };
         let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
         let pty = spawn_pty(&argv_refs, &[], cfg.cols, cfg.rows).context("spawn docker run")?;
@@ -864,6 +816,65 @@ fn append_docker_env(argv: &mut Vec<String>, env: &[(String, String)]) {
         argv.push("-e".into());
         argv.push(format!("{key}={value}"));
     }
+}
+
+/// Build the `docker exec ... <container> <warm_command>` argv for
+/// reusing an already-running warm container. Allocates a fresh
+/// `$HOME` under `warm_home_root` so each recording sees a clean
+/// shell history / dotfile state.
+fn warm_docker_argv(cfg: &PtyTracerConfig, container: &str) -> Vec<String> {
+    let seq = CONTAINER_HOME_SEQ.fetch_add(1, Ordering::Relaxed);
+    let home = cfg
+        .warm_home_root
+        .join(format!(".ptytrace-home-{}-{seq}", std::process::id()))
+        .to_string_lossy()
+        .into_owned();
+    let mut argv = vec![
+        "docker".into(),
+        "exec".into(),
+        "-i".into(),
+        "-t".into(),
+        "-e".into(),
+        format!("LINES={}", cfg.rows),
+        "-e".into(),
+        format!("COLUMNS={}", cfg.cols),
+        "-e".into(),
+        format!("HOME={home}"),
+    ];
+    append_docker_env(&mut argv, &cfg.env);
+    argv.push(container.to_string());
+    argv.extend(cfg.warm_command.iter().cloned());
+    argv
+}
+
+/// Build the `docker run --rm ... bash --rcfile ...` argv for a cold
+/// recording. Mounts the caller-prepared rcfile into the container
+/// at `/tmp/recorderrc` and starts an interactive bash that sources
+/// it.
+fn cold_docker_argv(cfg: &PtyTracerConfig, rcfile_path: &Path) -> Vec<String> {
+    let mount = format!("{}:/tmp/recorderrc:ro", rcfile_path.display());
+    let mut argv = vec![
+        "docker".into(),
+        "run".into(),
+        "--rm".into(),
+        "-i".into(),
+        "-t".into(),
+        "-e".into(),
+        format!("LINES={}", cfg.rows),
+        "-e".into(),
+        format!("COLUMNS={}", cfg.cols),
+    ];
+    append_docker_env(&mut argv, &cfg.env);
+    argv.extend([
+        "-v".into(),
+        mount,
+        cfg.image.clone(),
+        "bash".into(),
+        "--rcfile".into(),
+        "/tmp/recorderrc".into(),
+        "-i".into(),
+    ]);
+    argv
 }
 
 #[cfg(test)]
