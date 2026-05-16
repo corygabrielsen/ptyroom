@@ -34,6 +34,30 @@ const GENERAL_RESTORE_SEQUENCE: &[u8] =
 const VIEWPORT_RESTORE_SEQUENCE: &[u8] =
     b"\x1b[0m\x1b[?25h\x1b[?1l\x1b>\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1049l\x1b[23;2t\x1b[?25h";
 
+/// Enter xterm alternate screen buffer with cursor at home.
+///
+/// `\x1b[?1049h` switches to the alt-screen but does NOT reset
+/// cursor position — the saved-from-primary position carries over.
+/// Without the immediate `\x1b[H` (cursor home), the captured
+/// session's first prompt would draw at whatever row the user's
+/// shell prompt happened to be on (typically mid-screen). tmux,
+/// screen, vim, and less all pair the alt-screen enter with a
+/// cursor-home for this exact reason.
+///
+/// Verified in `tests::alt_screen_enter_homes_cursor` — feeds the
+/// sequence into a vt100 emulator with the cursor pre-positioned
+/// mid-screen and asserts the post-feed cursor is at (0, 0).
+const ALT_SCREEN_ENTER: &[u8] = b"\x1b[?1049h\x1b[H";
+
+/// The PTY-frontend enter sequence. Caller should write this to the
+/// user's stdout before installing the captured session, after
+/// installing a [`RestoreGuard`] keyed on
+/// [`child_output_restore_sequence`].
+#[must_use]
+pub const fn child_output_enter_sequence() -> &'static [u8] {
+    ALT_SCREEN_ENTER
+}
+
 /// Cleanup for frontends that pass child PTY output directly to the
 /// user's terminal.
 #[must_use]
@@ -216,7 +240,10 @@ mod tests {
 
     use nix::unistd::{pipe, read};
 
-    use super::{RestoreGuard, child_output_restore_sequence, viewport_restore_sequence};
+    use super::{
+        RestoreGuard, child_output_enter_sequence, child_output_restore_sequence,
+        viewport_restore_sequence,
+    };
 
     #[test]
     fn child_output_restore_shows_cursor_after_leaving_alt_screen() {
@@ -247,6 +274,172 @@ mod tests {
         }
 
         assert_eq!(output, child_output_restore_sequence());
+    }
+
+    // =====================================================================
+    // Visual-effect tests
+    //
+    // The byte-structure tests above prove "the sequence has the right
+    // ANSI codes in the right order." That's necessary but not
+    // sufficient — a perfectly-structured sequence can still produce
+    // the wrong visual outcome (e.g. alt-screen-enter without cursor-
+    // home leaves the captured shell's prompt drawing mid-screen).
+    //
+    // These tests feed our sequences through a vt100 emulator and
+    // assert the OBSERVABLE END STATE. The class of bug they catch:
+    // "ANSI escape with valid syntax but wrong effect." When we add a
+    // new emitted sequence, add a matching visual-effect test.
+    // =====================================================================
+
+    /// Byte-structure assertion: the sequence MUST contain a
+    /// cursor-home control code after the alt-screen-enter. Some
+    /// terminal emulators (and the vt100 crate we test with) home
+    /// the cursor automatically on alt-screen entry; real terminals
+    /// like the one our user hit do not. Belt-and-suspenders to
+    /// `alt_screen_enter_homes_cursor` below, which can give false
+    /// confidence when the test emulator auto-homes.
+    #[test]
+    fn alt_screen_enter_includes_explicit_cursor_home() {
+        let seq = child_output_enter_sequence();
+        let enter = b"\x1b[?1049h";
+        let enter_pos =
+            find_subslice(seq, enter).expect("alt-screen enter sequence missing `\\x1b[?1049h`");
+        // After enter, there must be a cursor-home CSI. Accept any of
+        // the canonical equivalents.
+        let after_enter = &seq[enter_pos + enter.len()..];
+        let homes: &[&[u8]] = &[
+            b"\x1b[H",    // CSI H — cursor home, parameters default to 1;1
+            b"\x1b[1;1H", // CSI 1 ; 1 H — explicit
+            b"\x1b[1;1f", // CSI 1 ; 1 f — HVP (equivalent)
+        ];
+        let has_home = homes
+            .iter()
+            .any(|h| find_subslice(after_enter, h).is_some());
+        assert!(
+            has_home,
+            "alt-screen enter sequence does not include a cursor-home \
+             control code after `\\x1b[?1049h`. Captured shell's first \
+             prompt will draw at whatever row/col xterm 1049's saved-
+             cursor restoration lands on (typically wherever the user's \
+             outer shell prompt was — mid-screen). Without explicit \
+             cursor-home, this looks fine in emulators that auto-home \
+             on alt-screen entry but breaks on terminals that don't.\n\
+             sequence (escaped): {}",
+            String::from_utf8_lossy(seq).escape_debug(),
+        );
+    }
+
+    #[test]
+    fn alt_screen_enter_homes_cursor() {
+        // Pre-position cursor mid-screen on the primary buffer.
+        let mut parser = vt100::Parser::new(40, 80, 0);
+        parser.process(b"\x1b[16;31H");
+        assert_eq!(
+            parser.screen().cursor_position(),
+            (15, 30),
+            "vt100 setup: cursor not at pre-positioned coords",
+        );
+
+        // Feed our alt-screen enter sequence.
+        parser.process(child_output_enter_sequence());
+
+        // We must be in alt-screen, cursor must be at home (0, 0).
+        // If `\x1b[H` is dropped from the sequence, this fails with
+        // cursor at (15, 30) — the position xterm 1049 carried over.
+        assert!(
+            parser.screen().alternate_screen(),
+            "alt-screen enter sequence did not switch to the alt buffer",
+        );
+        assert_eq!(
+            parser.screen().cursor_position(),
+            (0, 0),
+            "alt-screen enter must home the cursor — captured shell's \
+             first prompt would otherwise draw mid-screen",
+        );
+    }
+
+    #[test]
+    fn child_output_restore_returns_to_primary_with_saved_cursor() {
+        // Set up a realistic flow: cursor at (8, 0) on primary
+        // (where the user's binary banner ended), enter alt-screen,
+        // captured shell scribbles all over the alt buffer, then
+        // we emit the restore sequence.
+        let mut parser = vt100::Parser::new(40, 80, 0);
+        parser.process(b"[recording \xe2\x86\x92 /tmp/x.ptytrace]\r\n");
+        let pre_alt = parser.screen().cursor_position();
+        // Enter alt-screen (mimic capture path).
+        parser.process(child_output_enter_sequence());
+        // Captured shell moves cursor, draws prompt, runs command.
+        parser.process(b"\x1b[20;40H~ $ ls\r\nfoo\nbar\nbaz\n");
+
+        // Restore.
+        parser.process(child_output_restore_sequence());
+
+        // We should be back on primary, cursor at the saved
+        // position (right after the banner). Without the
+        // restore sequence's `\x1b[?1049l` this stays on alt-
+        // screen; if the saved-cursor restoration is broken,
+        // the cursor lands somewhere else.
+        assert!(
+            !parser.screen().alternate_screen(),
+            "restore sequence did not switch back to the primary buffer",
+        );
+        assert_eq!(
+            parser.screen().cursor_position(),
+            pre_alt,
+            "restore sequence did not return cursor to pre-alt-screen position",
+        );
+    }
+
+    #[test]
+    fn viewport_restore_returns_to_primary_with_saved_cursor() {
+        let mut parser = vt100::Parser::new(40, 80, 0);
+        parser.process(b"[ptyroom host]\r\n");
+        let pre_alt = parser.screen().cursor_position();
+        parser.process(child_output_enter_sequence());
+        parser.process(b"\x1b[10;20Hsome host-viewport content");
+
+        parser.process(viewport_restore_sequence());
+
+        assert!(!parser.screen().alternate_screen());
+        assert_eq!(parser.screen().cursor_position(), pre_alt);
+    }
+
+    /// Round-trip: enter alt-screen, captured-session stuff, exit.
+    /// User's primary screen should be bit-identical to its pre-
+    /// session state. This is the end-to-end UX promise.
+    #[test]
+    fn alt_screen_round_trip_preserves_primary_content() {
+        let mut parser = vt100::Parser::new(40, 80, 0);
+        // Pre-session: simulate a few rows of user shell history.
+        parser.process(
+            b"$ ls -la\r\n\
+              file1  file2  file3\r\n\
+              $ cargo run --bin ptyrecord zsh\r\n\
+              [recording \xe2\x86\x92 /tmp/x.ptytrace]\r\n",
+        );
+        // Snapshot primary content + cursor BEFORE alt-screen.
+        let cursor_before = parser.screen().cursor_position();
+        let row0_before = parser.screen().rows(0, 80).next().unwrap();
+        let row1_before = parser.screen().rows(0, 80).nth(1).unwrap();
+
+        // Enter alt-screen, do stuff, exit.
+        parser.process(child_output_enter_sequence());
+        parser.process(b"\x1b[5;5Hcaptured session output everywhere\r\n");
+        parser.process(b"\x1b[20;1Hmore stuff\r\n");
+        parser.process(child_output_restore_sequence());
+
+        // After exit: primary content + cursor must match before.
+        assert!(!parser.screen().alternate_screen());
+        assert_eq!(
+            parser.screen().cursor_position(),
+            cursor_before,
+            "cursor not restored to pre-session position",
+        );
+        let row0_after = parser.screen().rows(0, 80).next().unwrap();
+        let row1_after = parser.screen().rows(0, 80).nth(1).unwrap();
+        assert_eq!(row0_before, row0_after, "primary row 0 mutated");
+        assert_eq!(row1_before, row1_after, "primary row 1 mutated");
     }
 
     fn assert_cursor_visible_after_alt_screen_exit(sequence: &[u8]) {

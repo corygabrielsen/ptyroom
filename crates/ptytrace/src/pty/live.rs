@@ -29,7 +29,9 @@ use nix::sys::termios::{SetArg, Termios, cfmakeraw, tcgetattr, tcsetattr};
 use nix::unistd::{read, write};
 
 use super::process;
-use super::terminal_state::{RestoreGuard, child_output_restore_sequence, termination_requested};
+use super::terminal_state::{
+    RestoreGuard, child_output_enter_sequence, child_output_restore_sequence, termination_requested,
+};
 use crate::recording::{Dwell, TraceBuilder};
 use crate::trace::Trace;
 
@@ -174,9 +176,12 @@ pub fn capture_with_sink(opts: CaptureOpts, sink: &mut impl CaptureSink) -> Resu
     // screen, because the captured session isn't on it.
     //
     // Gated on `is_terminal()` so the bytes don't pollute piped
-    // stdout — see `INVARIANT_PIPED_STDOUT_IS_PLAIN`.
+    // stdout — see `INVARIANT_PIPED_STDOUT_IS_PLAIN`. The exact
+    // byte sequence (enter + cursor home) is owned by
+    // `terminal_state::child_output_enter_sequence` and tested
+    // there for its visual effect.
     if stdout.is_terminal() {
-        let _ = write_all(stdout_fd, b"\x1b[?1049h");
+        let _ = write_all(stdout_fd, child_output_enter_sequence());
     }
 
     // RAII: original termios is restored when this drops, even on

@@ -159,6 +159,46 @@ fn captured_session_in_alt_screen() {
          full stream: {}",
         String::from_utf8_lossy(&bytes).escape_debug(),
     );
+
+    // Cursor must be HOMED on alt-screen entry. xterm's `\x1b[?1049h`
+    // doesn't reset cursor position — the saved-from-primary
+    // position carries over. Without an explicit `\x1b[H`, the
+    // captured shell's first prompt draws wherever the user's
+    // prompt happened to be on primary, typically halfway down the
+    // screen. Replay the alt-screen-enter bytes through vt100
+    // INTO A NON-EMPTY STARTING STATE (cursor pre-positioned
+    // mid-screen, like a real terminal) and assert the cursor is
+    // at (0, 0) afterwards.
+    //
+    // Naming this assertion separately so a future failure points
+    // exactly at "you forgot the cursor home" rather than
+    // "ordering wrong somewhere."
+    let mut parser = vt100::Parser::new(40, 200, 0);
+    // Pre-position cursor at (15, 30) — simulates being mid-screen
+    // when the user runs ptyrecord. xterm's 1049 saves THIS
+    // position. The fix's `\x1b[H` must override it.
+    parser.process(b"\x1b[16;31H");
+    let (pre_row, pre_col) = parser.screen().cursor_position();
+    assert_eq!(
+        (pre_row, pre_col),
+        (15, 30),
+        "vt100 setup failure: cursor not where the test pre-positioned it",
+    );
+    // Feed only the bytes UP TO and INCLUDING alt-screen enter,
+    // stopping just before the captured session writes anything.
+    // That isolates "what does the substrate look like right when
+    // the captured shell starts?"
+    parser.process(&bytes[..sentinel_pos]);
+    let (row, col) = parser.screen().cursor_position();
+    assert_eq!(
+        (row, col),
+        (0, 0),
+        "after alt-screen entry, cursor should be at (0, 0) so the \
+         captured shell's first prompt lands at top-left. Got ({row}, \
+         {col}). violates INVARIANT_CAPTURED_SESSION_IN_ALT_SCREEN.\n\
+         enter-prelude bytes (escaped): {}",
+        String::from_utf8_lossy(&bytes[..sentinel_pos]).escape_debug(),
+    );
 }
 
 // =====================================================================

@@ -19,13 +19,20 @@ writing (commit message + this file) before being landed.
 ### `INVARIANT_CAPTURED_SESSION_IN_ALT_SCREEN`
 
 ptyrecord wraps the entire captured PTY session in xterm's alternate
-screen buffer (`\x1b[?1049h` … `\x1b[?1049l`). The captured session's
-output — prompts, command output, scrolling, vt100 escapes — all
-happens on the alternate buffer, leaving the user's primary screen
-and its scrollback untouched. On exit, the alternate buffer is
-discarded and the primary screen is restored exactly as it was, with
-the cursor at the position where alt-screen was entered (a fresh row
-right below the calling binary's banner).
+screen buffer (`\x1b[?1049h\x1b[H` … `\x1b[?1049l`). The captured
+session's output — prompts, command output, scrolling, vt100 escapes
+— all happens on the alternate buffer, leaving the user's primary
+screen and its scrollback untouched. On exit, the alternate buffer
+is discarded and the primary screen is restored exactly as it was,
+with the cursor at the position where alt-screen was entered (a
+fresh row right below the calling binary's banner).
+
+The `\x1b[H` (cursor home) immediately after `\x1b[?1049h` is
+load-bearing. xterm's 1049 saves the primary cursor position and
+switches to alt-screen but does NOT reset cursor position — the
+captured shell's first prompt would otherwise draw at whatever row
+the user's prompt happened to be on. tmux/screen/vim/less all pair
+the enter with a home for the same reason.
 
 **Rationale.** This is the same pattern tmux, screen, vim, less, and
 fzf use. It is the canonical answer to "I want to take over the
