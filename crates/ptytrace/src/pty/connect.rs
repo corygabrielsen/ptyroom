@@ -15,15 +15,14 @@ use nix::errno::Errno;
 use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use nix::unistd::read;
 
+use super::input_router::{LocalInputAction, LocalInputRouter, LocalStatus};
 use super::room_protocol::{self, TerminalSize};
 use super::terminal_io::write_all;
 use super::terminal_state::{RawModeGuard, termination_requested};
 
-mod control;
 mod output;
 mod stream;
 
-use control::{LocalInputAction, LocalInputRouter, LocalStatus};
 use output::OutputSink;
 use stream::{ServerEvent, ServerStream};
 
@@ -484,8 +483,8 @@ mod tests {
     use nix::pty::{Winsize, openpty};
     use nix::unistd::{pipe, read as nix_read, write as nix_write};
 
+    use super::super::input_router::LOCAL_ESCAPE;
     use super::super::room_protocol::{self, TerminalSize};
-    use super::control::LOCAL_ESCAPE;
     use super::output::OutputSink;
     use super::{RelayOpts, local_controls_enabled, relay_fds, relay_fds_with_output};
 
