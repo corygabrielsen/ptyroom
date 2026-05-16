@@ -79,24 +79,35 @@ pub struct ContractReport {
 }
 
 impl ContractReport {
-    /// Print one `PASS|FAIL  scene/name  detail` line per check to stdout.
-    pub fn print(&self) {
-        let name_width = self.results.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
-        for (name, r) in &self.results {
-            let marker = if r.passed() { "PASS" } else { "FAIL" };
-            println!(
-                "{marker}  {}/{name:<name_width$}  {}",
-                self.scene,
-                r.detail()
-            );
-        }
-    }
-
     /// `0` if every check passed, `1` otherwise. Suitable for
     /// `process::exit`.
     #[must_use]
     pub fn exit_code(&self) -> i32 {
         i32::from(self.failed != 0)
+    }
+}
+
+impl std::fmt::Display for ContractReport {
+    /// One `PASS|FAIL  scene/name  detail` line per check, names
+    /// right-padded to the widest in the report so columns align.
+    ///
+    /// Library code never writes to stdout — callers are expected to
+    /// `println!("{report}")` or `write!(io, "{report}")` themselves.
+    /// This is the per-library-shouldn't-print discipline (see
+    /// `ptyrecord/INVARIANTS.md` and the `Trace::write_with_summary`
+    /// removal that established the pattern).
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name_width = self.results.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
+        for (name, r) in &self.results {
+            let marker = if r.passed() { "PASS" } else { "FAIL" };
+            writeln!(
+                f,
+                "{marker}  {}/{name:<name_width$}  {}",
+                self.scene,
+                r.detail()
+            )?;
+        }
+        Ok(())
     }
 }
 
