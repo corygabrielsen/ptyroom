@@ -4,6 +4,10 @@ target/
 # Node
 node_modules/
 
+# `ptyroom share` session captures land at the repo root with this
+# pattern. Per-session output, not source.
+ptyroom-*.ptytrace
+
 # Generated terminal artifacts
 assets/*.gif
 assets/*.mp4
