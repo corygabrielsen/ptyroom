@@ -66,6 +66,12 @@ struct Args {
     /// Do not embed a reproducibility witness.
     #[arg(long)]
     no_witness: bool,
+    /// Suppress the default `<stem>.mp4` sidecar; write only the
+    /// `.ptyrecord` bundle. Intended for CI / archival workflows where
+    /// the bundle is the canonical artifact and a loose mp4 next to it
+    /// is litter.
+    #[arg(long, conflicts_with_all = ["trace_in", "media_out"])]
+    bundle_only: bool,
     /// Font size in pixels.
     #[arg(long, default_value_t = 14.0)]
     font_size: f32,
@@ -122,14 +128,24 @@ fn main() -> anyhow::Result<()> {
 
     let work = TempDir::new()?;
     let stem = bundle_stem(&out);
+    // Trace stays embedded-only by default — humans don't consume
+    // `.ptytrace` directly; tooling that wants it standalone passes
+    // `--trace-out`.
     let trace_path = args
         .trace_out
         .clone()
         .unwrap_or_else(|| work.path().join(format!("{stem}.ptytrace")));
-    let media_path = args
-        .media_out
-        .clone()
-        .unwrap_or_else(|| work.path().join(format!("{stem}.mp4")));
+    let trace_is_sidecar = args.trace_out.is_some();
+    // Media defaults to `<out_stem>.mp4` next to the bundle so the
+    // user gets a file their video player can open without an extract
+    // step. `--bundle-only` opts out by routing the mp4 into the
+    // tempdir (where Drop deletes it after embedding into the bundle).
+    let media_path = match (&args.media_out, args.bundle_only) {
+        (Some(p), _) => p.clone(),
+        (None, false) => out.with_extension("mp4"),
+        (None, true) => work.path().join(format!("{stem}.mp4")),
+    };
+    let media_is_sidecar = args.media_out.is_some() || !args.bundle_only;
     ensure_mp4_path(&media_path)?;
     ensure_parent(&trace_path)?;
     ensure_parent(&media_path)?;
@@ -189,14 +205,15 @@ fn main() -> anyhow::Result<()> {
     let record = PtyRecord::from_paths(&trace_path, &media_path, witness.as_ref())?;
     record.write(&out)?;
 
-    println!(
-        "wrote {} + embedded trace {} + media {}",
-        out.display(),
-        record.trace.path,
-        record.media.path
-    );
+    println!("wrote {}", out.display());
+    if media_is_sidecar {
+        println!("wrote {}", media_path.display());
+    }
+    if trace_is_sidecar {
+        println!("wrote {}", trace_path.display());
+    }
     if let Some(witness_out) = &args.witness_out {
-        println!("wrote witness {}", witness_out.display());
+        println!("wrote {}", witness_out.display());
     }
 
     Ok(())
@@ -273,6 +290,42 @@ mod tests {
 
         assert_eq!(args.command, ["ssh", "host"]);
         assert!(args.trace_in.is_none());
+    }
+
+    #[test]
+    fn bundle_only_conflicts_with_media_out() {
+        // The combination is contradictory: --bundle-only asks for the
+        // mp4 to be ephemeral, --media-out names a persistent path for
+        // it. Clap rejects at parse time so the runtime never sees an
+        // impossible state.
+        assert!(
+            Args::try_parse_from([
+                "ptyrecord",
+                "--bundle-only",
+                "--media-out",
+                "demo.mp4",
+                "zsh",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn bundle_only_conflicts_with_trace_in() {
+        // --trace-in mode never produces a media sidecar (the early
+        // return short-circuits all default-sidecar logic), so
+        // --bundle-only would be a no-op and is rejected at parse.
+        assert!(
+            Args::try_parse_from([
+                "ptyrecord",
+                "--bundle-only",
+                "--trace-in",
+                "demo.ptytrace",
+                "--media-in",
+                "demo.mp4",
+            ])
+            .is_err()
+        );
     }
 
     #[test]
