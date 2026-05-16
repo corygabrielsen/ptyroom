@@ -14,6 +14,7 @@ mod client;
 mod ctl;
 mod host_viewport;
 mod poll_loop;
+mod pty_output;
 mod sizing;
 
 use std::collections::VecDeque;
@@ -23,7 +24,7 @@ use std::net::TcpStream;
 use std::net::{Shutdown, SocketAddr, TcpListener};
 use std::os::fd::{AsRawFd, BorrowedFd};
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow};
@@ -31,19 +32,24 @@ use nix::errno::Errno;
 use nix::poll::PollFlags;
 use nix::unistd::read;
 
-use self::client::{Client, JoinReplay, ShareStats, broadcast};
+#[cfg(test)]
+use self::client::broadcast;
+use self::client::{Client, JoinReplay, ShareStats};
 use self::ctl::{CtlCommand, CtlSocket, QueueOp, parse_ctl_command};
 use self::host_viewport::HostViewport;
 use self::poll_loop::{accept_ready_clients, poll_share_fds, process_client_revents};
+use self::pty_output::{PtyOutputSinks, handle_pty_revents};
 use self::sizing::{initial_host_size, initial_pty_size, refresh_host_size, sync_canonical_size};
 use super::input_router::{LocalInputAction, LocalInputRouter, LocalStatus};
 use super::process;
-use super::room_protocol::{self, TerminalSize};
+#[cfg(test)]
+use super::room_protocol;
+use super::room_protocol::TerminalSize;
 use super::terminal_io::write_all;
 use super::terminal_state::{
     RawModeGuard, RestoreGuard, child_output_cleanup_guard, termination_requested,
 };
-use crate::recording::{Dwell, TraceBuilder};
+use crate::recording::TraceBuilder;
 
 const CTL_IO_TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -484,11 +490,6 @@ fn setup_host_terminal(
     }
 }
 
-fn write_trace(trace: &crate::trace::Trace, path: &Path) -> anyhow::Result<()> {
-    trace.write(path)?;
-    Ok(())
-}
-
 fn finish_share_run(
     pty: &mut process::PtyMaster,
     builder: TraceBuilder,
@@ -509,64 +510,6 @@ fn finish_share_run(
     })
 }
 
-struct PtyOutputSinks<'a> {
-    local_output: bool,
-    stdout_fd: i32,
-    host_viewport: Option<&'a mut HostViewport>,
-    join_replay: &'a mut JoinReplay,
-    clients: &'a mut Vec<Client>,
-    stats: &'a mut ShareStats,
-}
-
-fn handle_pty_revents(
-    revents: PollFlags,
-    pty_fd: i32,
-    buf: &mut [u8],
-    sinks: PtyOutputSinks<'_>,
-    builder: &mut TraceBuilder,
-    last_event: &mut Instant,
-) -> anyhow::Result<bool> {
-    if revents.intersects(PollFlags::POLLIN) {
-        let pty_borrow = unsafe { BorrowedFd::borrow_raw(pty_fd) };
-        match read(pty_borrow, buf) {
-            Ok(0) | Err(Errno::EIO) => return Ok(false),
-            Ok(n) => handle_pty_output(&buf[..n], sinks, builder, last_event)?,
-            Err(Errno::EINTR) => {}
-            Err(err) => return Err(anyhow!("read shared PTY: {err}")),
-        }
-    }
-    Ok(!revents.intersects(PollFlags::POLLHUP | PollFlags::POLLERR | PollFlags::POLLNVAL))
-}
-
-fn handle_pty_output(
-    bytes: &[u8],
-    sinks: PtyOutputSinks<'_>,
-    builder: &mut TraceBuilder,
-    last_event: &mut Instant,
-) -> anyhow::Result<()> {
-    let PtyOutputSinks {
-        local_output,
-        stdout_fd,
-        host_viewport,
-        join_replay,
-        clients,
-        stats,
-    } = sinks;
-    if let Some(viewport) = host_viewport {
-        let _ = viewport.process_output(bytes);
-    } else if local_output {
-        let _ = write_all(stdout_fd, bytes);
-    }
-    let client_frame = room_protocol::encode_output_frame(bytes);
-    join_replay.remember(&client_frame);
-    broadcast(clients, &client_frame, stats);
-    let now = Instant::now();
-    let dwell = Dwell::from_duration(now.saturating_duration_since(*last_event));
-    builder.record_output(bytes.to_vec(), dwell)?;
-    *last_event = now;
-    Ok(())
-}
-
 fn finish_share_trace(
     builder: TraceBuilder,
     size: TerminalSize,
@@ -575,7 +518,7 @@ fn finish_share_trace(
     let recording = builder.finish_screen(size.cols, size.rows)?;
     let trace = recording.into_trace();
     let events = trace.events.len();
-    write_trace(&trace, &out)?;
+    trace.write(&out)?;
     Ok((out, events))
 }
 
