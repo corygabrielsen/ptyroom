@@ -10,12 +10,15 @@
 //! SSH, `WireGuard`, or another authenticated tunnel in front when the
 //! session crosses a machine boundary.
 
+mod client;
 mod ctl;
 mod host_viewport;
 
 use std::collections::VecDeque;
-use std::io::{self, BufReader, IsTerminal, Read, Write};
-use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::io::{self, BufReader, IsTerminal, Write};
+#[cfg(test)]
+use std::net::TcpStream;
+use std::net::{Shutdown, SocketAddr, TcpListener};
 use std::os::fd::{AsRawFd, BorrowedFd};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -28,16 +31,15 @@ use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use nix::sys::termios::{SetArg, Termios, cfmakeraw, tcgetattr, tcsetattr};
 use nix::unistd::{read, write};
 
+use self::client::{Client, JoinReplay};
 use self::ctl::{CtlCommand, CtlSocket, QueueOp, parse_ctl_command};
 use self::host_viewport::HostViewport;
 use super::input_router::{LocalInputAction, LocalInputRouter, LocalStatus};
 use super::process;
-use super::room_protocol::{self, ClientControl, TerminalSize};
+use super::room_protocol::{self, TerminalSize};
 use super::terminal_state::{RestoreGuard, child_output_cleanup_guard, termination_requested};
 use crate::recording::{Dwell, TraceBuilder};
 
-const MAX_CLIENT_BACKLOG_BYTES: usize = 1024 * 1024;
-const MAX_JOIN_REPLAY_BYTES: usize = 256 * 1024;
 const SIZE_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 const CTL_IO_TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -504,7 +506,7 @@ fn poll_share_fds(
 
     let client_start = fds.len();
     for client in clients {
-        let client_borrow = unsafe { BorrowedFd::borrow_raw(client.stream.as_raw_fd()) };
+        let client_borrow = unsafe { BorrowedFd::borrow_raw(client.fd()) };
         fds.push(PollFd::new(client_borrow, client.poll_flags()));
     }
 
@@ -748,229 +750,6 @@ fn broadcast_control(clients: &mut Vec<Client>, bytes: &[u8], stats: &mut ShareS
     broadcast(clients, bytes, stats);
 }
 
-#[derive(Debug, Default)]
-struct JoinReplay {
-    frames: VecDeque<Vec<u8>>,
-    bytes: usize,
-}
-
-impl JoinReplay {
-    fn remember(&mut self, frame: &[u8]) {
-        self.frames.push_back(frame.to_vec());
-        self.bytes = self.bytes.saturating_add(frame.len());
-        while self.bytes > MAX_JOIN_REPLAY_BYTES {
-            let Some(dropped) = self.frames.pop_front() else {
-                self.bytes = 0;
-                break;
-            };
-            self.bytes = self.bytes.saturating_sub(dropped.len());
-        }
-    }
-
-    fn bytes(&self) -> usize {
-        self.bytes
-    }
-
-    fn frames(&self) -> impl Iterator<Item = &[u8]> {
-        self.frames.iter().map(Vec::as_slice)
-    }
-}
-
-#[derive(Debug)]
-struct Client {
-    stream: TcpStream,
-    pending: VecDeque<u8>,
-    input_pending: Vec<u8>,
-    input_open: bool,
-    protocol_ready: bool,
-    size: Option<TerminalSize>,
-}
-
-impl Client {
-    fn new(stream: TcpStream) -> io::Result<Self> {
-        stream.set_nodelay(true)?;
-        stream.set_nonblocking(true)?;
-        Ok(Self {
-            stream,
-            pending: VecDeque::new(),
-            input_pending: Vec::new(),
-            input_open: true,
-            protocol_ready: false,
-            size: None,
-        })
-    }
-
-    fn poll_flags(&self) -> PollFlags {
-        let mut flags = PollFlags::empty();
-        if self.input_open {
-            flags |= PollFlags::POLLIN;
-        }
-        if self.has_pending() {
-            flags |= PollFlags::POLLOUT;
-        }
-        flags
-    }
-
-    fn has_pending(&self) -> bool {
-        !self.pending.is_empty()
-    }
-
-    fn enqueue(&mut self, bytes: &[u8]) -> bool {
-        if bytes.len() > MAX_CLIENT_BACKLOG_BYTES.saturating_sub(self.pending.len()) {
-            return false;
-        }
-        self.pending.extend(bytes.iter().copied());
-        true
-    }
-
-    fn enqueue_replay(&mut self, replay: &JoinReplay) -> bool {
-        if replay.bytes() > MAX_CLIENT_BACKLOG_BYTES.saturating_sub(self.pending.len()) {
-            return false;
-        }
-        for frame in replay.frames() {
-            self.pending.extend(frame.iter().copied());
-        }
-        true
-    }
-
-    fn flush_pending(&mut self) -> bool {
-        while !self.pending.is_empty() {
-            let (front, back) = self.pending.as_slices();
-            let chunk = if front.is_empty() { back } else { front };
-            if chunk.is_empty() {
-                return true;
-            }
-            match self.stream.write(chunk) {
-                Ok(0) => return false,
-                Ok(n) => {
-                    drop(self.pending.drain(..n));
-                }
-                Err(err) if err.kind() == io::ErrorKind::WouldBlock => return true,
-                Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
-                Err(_) => return false,
-            }
-        }
-        true
-    }
-
-    fn drain_input_to_pty(&mut self, pty_fd: i32) -> anyhow::Result<bool> {
-        let mut buf = [0_u8; 4096];
-        loop {
-            match self.stream.read(&mut buf) {
-                Ok(0) => {
-                    self.flush_pending_input_as_raw(pty_fd)?;
-                    return Ok(false);
-                }
-                Ok(n) => {
-                    self.input_pending.extend_from_slice(&buf[..n]);
-                    if !self.flush_pending_input(pty_fd)? {
-                        return Ok(false);
-                    }
-                }
-                Err(err) if err.kind() == io::ErrorKind::WouldBlock => return Ok(true),
-                Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
-                Err(_) => return Ok(false),
-            }
-        }
-    }
-
-    fn flush_pending_input(&mut self, pty_fd: i32) -> anyhow::Result<bool> {
-        loop {
-            if self.input_pending.is_empty() {
-                return Ok(true);
-            }
-            let Some(start) =
-                room_protocol::find_subslice(&self.input_pending, room_protocol::PREFIX)
-            else {
-                if !self.protocol_ready {
-                    let keep =
-                        room_protocol::prefix_overlap(&self.input_pending, room_protocol::PREFIX);
-                    return Ok(
-                        keep > 0 && self.input_pending.len() <= room_protocol::MAX_CONTROL_BYTES
-                    );
-                }
-                let keep =
-                    room_protocol::prefix_overlap(&self.input_pending, room_protocol::PREFIX);
-                let write_len = self.input_pending.len().saturating_sub(keep);
-                if write_len > 0 {
-                    write_all(pty_fd, &self.input_pending[..write_len])?;
-                    self.input_pending.drain(..write_len);
-                }
-                return Ok(true);
-            };
-            if start > 0 {
-                if !self.protocol_ready {
-                    return Ok(false);
-                }
-                write_all(pty_fd, &self.input_pending[..start])?;
-                self.input_pending.drain(..start);
-                continue;
-            }
-
-            let suffix_search_start = room_protocol::PREFIX.len();
-            let Some(end_rel) = room_protocol::find_subslice(
-                &self.input_pending[suffix_search_start..],
-                room_protocol::SUFFIX,
-            ) else {
-                if self.input_pending.len() > room_protocol::MAX_CONTROL_BYTES {
-                    if !self.protocol_ready {
-                        return Ok(false);
-                    }
-                    write_all(pty_fd, &self.input_pending[..1])?;
-                    self.input_pending.drain(..1);
-                    continue;
-                }
-                return Ok(true);
-            };
-            let payload_start = room_protocol::PREFIX.len();
-            let payload_end = suffix_search_start + end_rel;
-            let payload = self.input_pending[payload_start..payload_end].to_vec();
-            if !self.apply_control(&payload) {
-                return Ok(false);
-            }
-            self.input_pending
-                .drain(..payload_end + room_protocol::SUFFIX.len());
-        }
-    }
-
-    fn flush_pending_input_as_raw(&mut self, pty_fd: i32) -> anyhow::Result<()> {
-        if !self.protocol_ready {
-            self.input_pending.clear();
-            return Ok(());
-        }
-        if !self.input_pending.is_empty() {
-            write_all(pty_fd, &self.input_pending)?;
-            self.input_pending.clear();
-        }
-        Ok(())
-    }
-
-    fn apply_control(&mut self, payload: &[u8]) -> bool {
-        match room_protocol::parse_client_control(payload) {
-            Some(ClientControl::Hello(version)) => {
-                if version == room_protocol::VERSION {
-                    self.protocol_ready = true;
-                    return true;
-                }
-                false
-            }
-            Some(ClientControl::Resize(size)) => {
-                if self.protocol_ready {
-                    self.size = Some(size);
-                    true
-                } else {
-                    false
-                }
-            }
-            None => self.protocol_ready,
-        }
-    }
-
-    fn disconnect(&self) {
-        let _ = self.stream.shutdown(Shutdown::Both);
-    }
-}
-
 struct RawModeGuard {
     fd: i32,
     original: Termios,
@@ -1129,7 +908,7 @@ fn resolve_argv(argv: Vec<String>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::io::ErrorKind;
+    use std::io::{ErrorKind, Read};
     use std::os::fd::{AsFd, AsRawFd};
 
     use super::*;
@@ -1715,7 +1494,7 @@ mod tests {
         let _peer = TcpStream::connect(addr).unwrap();
         let (stream, _) = listener.accept().unwrap();
         let mut client = Client::new(stream).unwrap();
-        assert!(client.enqueue(&vec![b'x'; MAX_CLIENT_BACKLOG_BYTES]));
+        assert!(client.enqueue(&vec![b'x'; client::MAX_CLIENT_BACKLOG_BYTES]));
         let mut clients = vec![client];
         let mut stats = ShareStats::default();
 
@@ -1763,7 +1542,7 @@ mod tests {
     #[test]
     fn join_replay_evicts_whole_frames() {
         let mut replay = JoinReplay::default();
-        let first_payload = vec![b'a'; MAX_JOIN_REPLAY_BYTES - 128];
+        let first_payload = vec![b'a'; client::MAX_JOIN_REPLAY_BYTES - 128];
         let first = room_protocol::encode_output_frame(&first_payload);
         let second = room_protocol::encode_output_frame(&vec![b'b'; 256]);
 
@@ -1775,7 +1554,7 @@ mod tests {
             .map(<[u8]>::to_vec)
             .collect::<Vec<Vec<u8>>>();
         assert_eq!(frames, vec![second]);
-        assert!(replay.bytes() <= MAX_JOIN_REPLAY_BYTES);
+        assert!(replay.bytes() <= client::MAX_JOIN_REPLAY_BYTES);
     }
 
     #[test]
