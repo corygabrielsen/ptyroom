@@ -16,17 +16,16 @@ use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use nix::unistd::read;
 
 use super::room_protocol::{self, TerminalSize};
-use super::terminal_state::termination_requested;
+use super::terminal_io::write_all;
+use super::terminal_state::{RawModeGuard, termination_requested};
 
 mod control;
 mod output;
 mod stream;
-mod terminal;
 
 use control::{LocalInputAction, LocalInputRouter, LocalStatus};
 use output::OutputSink;
 use stream::{ServerEvent, ServerStream};
-use terminal::{RawModeGuard, write_all};
 
 const RESIZE_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 

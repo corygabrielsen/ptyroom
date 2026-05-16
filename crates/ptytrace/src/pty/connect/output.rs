@@ -4,10 +4,9 @@ use std::os::fd::RawFd;
 
 use super::super::room_protocol::TerminalSize;
 use super::super::status_bar::{Bar, Chip};
-use super::super::terminal_io::write_all;
+use super::super::terminal_io::{terminal_size, write_all};
 use super::super::viewport::ViewportRenderer;
 use super::control::{LOCAL_ESCAPE_NAME, LocalStatus};
-use super::terminal::terminal_size;
 
 pub(super) enum OutputSink {
     Raw,
