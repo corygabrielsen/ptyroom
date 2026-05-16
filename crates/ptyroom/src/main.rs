@@ -7,18 +7,36 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// Wipe the current terminal row before drawing post-session output.
-/// Same defense as `ptyrecord::print_wrote` — see that helper's doc
-/// comment and `crates/ptyrecord/tests/output_cleanliness.rs` for the
-/// reproducer and the failure mode it catches. No-op for piped output.
-fn clear_row_if_tty() {
-    if std::io::stdout().is_terminal() {
-        print!("\x1b[2K\r");
+/// Prepare a known-clean terminal substrate before post-session
+/// printlns. Emits enough newlines to scroll any prior visible
+/// content into scrollback regardless of cursor position, then homes
+/// the cursor on the now-blank viewport. See the matching helper in
+/// `ptyrecord/src/main.rs` and the regression test at
+/// `ptyrecord/tests/output_cleanliness.rs` for the why and the
+/// failure mode it defends against. No-op for piped output.
+fn prepare_clean_substrate_if_tty() {
+    if !std::io::stdout().is_terminal() {
+        return;
+    }
+    let (_cols, rows) = detect_tty_size().unwrap_or((80, 24));
+    let padding = (rows as usize).saturating_mul(2);
+    print!("{}\x1b[H", "\n".repeat(padding));
+}
+
+fn detect_tty_size() -> Option<(u16, u16)> {
+    use nix::libc;
+    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+    // SAFETY: `ws` is a valid &mut winsize; STDOUT_FILENO is a valid
+    // fd in any hosted process.
+    let ret = unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &raw mut ws) };
+    if ret == 0 && ws.ws_col > 0 && ws.ws_row > 0 {
+        Some((ws.ws_col, ws.ws_row))
+    } else {
+        None
     }
 }
 
 fn print_wrote(path: impl std::fmt::Display) {
-    clear_row_if_tty();
     println!("wrote {path}");
 }
 
@@ -246,6 +264,7 @@ fn host(args: HostArgs) -> anyhow::Result<()> {
     // `--trace-out`, since otherwise we'd produce zero artifacts.
     if summary.events == 0 {
         eprintln!("[no output events captured; skipping render + bundle]");
+        prepare_clean_substrate_if_tty();
         print_wrote(trace_path.display());
         return Ok(());
     }
@@ -281,6 +300,7 @@ fn host(args: HostArgs) -> anyhow::Result<()> {
     let record = PtyRecord::from_paths(&trace_path, &media_path, witness.as_ref())?;
     record.write(&out)?;
 
+    prepare_clean_substrate_if_tty();
     print_wrote(out.display());
     if media_is_sidecar {
         print_wrote(media_path.display());

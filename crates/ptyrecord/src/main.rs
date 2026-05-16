@@ -10,25 +10,56 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// Emit the ANSI "clear current row + carriage-return" sequence when
-/// stdout is a tty. Use immediately before any `println!` that runs
-/// after a PTY-captured session ends. Defends against bleed-through
-/// from any pre-existing terminal content that survived on the row
-/// the post-session restore-sequence cursor advance landed on (cargo
-/// progress draws, outer shell prompt redraws, partial alt-screen
-/// restore residue). No-op when stdout is piped/redirected so escape
-/// bytes don't pollute scripted consumers. Regression covered by
-/// `crates/ptyrecord/tests/output_cleanliness.rs`.
-fn clear_row_if_tty() {
-    if std::io::stdout().is_terminal() {
-        print!("\x1b[2K\r");
+/// Prepare a known-clean terminal substrate for post-session
+/// output. The pattern (and why it has to be this aggressive):
+///
+/// After a PTY-captured session, the terminal can be in ANY state —
+/// alt-screen on/off, cursor anywhere, scrolled, resized mid-session,
+/// rows still holding cargo compile-progress lines, shell prompts, or
+/// `[recording → ...]` banner residue. Per-line `\x1b[2K\r` defends
+/// against the current row but not against wrapped multi-row text or
+/// content on rows below. The robust answer: emit enough newlines to
+/// guarantee EVERY row on the visible screen scrolled into scrollback,
+/// then home the cursor on the now-blank viewport.
+///
+/// Why `2 × rows` newlines: when cursor starts at row K, the first
+/// `(rows - 1 - K)` newlines just advance without scrolling. Only
+/// newlines beyond that scroll the viewport. `2 × rows` guarantees at
+/// least `rows + 1` actual scrolls regardless of starting cursor row,
+/// which is enough to push any starting screen content into scrollback.
+///
+/// Scrollback is preserved — the user can scroll up to review the
+/// captured session. The current viewport is freshly blank, cursor at
+/// (0, 0). Subsequent printlns land deterministically.
+///
+/// No-op when stdout is piped/redirected so escape bytes + newline
+/// padding don't pollute scripted consumers.
+///
+/// Regression covered by `crates/ptyrecord/tests/output_cleanliness.rs`.
+fn prepare_clean_substrate_if_tty() {
+    if !std::io::stdout().is_terminal() {
+        return;
+    }
+    let (_cols, rows) = detect_tty_size().unwrap_or((80, 24));
+    let padding = (rows as usize).saturating_mul(2);
+    print!("{}\x1b[H", "\n".repeat(padding));
+}
+
+fn detect_tty_size() -> Option<(u16, u16)> {
+    use nix::libc;
+    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+    // SAFETY: `ws` is a valid &mut winsize; STDOUT_FILENO is a valid
+    // fd in any hosted process (closed-stdio is UB territory).
+    let ret = unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &raw mut ws) };
+    if ret == 0 && ws.ws_col > 0 && ws.ws_row > 0 {
+        Some((ws.ws_col, ws.ws_row))
+    } else {
+        None
     }
 }
 
-/// Print one persistent-artifact "wrote X" line, defensively
-/// clearing the row first when output is interactive.
+/// Print one persistent-artifact "wrote X" line.
 fn print_wrote(path: impl std::fmt::Display) {
-    clear_row_if_tty();
     println!("wrote {path}");
 }
 
@@ -136,7 +167,9 @@ fn main() -> anyhow::Result<()> {
         let witness = args.witness_in.as_ref().map(Witness::read).transpose()?;
         let record = PtyRecord::from_paths(trace_path, media_path, witness.as_ref())?;
         record.write(&out)?;
-        clear_row_if_tty();
+        // No PTY session ran in this mode, so terminal state should
+        // be clean already, but tools may pipe stderr around — keep
+        // the message structure parallel to the live-capture path.
         println!(
             "wrote {} + embedded trace {} + media {}",
             out.display(),
@@ -234,6 +267,7 @@ fn main() -> anyhow::Result<()> {
     let record = PtyRecord::from_paths(&trace_path, &media_path, witness.as_ref())?;
     record.write(&out)?;
 
+    prepare_clean_substrate_if_tty();
     print_wrote(out.display());
     if media_is_sidecar {
         print_wrote(media_path.display());
