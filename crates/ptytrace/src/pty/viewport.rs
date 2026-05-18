@@ -182,6 +182,20 @@ fn render_viewport_full(screen: &vt100::Screen, local_size: Option<TerminalSize>
     }
     out.extend_from_slice(&screen.input_mode_formatted());
     out.extend_from_slice(&screen.cursor_state_formatted());
+    // `cursor_state_formatted` emits the parser's cursor position. If
+    // the parser was sized for a larger terminal than `local_size` (the
+    // terminal shrank since the last SIGWINCH-driven `resize`), that
+    // position can land at a row >= `rows`, which on the host display
+    // is the status-bar row. That would violate
+    // `INVARIANT_USER_SCROLLBACK_PRESERVED` from
+    // `ptyrecord/INVARIANTS.md`. Clamp the cursor back into the
+    // viewport so the status bar remains the only thing on its row.
+    let (cursor_row_0, cursor_col_0) = screen.cursor_position();
+    if rows > 0 && cols > 0 && (cursor_row_0 >= rows || cursor_col_0 >= cols) {
+        let safe_row = cursor_row_0.min(rows - 1) + 1;
+        let safe_col = cursor_col_0.min(cols - 1) + 1;
+        out.extend_from_slice(format!("\x1b[{safe_row};{safe_col}H").as_bytes());
+    }
     out
 }
 
@@ -292,6 +306,49 @@ mod tests {
         );
 
         assert!(contains_bytes(&rendered, b"\x1b[2J"));
+    }
+
+    #[test]
+    fn viewport_renderer_clamps_cursor_inside_local_size() {
+        // Parser sized for 10 rows; local terminal shrunk to 3 rows
+        // (status-bar accounting via remote_view_size would yield a
+        // 3-row viewport). The parser's cursor sits at the bottom of
+        // its 10-row screen, which on the host's display is well below
+        // the viewport — verify rendering clamps the cursor to the
+        // last viewport row (status bar untouched).
+        let mut parser = vt100::Parser::new(10, 20, 0);
+        parser.process(b"\x1b[10;5H"); // move cursor to row 10, col 5
+
+        let rendered =
+            render_viewport_full(parser.screen(), Some(TerminalSize { cols: 20, rows: 3 }));
+        let text = String::from_utf8_lossy(&rendered);
+
+        // Cursor parser-position was row 10, col 5 (1-based: 10,5).
+        // After clamp the trailing reposition must target row <= 3.
+        // The cursor_state_formatted output contains the unclamped
+        // reposition; the appended clamp reposition is the last CSI H
+        // sequence in the rendered bytes.
+        let last_h = text
+            .rmatch_indices('H')
+            .next()
+            .expect("must have a CSI H sequence");
+        // Walk back to find the start of this CSI sequence.
+        let before = &text[..last_h.0];
+        let csi_start = before
+            .rfind("\x1b[")
+            .expect("CSI prefix must precede the H");
+        let final_csi = &text[csi_start..=last_h.0];
+        // Parse "\x1b[R;CH" → row R.
+        let body = &final_csi[2..final_csi.len() - 1];
+        let row: u16 = body
+            .split(';')
+            .next()
+            .and_then(|s| s.parse().ok())
+            .expect("CSI row parses");
+        assert!(
+            row <= 3,
+            "final cursor row {row} must be inside 3-row viewport; rendered = {text:?}",
+        );
     }
 
     #[test]
