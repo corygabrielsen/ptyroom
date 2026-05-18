@@ -20,14 +20,22 @@ cleanup() {
 }
 trap cleanup EXIT
 
+bundle="$tmp/smoke.ptyrecord"
 trace="$tmp/smoke.ptytrace"
 gif="$tmp/smoke.gif"
 host_log="$tmp/host.stderr"
 host_stdout="$tmp/host.stdout"
 
+# `--out` writes the `.ptyrecord` bundle; `--trace-out` drops a raw
+# `.ptytrace` sidecar that ptyrender below can consume directly.
+# `--bundle-only` skips the host's own mp4 sidecar so we exercise the
+# standalone `ptyrender` invocation as a real test (not a duplicate of
+# the render the host did internally).
 target/debug/ptyroom host \
     --listen 127.0.0.1:0 \
-    --out "$trace" \
+    --out "$bundle" \
+    --trace-out "$trace" \
+    --bundle-only \
     --cols 80 \
     --rows 24 \
     --no-local-input \
