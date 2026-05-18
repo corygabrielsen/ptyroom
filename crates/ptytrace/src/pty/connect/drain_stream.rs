@@ -72,7 +72,7 @@ fn handle_server_events(
             }
             ServerEvent::Output(bytes) => {
                 ensure_protocol_ready(*protocol_ready)?;
-                output.write_output(stdout_fd, &bytes)?;
+                output.write_output(stdout_fd, bytes.as_ref())?;
             }
             ServerEvent::Size(size) => {
                 ensure_protocol_ready(*protocol_ready)?;
