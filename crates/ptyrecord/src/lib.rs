@@ -448,13 +448,20 @@ fn push_ansi_stripped(input: &str, out: &mut String) {
 }
 
 fn media_type_for(path: &Path) -> &'static str {
+    // Only map extensions that `ensure_supported_media_type` actually
+    // accepts. Mapping `.gif` to `"image/gif"` would let
+    // `from_paths` produce an EmbeddedFile whose media_type the
+    // validator then rejects two lines later — the rejection still
+    // fires (and is tested), but advertising "image/gif" as a known
+    // type implies bundle support that v1 does not give. Fall through
+    // to the opaque catch-all instead so the validator's failure
+    // message accurately reflects the bundle format.
     match path
         .extension()
         .and_then(std::ffi::OsStr::to_str)
         .map(str::to_ascii_lowercase)
         .as_deref()
     {
-        Some("gif") => "image/gif",
         Some("mp4") => "video/mp4",
         _ => "application/octet-stream",
     }
