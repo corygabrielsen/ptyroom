@@ -9,6 +9,7 @@
 use std::path::Path;
 use std::path::PathBuf;
 
+use anyhow::Context as _;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use ptyrender::encode::TimingEntry;
@@ -229,8 +230,11 @@ impl PtyRecord {
     /// IO or JSON parse failure, unsupported schema version, invalid
     /// embedded hashes, or projections that do not match the trace.
     pub fn read(path: impl AsRef<Path>) -> anyhow::Result<Self> {
-        let bytes = std::fs::read(path.as_ref())?;
-        let record: Self = serde_json::from_slice(&bytes)?;
+        let path = path.as_ref();
+        let bytes =
+            std::fs::read(path).with_context(|| format!("read ptyrecord {}", path.display()))?;
+        let record: Self = serde_json::from_slice(&bytes)
+            .with_context(|| format!("parse ptyrecord {}", path.display()))?;
         record.validate()?;
         Ok(record)
     }
@@ -689,6 +693,43 @@ mod tests {
 
         let err = PtyRecord::read(&path).unwrap_err().to_string();
         assert!(err.contains("transcript projection does not match embedded trace"));
+    }
+
+    #[test]
+    fn read_io_error_includes_path() {
+        let tmp = TempDir::new().unwrap();
+        let missing = tmp.path().join("does-not-exist.ptyrecord");
+
+        let err = PtyRecord::read(&missing).unwrap_err();
+        // Top-level message names the operation and the path; the
+        // underlying IO error remains accessible via the source chain.
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("read ptyrecord"),
+            "missing 'read ptyrecord' prefix: {chain}"
+        );
+        assert!(
+            chain.contains(missing.to_str().unwrap()),
+            "missing path in error: {chain}"
+        );
+    }
+
+    #[test]
+    fn read_parse_error_includes_path() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("bad.ptyrecord");
+        std::fs::write(&path, b"not valid json at all").unwrap();
+
+        let err = PtyRecord::read(&path).unwrap_err();
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("parse ptyrecord"),
+            "missing 'parse ptyrecord' prefix: {chain}"
+        );
+        assert!(
+            chain.contains(path.to_str().unwrap()),
+            "missing path in error: {chain}"
+        );
     }
 
     fn tiny_record_json() -> (TempDir, serde_json::Value) {
