@@ -28,11 +28,11 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
         .collect::<Result<_, _>>()?;
 
     let (w, h) = (traces[0].header.width, traces[0].header.height);
-    for (i, c) in traces.iter().enumerate().skip(1) {
+    for (input, c) in args.inputs.iter().zip(traces.iter()).skip(1) {
         if c.header.width != w || c.header.height != h {
             anyhow::bail!(
                 "stitch: input {} has dimensions {}x{}, expected {}x{} (matching trace 0)",
-                args.inputs[i].display(),
+                input.display(),
                 c.header.width,
                 c.header.height,
                 w,
