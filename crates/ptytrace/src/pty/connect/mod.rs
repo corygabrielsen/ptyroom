@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use anyhow::{Context, anyhow};
 use nix::errno::Errno;
-use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
+use nix::poll::PollFlags;
 use nix::unistd::read;
 
 use super::input_router::{LocalInputAction, LocalInputRouter, LocalStatus};
@@ -21,12 +21,14 @@ use super::terminal_io::write_all;
 use super::terminal_state::{RawModeGuard, termination_requested};
 
 mod output;
+mod poll;
 pub mod stream;
 
 use output::OutputSink;
+use poll::poll_join_fds;
 use stream::{ServerEvent, ServerStream};
 
-const RESIZE_CHECK_INTERVAL: Duration = Duration::from_millis(250);
+pub(super) const RESIZE_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Connect this process's terminal to a shared PTY server.
 ///
@@ -219,49 +221,6 @@ fn relay_fds_with_output(
             return Ok(());
         }
     }
-}
-
-#[derive(Debug)]
-struct JoinPollState {
-    stdin_revents: PollFlags,
-    stream_revents: PollFlags,
-}
-
-fn poll_join_fds(
-    stdin_open: bool,
-    stdin_fd: RawFd,
-    stream_fd: RawFd,
-) -> anyhow::Result<JoinPollState> {
-    let stream_borrow = unsafe { BorrowedFd::borrow_raw(stream_fd) };
-    let mut fds = Vec::with_capacity(2);
-    let stdin_index = stdin_open.then(|| {
-        let idx = fds.len();
-        let stdin_borrow = unsafe { BorrowedFd::borrow_raw(stdin_fd) };
-        fds.push(PollFd::new(stdin_borrow, PollFlags::POLLIN));
-        idx
-    });
-    let stream_index = fds.len();
-    fds.push(PollFd::new(stream_borrow, PollFlags::POLLIN));
-    match poll(
-        &mut fds,
-        PollTimeout::try_from(RESIZE_CHECK_INTERVAL).unwrap_or(PollTimeout::MAX),
-    ) {
-        Ok(_) => {}
-        Err(Errno::EINTR) => {
-            return Ok(JoinPollState {
-                stdin_revents: PollFlags::empty(),
-                stream_revents: PollFlags::empty(),
-            });
-        }
-        Err(err) => return Err(anyhow!("poll ptyroom client: {err}")),
-    }
-
-    Ok(JoinPollState {
-        stdin_revents: stdin_index
-            .and_then(|idx| fds[idx].revents())
-            .unwrap_or_else(PollFlags::empty),
-        stream_revents: fds[stream_index].revents().unwrap_or_else(PollFlags::empty),
-    })
 }
 
 struct JoinStdin<'a> {
