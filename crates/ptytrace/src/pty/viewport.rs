@@ -14,7 +14,12 @@ use super::terminal_state::{RestoreGuard, viewport_restore_sequence};
 
 pub(crate) struct ViewportRenderer {
     stdout_fd: RawFd,
-    restore: RestoreGuard,
+    // Drop-only sentinel: emits the restore sequence and uninstalls
+    // signal handlers when the renderer is dropped. Never read after
+    // construction — `set_fd` was removed to close a signal-handler
+    // TOCTOU (see `INVARIANT_SIGNAL_RESTORE_FD_IS_STABLE` in
+    // `terminal_state.rs`).
+    _restore: RestoreGuard,
     parser: vt100::Parser,
     size: TerminalSize,
     previous_screen: Option<vt100::Screen>,
@@ -29,7 +34,7 @@ impl ViewportRenderer {
         write_all(stdout_fd, &set_window_title_sequence(title))?;
         let mut renderer = Self {
             stdout_fd,
-            restore: RestoreGuard::new(stdout_fd, viewport_restore_sequence()),
+            _restore: RestoreGuard::new(stdout_fd, viewport_restore_sequence()),
             parser: vt100::Parser::new(size.rows, size.cols, 0),
             size,
             previous_screen: None,
@@ -50,14 +55,18 @@ impl ViewportRenderer {
         size: TerminalSize,
         bar: &Bar,
     ) -> anyhow::Result<()> {
+        debug_assert_eq!(
+            stdout_fd, self.stdout_fd,
+            "ViewportRenderer: stdout_fd must be stable for the renderer's \
+             lifetime — see INVARIANT_SIGNAL_RESTORE_FD_IS_STABLE in \
+             terminal_state.rs",
+        );
         let mut force_full = false;
         if self.size != size {
             self.parser.screen_mut().set_size(size.rows, size.cols);
             self.size = size;
             force_full = true;
         }
-        self.stdout_fd = stdout_fd;
-        self.restore.set_fd(stdout_fd);
         self.redraw(bar, force_full)
     }
 
@@ -71,8 +80,12 @@ impl ViewportRenderer {
     }
 
     pub(crate) fn force_redraw(&mut self, stdout_fd: RawFd, bar: &Bar) -> anyhow::Result<()> {
-        self.stdout_fd = stdout_fd;
-        self.restore.set_fd(stdout_fd);
+        debug_assert_eq!(
+            stdout_fd, self.stdout_fd,
+            "ViewportRenderer: stdout_fd must be stable for the renderer's \
+             lifetime — see INVARIANT_SIGNAL_RESTORE_FD_IS_STABLE in \
+             terminal_state.rs",
+        );
         self.redraw(bar, true)
     }
 
