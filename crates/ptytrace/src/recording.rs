@@ -355,7 +355,7 @@ impl TraceBuilder {
         // The `PTYTRACE_DEBUG_PLATEAU` env var enables an
         // opt-in stderr trace for callers diagnosing unexpected
         // collisions.
-        let mut events = Vec::new();
+        let mut events = Vec::with_capacity(self.steps.len());
         // `leading_dwell_ns` is the sum of any `record_beat` dwells
         // pushed before the first real step. Seeding `t_ns` with it
         // lets pre-event idle time appear in the first event's
