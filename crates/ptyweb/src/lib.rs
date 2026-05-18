@@ -70,6 +70,11 @@ const CHANNEL_DEPTH: usize = 256;
 /// TCP read buffer size. Matches the join client's framing buffer.
 const TCP_READ_BUF: usize = 16 * 1024;
 
+/// Upper bound on browser-reported resize dimensions. Mirrors
+/// `ptyrender::frame_replay::MAX_TRACE_DIM` so the renderer doesn't
+/// reject sizes the bridge happily accepted.
+const MAX_RESIZE_DIM: u16 = 1024;
+
 #[derive(Debug, Clone)]
 pub struct Config {
     /// TCP address of the ptyroom host to bridge.
@@ -430,6 +435,18 @@ async fn ws_reader_loop(
                     Ok(msg) => {
                         let size = TerminalSize::new(msg.resize.cols, msg.resize.rows);
                         if size.cols == 0 || size.rows == 0 {
+                            continue;
+                        }
+                        // Match the cap enforced by `ptyrender::frame_replay`
+                        // so a misbehaving browser can't drive the host PTY
+                        // to an absurd grid size.
+                        if size.cols > MAX_RESIZE_DIM || size.rows > MAX_RESIZE_DIM {
+                            debug!(
+                                cols = size.cols,
+                                rows = size.rows,
+                                max = MAX_RESIZE_DIM,
+                                "ignoring oversize resize from browser"
+                            );
                             continue;
                         }
                         if resize_tx.send(size).await.is_err() {
