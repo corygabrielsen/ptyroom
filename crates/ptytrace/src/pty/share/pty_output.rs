@@ -29,7 +29,8 @@ use super::super::room_protocol;
 use super::super::terminal_io::write_all;
 use super::client::{Client, JoinReplay, ShareStats, broadcast};
 use super::host_viewport::HostViewport;
-use crate::recording::{Dwell, TraceBuilder};
+use super::pending::{PendingEvent, PendingState};
+use crate::recording::TraceBuilder;
 
 pub(super) struct PtyOutputSinks<'a> {
     pub(super) local_output: bool,
@@ -46,13 +47,13 @@ pub(super) fn handle_pty_revents(
     buf: &mut [u8],
     sinks: PtyOutputSinks<'_>,
     builder: &mut TraceBuilder,
-    last_event: &mut Instant,
+    pending: &mut PendingState,
 ) -> anyhow::Result<bool> {
     if revents.intersects(PollFlags::POLLIN) {
         let pty_borrow = unsafe { BorrowedFd::borrow_raw(pty_fd) };
         match read(pty_borrow, buf) {
             Ok(0) | Err(Errno::EIO) => return Ok(false),
-            Ok(n) => handle_pty_output(&buf[..n], sinks, builder, last_event)?,
+            Ok(n) => handle_pty_output(&buf[..n], sinks, builder, pending)?,
             Err(Errno::EINTR) => {}
             Err(err) => return Err(anyhow!("read shared PTY: {err}")),
         }
@@ -64,7 +65,7 @@ fn handle_pty_output(
     bytes: &[u8],
     sinks: PtyOutputSinks<'_>,
     builder: &mut TraceBuilder,
-    last_event: &mut Instant,
+    pending: &mut PendingState,
 ) -> anyhow::Result<()> {
     let PtyOutputSinks {
         local_output,
@@ -82,9 +83,15 @@ fn handle_pty_output(
     let client_frame = room_protocol::encode_output_frame(bytes);
     join_replay.remember(&client_frame);
     broadcast(clients, &client_frame, stats);
-    let now = Instant::now();
-    let dwell = Dwell::from_duration(now.saturating_duration_since(*last_event));
-    builder.record_output(bytes.to_vec(), dwell)?;
-    *last_event = now;
-    Ok(())
+    // Defer the trace record by one event so the dwell attached to
+    // this read is `next_arrival - now` — the time it actually stays
+    // on screen — rather than `now - last_event`, which would absorb
+    // session bootstrap latency into the first event's dwell. See
+    // `super::pending` for the contract and `crate::pty::live` (commit
+    // `26b840b`) for the live-mode mirror.
+    pending.replace(
+        PendingEvent::Output(bytes.to_vec()),
+        Instant::now(),
+        builder,
+    )
 }

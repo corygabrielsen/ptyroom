@@ -21,7 +21,8 @@ use super::super::room_protocol::{self, TerminalSize};
 use super::super::terminal_io::terminal_size;
 use super::client::{Client, ShareStats, broadcast_control};
 use super::host_viewport::HostViewport;
-use crate::recording::{Dwell, TraceBuilder};
+use super::pending::{PendingEvent, PendingState};
+use crate::recording::TraceBuilder;
 
 pub(super) const SIZE_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -87,13 +88,13 @@ pub(super) fn sync_canonical_size(
     host_viewport: Option<&mut HostViewport>,
     stdout_fd: i32,
     builder: &mut TraceBuilder,
-    last_event: &mut Instant,
+    pending: &mut PendingState,
     stats: &mut ShareStats,
 ) -> anyhow::Result<()> {
     let Some(size) = sync_pty_size(pty, current_size, initial_size, host_size, clients)? else {
         return Ok(());
     };
-    record_resize_event(builder, last_event, size)?;
+    record_resize_event(builder, pending, size)?;
     broadcast_control(clients, &room_protocol::encode_size_control(size), stats);
     if let Some(viewport) = host_viewport {
         viewport.resize(stdout_fd, size)?;
@@ -133,12 +134,19 @@ pub(super) fn initial_host_size(
 
 pub(super) fn record_resize_event(
     builder: &mut TraceBuilder,
-    last_event: &mut Instant,
+    pending: &mut PendingState,
     size: TerminalSize,
 ) -> anyhow::Result<()> {
-    let now = Instant::now();
-    let dwell = Dwell::from_duration(now.saturating_duration_since(*last_event));
-    builder.record_resize(size.cols, size.rows, dwell)?;
-    *last_event = now;
-    Ok(())
+    // Resize is one of the two share-mode event sources, alongside
+    // PTY output. Both feed the same pending buffer so the dwell on
+    // any given event reflects the time-to-next-event regardless of
+    // which kind comes next.
+    pending.replace(
+        PendingEvent::Resize {
+            cols: size.cols,
+            rows: size.rows,
+        },
+        Instant::now(),
+        builder,
+    )
 }
