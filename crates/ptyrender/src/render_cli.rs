@@ -56,8 +56,13 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
         r = r.width(w);
     }
     if let Some(spec_path) = &args.spec {
-        let spec_bytes = std::fs::read(spec_path)?;
-        r = r.contract_sha256(sha256_hex(&spec_bytes));
+        // Hash the canonical form of the contract, not the raw file
+        // bytes. Whitespace / key-ordering differences from older
+        // serde_json versions or hand-edits would otherwise produce a
+        // different hash for a semantically identical contract and
+        // silently break receipt verification.
+        let spec = ptytrace::contract::Contract::read(spec_path)?;
+        r = r.contract_sha256(sha256_hex(&spec.canonical_bytes()?));
     }
     if let Some(script_path) = &args.script {
         let script_bytes = std::fs::read(script_path)?;
