@@ -309,17 +309,25 @@ pub fn capture_with_sink(opts: CaptureOpts, sink: &mut impl CaptureSink) -> Resu
     // Flush the final pending event with dwell 0 — no more events will
     // arrive, so there's no "interval before the next one" to record.
     // Asciinema players hold the final frame indefinitely.
-    if let Some((bytes, _)) = pending.take() {
+    //
+    // The child must be reaped regardless of whether the final flush
+    // (or the trailing builder.finish_screen) succeeds — propagating
+    // those errors via `?` while still holding the spawned child would
+    // leak it as a zombie until the parent exits. Run the flush, then
+    // reap unconditionally, then propagate any captured error.
+    let flush_result = if let Some((bytes, _)) = pending.take() {
         flush_pending(
             &mut builder,
             sink,
             &mut trace_time_ns,
             bytes,
             Duration::ZERO,
-        )?;
-    }
-
+        )
+    } else {
+        Ok(())
+    };
     pty.terminate_child();
+    flush_result?;
     let recording = builder.finish_screen(cols, rows)?;
     Ok(recording.into_trace())
 }
