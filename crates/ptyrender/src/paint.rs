@@ -13,6 +13,7 @@
 use std::path::Path;
 
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
+use anyhow::Context;
 use image::{Rgb, RgbImage};
 
 use crate::color::HexColor;
@@ -126,8 +127,10 @@ impl<'a> Painter<'a> {
     /// # Errors
     /// IO error writing the PNG.
     pub fn save_png(&self, snap: &Frame, path: impl AsRef<Path>) -> anyhow::Result<()> {
+        let path = path.as_ref();
         let img = self.paint(snap);
-        img.save(path.as_ref())?;
+        img.save(path)
+            .with_context(|| format!("save_png {}", path.display()))?;
         Ok(())
     }
 
@@ -407,6 +410,30 @@ mod tests {
         let (w, h) = p.image_dims(&snap);
         assert_eq!(img.width(), w);
         assert_eq!(img.height(), h);
+    }
+
+    #[test]
+    fn save_png_error_carries_path() {
+        // Save to a non-existent directory — must fail with the path in
+        // the error chain so parallel-rendering failures are debuggable.
+        let p = Painter::new(FONT_BYTES, PaintConfig::default()).unwrap();
+        let snap = Frame {
+            bg: HexColor::from_rgb(0, 0, 0),
+            fg: HexColor::from_rgb(255, 255, 255),
+            palette: PaletteOverrides::new(),
+            grid: Grid::from_unchecked(vec![vec![Some(cell(
+                'x',
+                CellColor::Default,
+                CellColor::Default,
+            ))]]),
+        };
+        let bad = std::path::Path::new("/no/such/dir/out.png");
+        let err = p.save_png(&snap, bad).unwrap_err();
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("/no/such/dir/out.png"),
+            "error chain missing path: {chain}",
+        );
     }
 
     #[test]
