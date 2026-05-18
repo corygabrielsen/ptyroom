@@ -45,6 +45,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
+use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
 /// Static viewer assets, baked into the binary so ptyweb has no
@@ -325,27 +326,57 @@ async fn bridge_socket(
         let _ = ws_tx_send.send(WsOut::Text(text)).await;
     }
 
-    let tcp_to_ws = tokio::spawn(tcp_to_ws_loop(handshaked, ws_tx_send.clone()));
-    let tcp_writer = tokio::spawn(tcp_writer_loop(tcp_write, pty_tx_recv, resize_rx));
-    let ws_writer = tokio::spawn(ws_writer_loop(ws_sink, ws_tx_recv));
-    let ws_reader = tokio::spawn(ws_reader_loop(ws_stream, pty_tx_send, resize_tx, read_only));
+    // Own all four loops in a single `JoinSet` so the bridge can both
+    // detect the first exit *and* drive the rest to completion before
+    // returning. Dropping a `JoinHandle` only detaches — it does not
+    // release the resources held by the task's future. If `bridge_socket`
+    // returned while tasks still ran they would keep the upstream
+    // `TcpStream` halves and the `WebSocket` halves alive past the
+    // visible end of the bridge, leaking sockets until the runtime
+    // eventually polled them.
+    //
+    // Drop the bridge-local channel senders before joining so the
+    // `*_loop` receivers observe channel closure and unwind naturally
+    // once their peer exits. Without this, `tcp_writer_loop` and
+    // `ws_writer_loop` would have to be aborted unconditionally instead
+    // of finishing cleanly.
+    let mut tasks: JoinSet<(&'static str, Result<()>)> = JoinSet::new();
+    tasks.spawn(async move {
+        let res = tcp_to_ws_loop(handshaked, ws_tx_send).await;
+        ("tcp_to_ws", res)
+    });
+    tasks.spawn(async move {
+        let res = tcp_writer_loop(tcp_write, pty_tx_recv, resize_rx).await;
+        ("tcp_writer", res)
+    });
+    tasks.spawn(async move {
+        let res = ws_writer_loop(ws_sink, ws_tx_recv).await;
+        ("ws_writer", res)
+    });
+    tasks.spawn(async move {
+        let res = ws_reader_loop(ws_stream, pty_tx_send, resize_tx, read_only).await;
+        ("ws_reader", res)
+    });
 
-    // First task to exit ends the bridge. Aborting the others is fine
-    // — both sides are byte streams without acknowledged closure.
-    tokio::select! {
-        res = tcp_to_ws => log_task_exit("tcp_to_ws", res),
-        res = tcp_writer => log_task_exit("tcp_writer", res),
-        res = ws_writer => log_task_exit("ws_writer", res),
-        res = ws_reader => log_task_exit("ws_reader", res),
+    // First task to exit ends the bridge. Abort the rest then drain the
+    // join set so every task's resources are released before we return.
+    let first = tasks.join_next().await;
+    if let Some(res) = first {
+        log_task_exit(res);
+    }
+    tasks.abort_all();
+    while let Some(res) = tasks.join_next().await {
+        log_task_exit(res);
     }
     Ok(())
 }
 
-fn log_task_exit(label: &str, res: Result<Result<()>, tokio::task::JoinError>) {
+fn log_task_exit(res: Result<(&'static str, Result<()>), tokio::task::JoinError>) {
     match res {
-        Ok(Ok(())) => debug!(task = label, "bridge task finished cleanly"),
-        Ok(Err(err)) => debug!(task = label, error = %err, "bridge task ended"),
-        Err(err) => debug!(task = label, error = %err, "bridge task panicked"),
+        Ok((label, Ok(()))) => debug!(task = label, "bridge task finished cleanly"),
+        Ok((label, Err(err))) => debug!(task = label, error = %err, "bridge task ended"),
+        Err(err) if err.is_cancelled() => debug!(error = %err, "bridge task cancelled"),
+        Err(err) => debug!(error = %err, "bridge task panicked"),
     }
 }
 
@@ -863,6 +894,84 @@ mod tests {
         drop(stream);
 
         tokio::time::sleep(Duration::from_millis(50)).await;
+        serve_task.abort();
+        let _ = server.await;
+    }
+
+    /// Regression for the `JoinSet` cleanup fix: when the browser-side
+    /// WebSocket drops, the upstream TCP connection to the ptyroom host
+    /// must close promptly. Before the fix, `bridge_socket` returned as
+    /// soon as one of the four loop tasks exited; the rest were
+    /// detached and kept the TCP halves alive, so the host saw the
+    /// socket as still connected long after the browser left.
+    ///
+    /// The mock host echoes a hello then reads from the bridge in a
+    /// loop, recording whether the read terminated with `Ok(0)` (clean
+    /// EOF after our bridge dropped the socket) within a short window.
+    #[tokio::test]
+    async fn bridge_releases_upstream_tcp_when_browser_disconnects() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let room_addr = listener.local_addr().unwrap();
+        let (eof_tx, mut eof_rx) = tokio::sync::oneshot::channel::<bool>();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut hello = [0_u8; 32];
+            let n = sock.read(&mut hello).await.unwrap();
+            assert_eq!(&hello[..n], protocol::encode_hello_control().as_slice());
+            sock.write_all(&protocol::encode_hello_control())
+                .await
+                .unwrap();
+            // Drain until the bridge drops its write half. With the bug
+            // present, the bridge keeps the TCP halves alive past
+            // browser disconnect and this read blocks forever.
+            let mut buf = [0_u8; 1024];
+            let saw_eof = loop {
+                match sock.read(&mut buf).await {
+                    Ok(0) => break true,
+                    Ok(_) => {}
+                    Err(_) => break false,
+                }
+            };
+            let _ = eof_tx.send(saw_eof);
+        });
+
+        let cfg = Config {
+            room_addr,
+            listen_addr: "127.0.0.1:0".parse().unwrap(),
+            auth_secret: None,
+            allowed_origin: None,
+            read_only: false,
+        };
+        let app = super::router(cfg);
+        let ws_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_addr = ws_listener.local_addr().unwrap();
+        let serve_task = tokio::spawn(async move {
+            axum::serve(
+                ws_listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+
+        // Open browser WS, wait for the status frame so we know the
+        // bridge is fully wired through, then drop the socket. The
+        // bridge must abort and release the upstream TCP halves.
+        let mut stream = tokio::net::TcpStream::connect(ws_addr).await.unwrap();
+        complete_handshake(&mut stream, ws_addr).await;
+        let (opcode, _payload) = read_frame(&mut stream).await;
+        assert_eq!(opcode, 0x1, "expected status text frame");
+        drop(stream);
+
+        // Wait up to a second for the mock host to observe EOF. With
+        // the bug, this times out because the detached tasks keep the
+        // upstream socket alive past `bridge_socket` return.
+        let saw_eof = tokio::time::timeout(Duration::from_secs(1), &mut eof_rx)
+            .await
+            .expect("upstream TCP never closed after browser disconnect")
+            .expect("mock host channel dropped");
+        assert!(saw_eof, "mock host did not observe a clean EOF");
+
         serve_task.abort();
         let _ = server.await;
     }
