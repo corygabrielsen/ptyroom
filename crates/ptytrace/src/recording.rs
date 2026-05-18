@@ -127,6 +127,14 @@ pub struct TraceBuilder {
     /// UTF-8-lossy accumulation of all output bytes seen so far.
     /// Used as the haystack for `record_step_matching`'s predicate.
     accumulated_text: String,
+    /// Pre-first-event dwell accumulator. `record_beat` with a
+    /// nonzero dwell on an empty `steps` would otherwise discard
+    /// the dwell (no `last_mut()` to extend) — the first event in
+    /// live capture would lose its leading idle interval. Recorded
+    /// nanoseconds here are added to `t_ns`'s starting value in
+    /// `finish` so the first emitted event's `time_s` reflects any
+    /// pre-event beats.
+    leading_dwell_ns: u64,
 }
 
 impl TraceBuilder {
@@ -242,6 +250,13 @@ impl TraceBuilder {
         }
         if let Some(last) = self.steps.last_mut() {
             last.dwell = Dwell::from_nanos(last.dwell.as_nanos().saturating_add(dwell.as_nanos()));
+        } else {
+            // No previous step to extend — accumulate as leading
+            // dwell so the first real event's timestamp picks up
+            // this interval. Without this, a live capture's idle
+            // gap before its first event would silently collapse to
+            // zero (the cause-of-first-event timing would be lost).
+            self.leading_dwell_ns = self.leading_dwell_ns.saturating_add(dwell.as_nanos());
         }
         Ok(())
     }
@@ -267,11 +282,19 @@ impl TraceBuilder {
         }
 
         let data = String::from_utf8_lossy(output).into_owned();
+        // Snapshot the accumulator length BEFORE the append so we
+        // can rebuild the pre-call state on predicate failure. The
+        // builder is `&mut self`, so an Err return is the only
+        // observable side-effect signal — leaving partial state in
+        // `accumulated_text` would silently feed corrupted bytes
+        // into subsequent predicate evaluations.
+        let pre_len = self.accumulated_text.len();
         self.accumulated_text.push_str(&data);
 
         if let Some(pred) = predicate
             && !pred.check(&self.accumulated_text)
         {
+            self.accumulated_text.truncate(pre_len);
             anyhow::bail!(
                 "record_step_matching: predicate {pred:?} did not hold against captured output"
             );
@@ -333,7 +356,11 @@ impl TraceBuilder {
         // opt-in stderr trace for callers diagnosing unexpected
         // collisions.
         let mut events = Vec::new();
-        let mut t_ns: u64 = 0;
+        // `leading_dwell_ns` is the sum of any `record_beat` dwells
+        // pushed before the first real step. Seeding `t_ns` with it
+        // lets pre-event idle time appear in the first event's
+        // `time_s` rather than silently collapsing to zero.
+        let mut t_ns: u64 = self.leading_dwell_ns;
         let debug_plateau = std::env::var_os("PTYTRACE_DEBUG_PLATEAU").is_some();
         let mut last_t_ns: Option<u64> = None;
         for (idx, step) in self.steps.iter().enumerate() {
@@ -473,6 +500,45 @@ mod tests {
         assert!((rec.trace().events[1].time_s - 0.015).abs() < f64::EPSILON);
     }
 
+    /// Regression: `record_beat` (and `record_output(b"", dwell)`,
+    /// which routes through it) on an empty `steps` had no
+    /// `last_mut()` to extend, so the dwell was silently dropped.
+    /// In live capture this collapsed any pre-first-event idle gap
+    /// to zero. The fix accumulates the dwell in
+    /// `leading_dwell_ns` and seeds `t_ns` with it in `finish`, so
+    /// the first emitted event's `time_s` reflects the leading
+    /// interval.
+    #[test]
+    fn record_beat_before_first_step_advances_first_event_time() {
+        let mut b = TraceBuilder::new();
+        // No prior step — pre-fix the 100 ms is dropped.
+        b.record_output(Vec::new(), Dwell::from_millis(100))
+            .unwrap();
+        // First real event. Its `time_s` must equal the leading dwell.
+        b.record_output(b"X".to_vec(), Dwell::ZERO).unwrap();
+
+        let rec = b.finish_synthetic(80, 24).unwrap();
+        let events = &rec.trace().events;
+        assert_eq!(events.len(), 1, "leading beat must not emit an event");
+        assert!(
+            (events[0].time_s - 0.100).abs() < f64::EPSILON,
+            "first event time_s ({}) must include the 100 ms leading beat",
+            events[0].time_s,
+        );
+    }
+
+    /// Multiple leading beats accumulate.
+    #[test]
+    fn multiple_leading_beats_sum_into_first_event_time() {
+        let mut b = TraceBuilder::new();
+        b.record_beat(Dwell::from_millis(30)).unwrap();
+        b.record_beat(Dwell::from_millis(70)).unwrap();
+        b.record_output(b"X".to_vec(), Dwell::ZERO).unwrap();
+
+        let rec = b.finish_synthetic(80, 24).unwrap();
+        assert!((rec.trace().events[0].time_s - 0.100).abs() < f64::EPSILON);
+    }
+
     #[test]
     fn record_resize_emits_asciicast_resize_event() {
         let mut b = TraceBuilder::new();
@@ -515,6 +581,47 @@ mod tests {
             )
             .unwrap_err();
         assert!(err.to_string().contains("predicate"));
+    }
+
+    /// Regression: a failed predicate previously left the matched-
+    /// against bytes in `accumulated_text`, so a subsequent call's
+    /// predicate would see the rolled-back step's bytes as if they
+    /// had been recorded. The fix snapshots
+    /// `accumulated_text.len()` pre-append and truncates on
+    /// predicate failure.
+    ///
+    /// Test shape: feed "hello" against a predicate that fails
+    /// (looking for "WORLD"). On the next call, assert
+    /// `DoesNotContainText { text: "hello" }` passes against
+    /// payload "X". Post-fix the accumulator is "X" (no "hello") so
+    /// the predicate passes. Pre-fix the accumulator was "helloX"
+    /// and the predicate would have failed — the assertion is
+    /// load-bearing for the rollback.
+    #[test]
+    fn predicate_failure_rolls_back_accumulated_text() {
+        let mut b = TraceBuilder::new();
+        let _ = b
+            .record_step_matching(
+                Vec::new(),
+                b"hello".to_vec(),
+                Dwell::from_millis(1),
+                Some(Predicate::ContainsText {
+                    text: "WORLD".into(),
+                }),
+            )
+            .unwrap_err();
+
+        // Pre-fix this would Err — "helloX" contains "hello".
+        // Post-fix this passes — accumulator is just "X".
+        b.record_step_matching(
+            Vec::new(),
+            b"X".to_vec(),
+            Dwell::from_millis(1),
+            Some(Predicate::DoesNotContainText {
+                text: "hello".into(),
+            }),
+        )
+        .unwrap();
     }
 
     #[test]

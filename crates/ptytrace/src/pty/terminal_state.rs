@@ -173,7 +173,13 @@ pub(super) const fn viewport_restore_sequence() -> &'static [u8] {
 pub(super) struct RestoreGuard {
     fd: RawFd,
     sequence: &'static [u8],
-    _signal_handlers: Option<SignalHandlers>,
+    // `Option` so `Drop` can `.take()` it and force the handler
+    // teardown to happen BEFORE clearing the async-signal-safe
+    // atomics. The implicit field-drop order would run the
+    // restore-fd write and atomic clears between the user-visible
+    // Drop body and the handlers' own Drop, which is not the
+    // ordering the async-signal-safe contract requires.
+    signal_handlers: Option<SignalHandlers>,
 }
 
 impl RestoreGuard {
@@ -181,6 +187,15 @@ impl RestoreGuard {
     /// path on `fd`. See `INVARIANT_SIGNAL_RESTORE_FD_IS_STABLE`
     /// above: the fd is set once here and cleared once on drop, and
     /// only one `RestoreGuard` may be alive at a time.
+    ///
+    /// Install order: signal handlers FIRST, then atomics. A signal
+    /// arriving between handler installation and atomic stores would
+    /// find a still-clear fd and return harmlessly. The reverse order
+    /// would leave atomics armed with no handler to consume them — if
+    /// `SignalHandlers::install` returned `None` (sigaction failure),
+    /// the atomics would stay non-zero indefinitely and a subsequent
+    /// `RestoreGuard::new` would see `GUARD_COUNT` > 0 and the stale
+    /// atomic values until the failed guard's Drop runs.
     ///
     /// # Panics
     /// If another `RestoreGuard` is already alive in this process.
@@ -205,13 +220,22 @@ impl RestoreGuard {
         );
         #[cfg(test)]
         let _ = previous;
-        clear_termination_request();
-        SIGNAL_RESTORE_FD.store(fd, Ordering::SeqCst);
-        SIGNAL_RESTORE_SEQUENCE.store(sequence_kind(sequence), Ordering::SeqCst);
+        // Install handlers first; only arm the async-signal-safe
+        // atomics after the handler is in place to read them. If
+        // install returned `None` (sigaction failure in cfg(not(test))
+        // or the cfg(test) stub), skip the atomic stores entirely —
+        // there is no handler to consume the armed state, so leaving
+        // the atomics at their default (-1 / NO_SEQUENCE) is correct.
+        let handlers = SignalHandlers::install();
+        if handlers.is_some() {
+            clear_termination_request();
+            SIGNAL_RESTORE_FD.store(fd, Ordering::SeqCst);
+            SIGNAL_RESTORE_SEQUENCE.store(sequence_kind(sequence), Ordering::SeqCst);
+        }
         Self {
             fd,
             sequence,
-            _signal_handlers: SignalHandlers::install(),
+            signal_handlers: handlers,
         }
     }
 }
@@ -219,6 +243,20 @@ impl RestoreGuard {
 impl Drop for RestoreGuard {
     fn drop(&mut self) {
         restore_fd_best_effort(self.fd, self.sequence);
+        // Uninstall handlers BEFORE clearing atomics. After
+        // `signal_handlers.take()` is dropped, the `SignalHandlers`
+        // Drop has restored the previous sigactions, so no
+        // termination signal can land in our async-signal-safe
+        // handler past this point. Only then is it safe to zero the
+        // atomics — if we zeroed first, a signal racing between the
+        // store and the handler-uninstall would load fd=-1 and
+        // return early. Currently safe by accident; this ordering
+        // makes "no handler can fire" the explicit precondition for
+        // clearing the atomics. `let _ = ...` drops at end of
+        // statement (unlike `let _x = ...` which holds the binding
+        // until scope end) — verified by the cfg(test) build, which
+        // has a unit `SignalHandlers` and is lint-clean here.
+        let _ = self.signal_handlers.take();
         SIGNAL_RESTORE_FD.store(-1, Ordering::SeqCst);
         SIGNAL_RESTORE_SEQUENCE.store(NO_SEQUENCE, Ordering::SeqCst);
         clear_termination_request();
