@@ -204,10 +204,13 @@ struct ResizeBody {
     rows: u16,
 }
 
-/// One-shot status frame emitted to the browser immediately after the
-/// WebSocket handshake. The viewer uses it to render a small badge
-/// (room address + read-only pill) and to refresh that badge on every
-/// reconnect.
+/// One-shot status frame emitted to the browser only after the
+/// upstream ptyroom hello has been validated. The viewer uses it to
+/// render a small badge (room address + read-only pill) and to refresh
+/// that badge on every reconnect. Receiving this frame is the
+/// browser's signal that the bridge is fully wired through to the
+/// host — if upstream is unreachable the WebSocket closes with
+/// status 1011 instead.
 #[derive(Debug, Serialize)]
 struct StatusFrame<'a> {
     status: &'static str,
@@ -274,19 +277,30 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
-async fn bridge_socket(socket: WebSocket, room_addr: SocketAddr, read_only: bool) -> Result<()> {
-    let tcp = TcpStream::connect(room_addr)
-        .await
-        .with_context(|| format!("connect ptyroom host at {room_addr}"))?;
-    tcp.set_nodelay(true).ok();
-    let (tcp_read, tcp_write) = tcp.into_split();
-
-    // Send the client hello so the host marks this connection ready.
-    let mut tcp_write = tcp_write;
-    tcp_write
-        .write_all(&protocol::encode_hello_control())
-        .await
-        .context("send ptyroom hello")?;
+async fn bridge_socket(
+    mut socket: WebSocket,
+    room_addr: SocketAddr,
+    read_only: bool,
+) -> Result<()> {
+    // Phase 1: upstream connect + hello handshake. Any failure here
+    // closes the WebSocket with a status code so the browser can tell
+    // a real "connected" event apart from a half-open bridge. The
+    // status frame is *only* emitted after the server's hello has
+    // been validated.
+    let (handshaked, tcp_write) = match connect_and_handshake(room_addr).await {
+        Ok(pair) => pair,
+        Err(err) => {
+            warn!(%room_addr, error = %err, "ptyweb upstream handshake failed");
+            let _ = socket
+                .send(Message::Close(Some(axum::extract::ws::CloseFrame {
+                    // 1011 = server error / unexpected condition.
+                    code: 1011,
+                    reason: "ptyroom upstream unavailable".into(),
+                })))
+                .await;
+            return Err(err);
+        }
+    };
 
     // Channels carry messages from the WS reader to the TCP writer
     // and from the TCP reader to the WS writer. Splitting the WS lets
@@ -297,9 +311,9 @@ async fn bridge_socket(socket: WebSocket, room_addr: SocketAddr, read_only: bool
 
     let (ws_sink, ws_stream) = socket.split();
 
-    // One-shot status frame so the viewer can render a badge and tell
-    // a fresh connection apart from a reconnect. Failure to enqueue
-    // here is non-fatal — the channel is brand-new and oversized.
+    // Phase 2: now that upstream is fully ready, tell the browser.
+    // Failure to enqueue is non-fatal — the channel is brand-new and
+    // oversized.
     let status = StatusFrame {
         status: "connected",
         room: &room_addr.to_string(),
@@ -309,7 +323,7 @@ async fn bridge_socket(socket: WebSocket, room_addr: SocketAddr, read_only: bool
         let _ = ws_tx_send.send(WsOut::Text(text)).await;
     }
 
-    let tcp_to_ws = tokio::spawn(tcp_to_ws_loop(tcp_read, ws_tx_send.clone()));
+    let tcp_to_ws = tokio::spawn(tcp_to_ws_loop(handshaked, ws_tx_send.clone()));
     let tcp_writer = tokio::spawn(tcp_writer_loop(tcp_write, pty_tx_recv, resize_rx));
     let ws_writer = tokio::spawn(ws_writer_loop(ws_sink, ws_tx_recv));
     let ws_reader = tokio::spawn(ws_reader_loop(ws_stream, pty_tx_send, resize_tx, read_only));
@@ -339,16 +353,37 @@ enum WsOut {
     Text(String),
 }
 
-async fn tcp_to_ws_loop(
-    mut tcp_read: tokio::net::tcp::OwnedReadHalf,
-    ws_tx: mpsc::Sender<WsOut>,
-) -> Result<()> {
+/// Phase 1 of `bridge_socket`: TCP connect, send our hello, wait for
+/// the server's hello and validate its protocol version. Any leftover
+/// post-hello bytes from the initial read are preserved inside the
+/// returned `ServerStream` so the main loop sees a continuous event
+/// sequence with no gap.
+async fn connect_and_handshake(
+    room_addr: SocketAddr,
+) -> Result<(HandshakedReader, tokio::net::tcp::OwnedWriteHalf)> {
+    let tcp = TcpStream::connect(room_addr)
+        .await
+        .with_context(|| format!("connect ptyroom host at {room_addr}"))?;
+    tcp.set_nodelay(true).ok();
+    let (mut tcp_read, mut tcp_write) = tcp.into_split();
+    tcp_write
+        .write_all(&protocol::encode_hello_control())
+        .await
+        .context("send ptyroom hello")?;
+
     let mut stream = ServerStream::default();
+    let mut pending_output: Vec<Vec<u8>> = Vec::new();
     let mut buf = vec![0_u8; TCP_READ_BUF];
-    loop {
-        let n = tcp_read.read(&mut buf).await.context("read ptyroom host")?;
+    let mut got_hello = false;
+    while !got_hello {
+        let n = tcp_read
+            .read(&mut buf)
+            .await
+            .context("read ptyroom host hello")?;
         if n == 0 {
-            return Ok(());
+            return Err(anyhow::anyhow!(
+                "ptyroom host closed connection before hello",
+            ));
         }
         for event in stream.push(&buf[..n]) {
             match event {
@@ -359,6 +394,59 @@ async fn tcp_to_ws_loop(
                             protocol::VERSION
                         ));
                     }
+                    got_hello = true;
+                }
+                ServerEvent::Output(bytes) => pending_output.push(bytes),
+                ServerEvent::Size(_) => {}
+            }
+        }
+    }
+
+    Ok((
+        HandshakedReader {
+            tcp_read,
+            stream,
+            pending_output,
+        },
+        tcp_write,
+    ))
+}
+
+/// Carries the TCP read half plus the partially-consumed
+/// `ServerStream` from the handshake into the steady-state loop.
+struct HandshakedReader {
+    tcp_read: tokio::net::tcp::OwnedReadHalf,
+    stream: ServerStream,
+    pending_output: Vec<Vec<u8>>,
+}
+
+async fn tcp_to_ws_loop(handshaked: HandshakedReader, ws_tx: mpsc::Sender<WsOut>) -> Result<()> {
+    let HandshakedReader {
+        mut tcp_read,
+        mut stream,
+        pending_output,
+    } = handshaked;
+    // Drain anything the handshake read past the server hello first
+    // so the browser sees those bytes before any new TCP data.
+    for bytes in pending_output {
+        if ws_tx.send(WsOut::Binary(bytes)).await.is_err() {
+            return Ok(());
+        }
+    }
+    let mut buf = vec![0_u8; TCP_READ_BUF];
+    loop {
+        let n = tcp_read.read(&mut buf).await.context("read ptyroom host")?;
+        if n == 0 {
+            return Ok(());
+        }
+        for event in stream.push(&buf[..n]) {
+            match event {
+                ServerEvent::Hello(version) => {
+                    // A second hello on an already-handshaked stream
+                    // is a protocol error; close the bridge.
+                    return Err(anyhow::anyhow!(
+                        "unexpected second ptyroom hello (version {version})"
+                    ));
                 }
                 ServerEvent::Output(bytes) => {
                     if ws_tx.send(WsOut::Binary(bytes)).await.is_err() {
