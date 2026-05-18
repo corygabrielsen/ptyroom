@@ -234,9 +234,15 @@ impl PtyRecord {
     /// Unsupported schema version, invalid base64, hash mismatch,
     /// malformed trace, stale text projection, or witness mismatch.
     pub fn validate(&self) -> anyhow::Result<()> {
-        if self.version != PTYRECORD_VERSION {
+        if self.version > PTYRECORD_VERSION {
             anyhow::bail!(
-                "unsupported ptyrecord version {} (this build supports v{PTYRECORD_VERSION})",
+                "ptyrecord version {} not supported by this reader (max supported: {PTYRECORD_VERSION}); upgrade ptyrecord or write with --bundle-version {PTYRECORD_VERSION}",
+                self.version
+            );
+        }
+        if self.version < 1 {
+            anyhow::bail!(
+                "unsupported ptyrecord version {} (minimum supported: 1)",
                 self.version
             );
         }
@@ -641,7 +647,8 @@ mod tests {
         std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
 
         let err = PtyRecord::read(&path).unwrap_err().to_string();
-        assert!(err.contains("unsupported ptyrecord version"));
+        assert!(err.contains("ptyrecord version 999 not supported by this reader"));
+        assert!(err.contains("max supported: 1"));
     }
 
     #[test]
