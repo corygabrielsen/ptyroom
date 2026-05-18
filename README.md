@@ -2,7 +2,7 @@
 
 `ptyroom` is a shared terminal room that leaves behind a durable trace.
 Start one PTY, let other terminals join it, and keep the result as a
-`.ptytrace` artifact that can be rendered, verified, or bundled later.
+`.ptyrecord` bundle that can be rendered, verified, or unpacked later.
 
 It is deliberately smaller than tmux: there is one shared PTY, one shared
 view, and intentionally merged input. That makes it useful for demos,
@@ -11,7 +11,7 @@ pairing, debugging, teaching, and chaotic "everyone can type" sessions.
 The top-level command is `ptyroom`:
 
 ```bash
-ptyroom host --listen 127.0.0.1:7373 --out /tmp/room.ptytrace bash
+ptyroom host --listen 127.0.0.1:7373 --out /tmp/room.ptyrecord bash
 ptyroom join 127.0.0.1:7373
 ```
 
@@ -69,7 +69,7 @@ Host a local room:
 ```bash
 ptyroom host \
     --listen 127.0.0.1:7373 \
-    --out /tmp/ptyroom-demo.ptytrace \
+    --out /tmp/ptyroom-demo.ptyrecord \
     --cols 100 \
     --rows 30 \
     bash
@@ -107,9 +107,16 @@ smallest active rendering terminal size, and joined terminals reserve one
 local status row that is not part of the remote PTY. This keeps zoomed-in
 participants from seeing a broken oversized layout.
 
-When the room ends, the output path is a normal trace:
+When the room ends, the output is a `.ptyrecord` bundle. Pass
+`--trace-out` to also drop a raw `.ptytrace` sidecar that `ptyrender`
+can consume directly:
 
 ```bash
+ptyroom host \
+    --listen 127.0.0.1:7373 \
+    --out /tmp/ptyroom-demo.ptyrecord \
+    --trace-out /tmp/ptyroom-demo.ptytrace \
+    bash
 ptyrender /tmp/ptyroom-demo.ptytrace room.gif
 ```
 
@@ -172,7 +179,7 @@ trace artifacts.
 The four Cargo packages mirror the data flow:
 
 ```text
-ptyroom   -> .ptytrace
+ptyroom   -> .ptyrecord bundle
 ptytrace  -> .ptytrace
 ptyrender -> media + witness
 ptyrecord -> .ptyrecord bundle

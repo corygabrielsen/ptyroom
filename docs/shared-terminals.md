@@ -6,7 +6,7 @@
 ```bash
 ptyroom host \
     --listen 127.0.0.1:7373 \
-    --out /tmp/room.ptytrace \
+    --out /tmp/room.ptyrecord \
     --cols 100 \
     --rows 30 \
     bash
@@ -42,7 +42,8 @@ Terminal 1:
 ```bash
 ptyroom host \
     --listen 127.0.0.1:7373 \
-    --out /tmp/ptyroom-demo.ptytrace \
+    --out /tmp/ptyroom-demo.ptyrecord \
+    --trace-out /tmp/ptyroom-demo.ptytrace \
     --cols 100 \
     --rows 30 \
     --no-local-input \
@@ -60,7 +61,8 @@ terminal programs: `bash`, `vim`, `htop`, a REPL, or any CLI that behaves
 inside a PTY. End the child shell with `exit`, or detach an individual
 join client with `Ctrl-] .`.
 
-When the host exits, the trace path from `--out` can be rendered:
+When the host exits, the sidecar trace from `--trace-out` can be
+rendered directly:
 
 ```bash
 ptyrender /tmp/ptyroom-demo.ptytrace room.gif
