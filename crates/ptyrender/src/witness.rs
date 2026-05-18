@@ -691,18 +691,40 @@ pub(crate) fn utf8_file_name(path: &Path) -> anyhow::Result<String> {
         .map(str::to_string)
 }
 
-/// Hex-encoded SHA-256 of a byte slice.
+/// Raw SHA-256 digest of a byte slice.
+///
+/// Comparing digests as `[u8; 32]` avoids the per-nibble formatter work
+/// that [`sha256_hex`] does and lets callers compare two hashes in 32
+/// bytes of `==` instead of allocating two 64-byte hex Strings just to
+/// throw them away.
 #[must_use]
-pub fn sha256_hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
+pub fn sha256_bytes(bytes: &[u8]) -> [u8; 32] {
     let mut h = Sha256::new();
     h.update(bytes);
-    let digest = h.finalize();
-    let mut s = String::with_capacity(digest.len() * 2);
-    for b in digest {
-        write!(&mut s, "{b:02x}").expect("infallible String fmt");
+    h.finalize().into()
+}
+
+/// Hex-encoded SHA-256 of a byte slice. Thin formatting wrapper around
+/// [`sha256_bytes`]; use the raw form for in-process equality checks
+/// and reserve the hex form for serialized fields.
+#[must_use]
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    hex_encode(&sha256_bytes(bytes))
+}
+
+/// Lowercase hex-encode a 32-byte digest without pulling in the `hex`
+/// crate. Writes each byte as two lowercase nibbles directly into a
+/// pre-sized String, avoiding the per-nibble `write!` formatter calls
+/// the previous `sha256_hex` paid for every digest.
+#[must_use]
+fn hex_encode(digest: &[u8; 32]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(64);
+    for &b in digest {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
     }
-    s
+    out
 }
 
 fn detect_ffmpeg_version() -> anyhow::Result<String> {

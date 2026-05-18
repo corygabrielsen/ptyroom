@@ -98,7 +98,9 @@ fn run_replay(args: &ReplayArgs) -> anyhow::Result<()> {
         std::fs::write(&path, json)?;
     }
     let timing_path = args.snaps_dir.join("timing.json");
-    let timing_json = serde_json::to_vec_pretty(&timing)?;
+    // Machine-consumed by downstream pipeline stages; skip the pretty
+    // formatter to drop ~20-30% encoding overhead at large frame counts.
+    let timing_json = serde_json::to_vec(&timing)?;
     std::fs::write(&timing_path, timing_json)?;
     Ok(())
 }

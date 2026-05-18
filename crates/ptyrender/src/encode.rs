@@ -252,7 +252,11 @@ fn run_ffmpeg(cmd: &mut Command) -> anyhow::Result<()> {
 fn build_concat(frames_dir: &Path, timing: &[TimingEntry]) -> anyhow::Result<String> {
     use std::fmt::Write as _;
 
-    let mut s = String::new();
+    // Per-frame output is roughly: `file '<path>'\nduration X.XXXX\n`.
+    // For typical absolute paths (~50-90 chars) plus the duration line,
+    // 120 bytes/entry is a reasonable over-estimate that fits within
+    // one allocation even for long traces.
+    let mut s = String::with_capacity(timing.len() * 120);
     for entry in timing {
         let png = frames_dir.join(format!("{}.png", entry.frame));
         if !png.exists() {

@@ -355,7 +355,7 @@ impl TraceBuilder {
         // The `PTYTRACE_DEBUG_PLATEAU` env var enables an
         // opt-in stderr trace for callers diagnosing unexpected
         // collisions.
-        let mut events = Vec::new();
+        let mut events = Vec::with_capacity(self.steps.len());
         // `leading_dwell_ns` is the sum of any `record_beat` dwells
         // pushed before the first real step. Seeding `t_ns` with it
         // lets pre-event idle time appear in the first event's
@@ -363,7 +363,12 @@ impl TraceBuilder {
         let mut t_ns: u64 = self.leading_dwell_ns;
         let debug_plateau = std::env::var_os("PTYTRACE_DEBUG_PLATEAU").is_some();
         let mut last_t_ns: Option<u64> = None;
-        for (idx, step) in self.steps.iter().enumerate() {
+        // `finish` consumes `self`; drain `steps` by value so each
+        // step's `data` String moves directly into its TraceEvent
+        // instead of being cloned. The old loop walked `iter()` and
+        // cloned every event payload, which is wasted work on traces
+        // with large output chunks.
+        for (idx, step) in self.steps.into_iter().enumerate() {
             if debug_plateau && last_t_ns == Some(t_ns) {
                 eprintln!(
                     "[ptytrace] zero-dwell timestamp plateau at event {idx}: \
@@ -371,13 +376,14 @@ impl TraceBuilder {
                     ns_to_seconds(t_ns)
                 );
             }
+            let dwell_ns = step.dwell.as_nanos();
             events.push(TraceEvent {
                 time_s: ns_to_seconds(t_ns),
                 kind: step.kind,
-                data: step.data.clone(),
+                data: step.data,
             });
             last_t_ns = Some(t_ns);
-            t_ns = t_ns.saturating_add(step.dwell.as_nanos());
+            t_ns = t_ns.saturating_add(dwell_ns);
         }
 
         Ok(Recording {
