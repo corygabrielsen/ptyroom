@@ -41,7 +41,7 @@ use axum::routing::get;
 use futures_util::{SinkExt, StreamExt};
 use ptyroom::protocol::{self, TerminalSize};
 use ptyroom::stream::{ServerEvent, ServerStream};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
@@ -53,6 +53,10 @@ pub const VIEWER_INDEX_HTML: &str = include_str!("viewer/index.html");
 pub const VIEWER_JS: &str = include_str!("viewer/viewer.js");
 pub const XTERM_JS: &str = include_str!("viewer/xterm.js");
 pub const XTERM_CSS: &str = include_str!("viewer/xterm.css");
+/// `xterm-addon-fit` 0.8.0 (MIT, <https://github.com/xtermjs/xterm.js>).
+/// Pairs with the vendored xterm.js 5.3.0; sizes the terminal grid to
+/// the host element instead of guessing from a fixed cell estimate.
+pub const XTERM_ADDON_FIT_JS: &str = include_str!("viewer/xterm-addon-fit.js");
 
 /// HTTP header the reverse proxy uses to authenticate to ptyweb.
 pub const AUTH_HEADER: &str = "X-PtyWeb-Auth";
@@ -99,6 +103,7 @@ pub fn router(config: Config) -> Router {
         .route("/viewer.js", get(serve_viewer_js))
         .route("/xterm.js", get(serve_xterm_js))
         .route("/xterm.css", get(serve_xterm_css))
+        .route("/xterm-addon-fit.js", get(serve_xterm_addon_fit_js))
         .route("/healthz", get(serve_health))
         .route("/ws", get(ws_handler))
         .with_state(state)
@@ -148,6 +153,14 @@ async fn serve_xterm_css(State(cfg): State<Arc<Config>>) -> Response {
     static_response(cfg.as_ref(), "text/css; charset=utf-8", XTERM_CSS)
 }
 
+async fn serve_xterm_addon_fit_js(State(cfg): State<Arc<Config>>) -> Response {
+    static_response(
+        cfg.as_ref(),
+        "application/javascript; charset=utf-8",
+        XTERM_ADDON_FIT_JS,
+    )
+}
+
 async fn serve_health() -> &'static str {
     "ok"
 }
@@ -184,6 +197,17 @@ struct ResizeMsg {
 struct ResizeBody {
     cols: u16,
     rows: u16,
+}
+
+/// One-shot status frame emitted to the browser immediately after the
+/// WebSocket handshake. The viewer uses it to render a small badge
+/// (room address + read-only pill) and to refresh that badge on every
+/// reconnect.
+#[derive(Debug, Serialize)]
+struct StatusFrame<'a> {
+    status: &'static str,
+    room: &'a str,
+    read_only: bool,
 }
 
 async fn ws_handler(
@@ -268,6 +292,18 @@ async fn bridge_socket(socket: WebSocket, room_addr: SocketAddr, read_only: bool
 
     let (ws_sink, ws_stream) = socket.split();
 
+    // One-shot status frame so the viewer can render a badge and tell
+    // a fresh connection apart from a reconnect. Failure to enqueue
+    // here is non-fatal — the channel is brand-new and oversized.
+    let status = StatusFrame {
+        status: "connected",
+        room: &room_addr.to_string(),
+        read_only,
+    };
+    if let Ok(text) = serde_json::to_string(&status) {
+        let _ = ws_tx_send.send(WsOut::Text(text)).await;
+    }
+
     let tcp_to_ws = tokio::spawn(tcp_to_ws_loop(tcp_read, ws_tx_send.clone()));
     let tcp_writer = tokio::spawn(tcp_writer_loop(tcp_write, pty_tx_recv, resize_rx));
     let ws_writer = tokio::spawn(ws_writer_loop(ws_sink, ws_tx_recv));
@@ -295,6 +331,7 @@ fn log_task_exit(label: &str, res: Result<Result<()>, tokio::task::JoinError>) {
 /// Frame to send over the WebSocket back to the browser.
 enum WsOut {
     Binary(Vec<u8>),
+    Text(String),
 }
 
 async fn tcp_to_ws_loop(
@@ -360,6 +397,7 @@ async fn ws_writer_loop(
     while let Some(out) = rx.recv().await {
         let msg = match out {
             WsOut::Binary(bytes) => Message::Binary(bytes.into()),
+            WsOut::Text(text) => Message::Text(text.into()),
         };
         ws_sink.send(msg).await.context("ws send")?;
     }
@@ -549,18 +587,71 @@ mod tests {
         let _ = server.await;
     }
 
-    /// Minimal raw-WebSocket client sufficient to read the first
-    /// binary frame ptyweb sends. Avoids pulling in a full WS client
-    /// dep just for one assertion.
-    async fn bridge_smoke_collect(addr: SocketAddr) -> Vec<u8> {
+    /// Connect-time JSON status frame announces the room and the
+    /// read-only flag so the viewer can render its badge without
+    /// guessing at the URL.
+    #[tokio::test]
+    async fn bridge_emits_status_frame_on_connect() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let room_addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut hello = [0_u8; 32];
+            let _ = sock.read(&mut hello).await.unwrap();
+            sock.write_all(&protocol::encode_hello_control())
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        });
+
+        let cfg = Config {
+            room_addr,
+            listen_addr: "127.0.0.1:0".parse().unwrap(),
+            auth_secret: None,
+            allowed_origin: None,
+            read_only: true,
+        };
+        let app = super::router(cfg);
+        let ws_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_addr = ws_listener.local_addr().unwrap();
+        let serve_task = tokio::spawn(async move {
+            axum::serve(
+                ws_listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+
+        let (opcode, payload) = read_one_frame(ws_addr).await;
+        assert_eq!(opcode, 0x1, "expected text frame, got opcode {opcode}");
+        let text = std::str::from_utf8(&payload).unwrap();
+        let json: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(json["status"], "connected");
+        assert_eq!(json["room"], room_addr.to_string());
+        assert_eq!(json["read_only"], true);
+
+        serve_task.abort();
+        let _ = server.await;
+    }
+
+    /// Minimal raw-WebSocket client sufficient to read framed
+    /// payloads ptyweb sends. Returns `(opcode, payload)` for one
+    /// server → client frame. Avoids pulling in a full WS client dep
+    /// just for one assertion.
+    async fn read_one_frame(addr: SocketAddr) -> (u8, Vec<u8>) {
         use tokio::net::TcpStream;
         let mut stream = TcpStream::connect(addr).await.unwrap();
+        complete_handshake(&mut stream, addr).await;
+        read_frame(&mut stream).await
+    }
+
+    async fn complete_handshake(stream: &mut tokio::net::TcpStream, addr: SocketAddr) {
         let key = "dGhlIHNhbXBsZSBub25jZQ=="; // RFC 6455 example key
         let req = format!(
             "GET /ws HTTP/1.1\r\nHost: {addr}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n",
         );
         stream.write_all(req.as_bytes()).await.unwrap();
-        // Read until end of headers.
         let mut headers = Vec::new();
         let mut byte = [0_u8; 1];
         while !headers.windows(4).any(|w| w == b"\r\n\r\n") {
@@ -568,12 +659,12 @@ mod tests {
             assert!(n != 0, "server closed before handshake completed");
             headers.push(byte[0]);
         }
-        // Read one frame header + payload. We only handle small
-        // unmasked binary frames (server → client per RFC 6455).
+    }
+
+    async fn read_frame(stream: &mut tokio::net::TcpStream) -> (u8, Vec<u8>) {
         let mut hdr = [0_u8; 2];
         stream.read_exact(&mut hdr).await.unwrap();
         let opcode = hdr[0] & 0x0F;
-        assert_eq!(opcode, 0x2, "expected binary frame, got opcode {opcode}");
         let len = usize::from(hdr[1] & 0x7F);
         let len = if len == 126 {
             let mut ext = [0_u8; 2];
@@ -588,7 +679,24 @@ mod tests {
         };
         let mut payload = vec![0_u8; len];
         stream.read_exact(&mut payload).await.unwrap();
-        payload
+        (opcode, payload)
+    }
+
+    /// Collect frames until a binary one arrives, skipping the
+    /// connect-time status text frame and anything else advisory.
+    async fn bridge_smoke_collect(addr: SocketAddr) -> Vec<u8> {
+        use tokio::net::TcpStream;
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        complete_handshake(&mut stream, addr).await;
+        for _ in 0..8 {
+            let (opcode, payload) = read_frame(&mut stream).await;
+            match opcode {
+                0x2 => return payload,
+                0x1 => {} // text frame — status / advisory; skip
+                other => panic!("unexpected opcode {other}"),
+            }
+        }
+        panic!("no binary frame within 8 reads");
     }
 
     /// Smoke test that `bridge_socket` returns when the host hangs up

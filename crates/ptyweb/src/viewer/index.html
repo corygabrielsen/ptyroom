@@ -24,20 +24,56 @@
         border: 1px solid #333;
         border-radius: 3px;
         display: none;
+        z-index: 10;
       }
       #status.show {
         display: block;
       }
+      #badge {
+        position: fixed;
+        top: 6px;
+        right: 8px;
+        padding: 2px 8px;
+        font-size: 12px;
+        background: rgba(20, 20, 20, 0.75);
+        border: 1px solid #333;
+        border-radius: 3px;
+        display: none;
+        z-index: 9;
+      }
+      #badge.show {
+        display: block;
+      }
+      #badge .room {
+        color: #9cdcfe;
+      }
+      #badge .ro {
+        display: inline-block;
+        margin-left: 6px;
+        padding: 0 4px;
+        background: #5a1f1f;
+        color: #ffb4b4;
+        border-radius: 2px;
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
       #term {
         height: 100%;
         width: 100%;
+        transition: opacity 150ms ease;
+      }
+      #term.disconnected {
+        opacity: 0.6;
       }
     </style>
   </head>
   <body>
+    <div id="badge"></div>
     <div id="status"></div>
     <div id="term"></div>
     <script src="xterm.js"></script>
+    <script src="xterm-addon-fit.js"></script>
     <script src="viewer.js"></script>
   </body>
 </html>

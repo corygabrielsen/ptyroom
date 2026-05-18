@@ -4,10 +4,11 @@
 //   browser -> server : binary frame  = raw keystroke bytes
 //                       text frame    = JSON  {"resize": {"cols": N, "rows": N}}
 //   server -> browser : binary frame  = raw PTY output bytes
-//                       text frame    = JSON  status/resize echo (advisory)
+//                       text frame    = JSON  {"status": "connected", "room": "...", "read_only": bool}
 
 (function () {
   const statusEl = document.getElementById("status");
+  const badgeEl = document.getElementById("badge");
   const termEl = document.getElementById("term");
 
   const term = new Terminal({
@@ -18,7 +19,22 @@
     scrollback: 5000,
     theme: { background: "#000000", foreground: "#dddddd" },
   });
+  const fitAddon = new FitAddon.FitAddon();
+  term.loadAddon(fitAddon);
   term.open(termEl);
+  // Initial fit picks up real cell dimensions now that the terminal
+  // is in the DOM and the renderer has measured its glyphs.
+  safeFit();
+
+  function safeFit() {
+    try {
+      fitAddon.fit();
+    } catch (_) {
+      // fit() can throw before xterm has measured cells (e.g. when the
+      // terminal element is hidden). Geometry will catch up on the next
+      // ResizeObserver tick.
+    }
+  }
 
   function setStatus(msg) {
     if (!msg) {
@@ -30,27 +46,39 @@
     statusEl.classList.add("show");
   }
 
-  function approximateGeometry() {
-    // Without xterm-addon-fit (kept out to stay vendor-light) we fall
-    // back to a coarse character-cell estimate from the current font.
-    const charWidth = 8;
-    const charHeight = 17;
-    const cols = Math.max(20, Math.floor(window.innerWidth / charWidth));
-    const rows = Math.max(5, Math.floor(window.innerHeight / charHeight));
-    return { cols, rows };
+  function renderBadge(info) {
+    if (!info || !info.room) {
+      badgeEl.classList.remove("show");
+      badgeEl.textContent = "";
+      return;
+    }
+    badgeEl.textContent = "";
+    const room = document.createElement("span");
+    room.className = "room";
+    room.textContent = info.room;
+    badgeEl.appendChild(room);
+    if (info.read_only) {
+      const pill = document.createElement("span");
+      pill.className = "ro";
+      pill.textContent = "read-only";
+      badgeEl.appendChild(pill);
+    }
+    badgeEl.classList.add("show");
   }
 
   let ws = null;
   let backoffMs = 1000;
   const BACKOFF_MAX = 30000;
   let lastGeom = { cols: 0, rows: 0 };
+  let everConnected = false;
 
   function sendResize() {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    const { cols, rows } = approximateGeometry();
+    safeFit();
+    const cols = term.cols;
+    const rows = term.rows;
     if (cols === lastGeom.cols && rows === lastGeom.rows) return;
     lastGeom = { cols, rows };
-    term.resize(cols, rows);
     try {
       ws.send(JSON.stringify({ resize: { cols, rows } }));
     } catch (_) {
@@ -68,20 +96,39 @@
     ws.onopen = () => {
       backoffMs = 1000;
       setStatus("");
+      termEl.classList.remove("disconnected");
+      if (everConnected) {
+        term.writeln("");
+        term.writeln("\x1b[2m[reconnected]\x1b[0m");
+      }
+      everConnected = true;
       lastGeom = { cols: 0, rows: 0 };
       sendResize();
     };
 
     ws.onmessage = (ev) => {
       if (typeof ev.data === "string") {
-        // Server-side advisory JSON (status, resize echo). Currently
-        // ignored by the viewer — kept reserved for future extensions.
+        // Server status frame. Parse and refresh the badge; ignore
+        // anything we don't recognise (forward-compat).
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg && msg.status === "connected") {
+            renderBadge({ room: msg.room, read_only: !!msg.read_only });
+          }
+        } catch (_) {
+          /* malformed text frame — ignore */
+        }
         return;
       }
       term.write(new Uint8Array(ev.data));
     };
 
     ws.onclose = () => {
+      termEl.classList.add("disconnected");
+      if (everConnected) {
+        term.writeln("");
+        term.writeln("\x1b[2m[disconnected]\x1b[0m");
+      }
       setStatus("reconnecting in " + Math.round(backoffMs / 1000) + "s…");
       setTimeout(() => {
         backoffMs = Math.min(BACKOFF_MAX, backoffMs * 2);
@@ -105,6 +152,14 @@
     ws.send(enc.encode(data));
   });
 
-  window.addEventListener("resize", sendResize);
+  // Observe the terminal element directly. ResizeObserver fires for
+  // any layout change that affects size, including initial mount,
+  // viewport zoom, and parent reflow — strict superset of `resize`.
+  if (typeof ResizeObserver !== "undefined") {
+    const ro = new ResizeObserver(() => sendResize());
+    ro.observe(termEl);
+  } else {
+    window.addEventListener("resize", sendResize);
+  }
   connect();
 })();
