@@ -100,10 +100,49 @@ impl Config {
     }
 }
 
+/// Internal shared state mounted on the router. Wraps [`Config`] with
+/// values derived once at startup so per-request handlers don't
+/// recompute them. The on-connect status frame text in particular is
+/// constant over the lifetime of the server (it only depends on
+/// `room_addr` and `read_only`), so encoding it on every WebSocket
+/// upgrade is wasted JSON work.
+#[derive(Debug)]
+struct AppState {
+    config: Config,
+    /// JSON text of the on-connect [`StatusFrame`], serialized once at
+    /// `router` build time. Serializing here is infallible — both
+    /// fields are plain strings/bools — and the encoded bytes are
+    /// reused verbatim on every WebSocket connect.
+    status_frame_text: String,
+}
+
+impl AppState {
+    fn new(config: Config) -> Self {
+        let status_frame_text = encode_status_frame(&config);
+        Self {
+            config,
+            status_frame_text,
+        }
+    }
+}
+
+fn encode_status_frame(config: &Config) -> String {
+    let frame = StatusFrame {
+        status: "connected",
+        room: &config.room_addr.to_string(),
+        read_only: config.read_only,
+    };
+    // Both fields serialize from owned String / bool; failure here is
+    // a programming error (e.g. a future schema change), not a runtime
+    // condition. Fall back to an empty object so a misconfigured frame
+    // never crashes a healthy bridge.
+    serde_json::to_string(&frame).unwrap_or_else(|_| "{}".to_string())
+}
+
 /// Build the axum [`Router`] that backs ptyweb. Exposed so tests and
 /// embedders can mount the bridge into a larger service tree.
 pub fn router(config: Config) -> Router {
-    let state = Arc::new(config);
+    let state = Arc::new(AppState::new(config));
     Router::new()
         .route("/", get(serve_index))
         .route("/viewer.js", get(serve_viewer_js))
@@ -135,33 +174,33 @@ pub async fn serve(config: Config) -> Result<()> {
     Ok(())
 }
 
-async fn serve_index(State(cfg): State<Arc<Config>>) -> Response {
-    static_response(cfg.as_ref(), "text/html; charset=utf-8", VIEWER_INDEX_HTML)
+async fn serve_index(State(state): State<Arc<AppState>>) -> Response {
+    static_response(&state.config, "text/html; charset=utf-8", VIEWER_INDEX_HTML)
 }
 
-async fn serve_viewer_js(State(cfg): State<Arc<Config>>) -> Response {
+async fn serve_viewer_js(State(state): State<Arc<AppState>>) -> Response {
     static_response(
-        cfg.as_ref(),
+        &state.config,
         "application/javascript; charset=utf-8",
         VIEWER_JS,
     )
 }
 
-async fn serve_xterm_js(State(cfg): State<Arc<Config>>) -> Response {
+async fn serve_xterm_js(State(state): State<Arc<AppState>>) -> Response {
     static_response(
-        cfg.as_ref(),
+        &state.config,
         "application/javascript; charset=utf-8",
         XTERM_JS,
     )
 }
 
-async fn serve_xterm_css(State(cfg): State<Arc<Config>>) -> Response {
-    static_response(cfg.as_ref(), "text/css; charset=utf-8", XTERM_CSS)
+async fn serve_xterm_css(State(state): State<Arc<AppState>>) -> Response {
+    static_response(&state.config, "text/css; charset=utf-8", XTERM_CSS)
 }
 
-async fn serve_xterm_addon_fit_js(State(cfg): State<Arc<Config>>) -> Response {
+async fn serve_xterm_addon_fit_js(State(state): State<Arc<AppState>>) -> Response {
     static_response(
-        cfg.as_ref(),
+        &state.config,
         "application/javascript; charset=utf-8",
         XTERM_ADDON_FIT_JS,
     )
@@ -222,26 +261,30 @@ struct StatusFrame<'a> {
 }
 
 async fn ws_handler(
-    State(cfg): State<Arc<Config>>,
+    State(state): State<Arc<AppState>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
-    if let Err(status) = authorize(&cfg, &headers, peer) {
+    if let Err(status) = authorize(&state.config, &headers, peer) {
         warn!(%peer, status = status.as_u16(), "ptyweb auth rejected");
         return status.into_response();
     }
-    let room_addr = cfg.room_addr;
-    let read_only = cfg.read_only;
-    let cors = cfg.clone();
+    let room_addr = state.config.room_addr;
+    let read_only = state.config.read_only;
+    // Hand the precomputed status frame to the per-connection bridge
+    // by cloning the Arc, not the String — encoding ran once at
+    // router-build time and the bytes are now reused for the lifetime
+    // of the server.
+    let app_state = state.clone();
     let mut response = ws.on_upgrade(move |socket| async move {
-        if let Err(err) = bridge_socket(socket, room_addr, read_only).await {
+        if let Err(err) = bridge_socket(socket, room_addr, read_only, app_state).await {
             warn!(%peer, error = %err, "ptyweb bridge ended with error");
         } else {
             debug!(%peer, "ptyweb bridge closed");
         }
     });
-    apply_cors(cors.as_ref(), response.headers_mut());
+    apply_cors(&state.config, response.headers_mut());
     response
 }
 
@@ -284,6 +327,7 @@ async fn bridge_socket(
     mut socket: WebSocket,
     room_addr: SocketAddr,
     read_only: bool,
+    state: Arc<AppState>,
 ) -> Result<()> {
     // Phase 1: upstream connect + hello handshake. Any failure here
     // closes the WebSocket with a status code so the browser can tell
@@ -316,15 +360,12 @@ async fn bridge_socket(
 
     // Phase 2: now that upstream is fully ready, tell the browser.
     // Failure to enqueue is non-fatal — the channel is brand-new and
-    // oversized.
-    let status = StatusFrame {
-        status: "connected",
-        room: &room_addr.to_string(),
-        read_only,
-    };
-    if let Ok(text) = serde_json::to_string(&status) {
-        let _ = ws_tx_send.send(WsOut::Text(text)).await;
-    }
+    // oversized. `status_frame_text` is precomputed at router-build
+    // time; clone the String once per connect rather than re-running
+    // `serde_json::to_string` against constant inputs.
+    let _ = ws_tx_send
+        .send(WsOut::Text(state.status_frame_text.clone()))
+        .await;
 
     // Own all four loops in a single `JoinSet` so the bridge can both
     // detect the first exit *and* drive the rest to completion before
