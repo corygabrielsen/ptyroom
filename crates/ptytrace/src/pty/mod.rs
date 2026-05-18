@@ -21,6 +21,7 @@ mod drainer;
 mod input_router;
 mod keys;
 mod live;
+mod op;
 mod osc;
 mod process;
 mod status_bar;
@@ -31,6 +32,7 @@ mod viewport;
 pub use drainer::WatchHandle;
 pub use keys::Key;
 pub use live::{CaptureEvent, CaptureOpts, CaptureSink, capture, capture_with_sink};
+pub use op::{PtyOp, WaitedCapture};
 pub use osc::StubColors;
 
 use std::path::{Path, PathBuf};
@@ -303,6 +305,20 @@ impl PtyTracer {
     pub fn event_count(&self) -> usize {
         self.recording.event_count()
     }
+
+    /// Internal accessors used by the [`PtyOp`] builder. Kept
+    /// `pub(super)` so the convenience layer can share IO state with
+    /// the primitive methods without leaking these types into the
+    /// public API.
+    pub(super) fn pty_fd(&self) -> std::os::fd::RawFd {
+        self.pty.fd()
+    }
+    pub(super) fn drainer(&self) -> &Drainer {
+        &self.drainer
+    }
+    pub(super) fn recording_mut(&mut self) -> &mut TraceBuilder {
+        &mut self.recording
+    }
     #[must_use]
     pub fn cols(&self) -> u16 {
         self.cfg.cols
@@ -525,6 +541,29 @@ impl PtyTracer {
         self.send_and_capture_wait_for(bytes, dwell, pattern, timeout, label)
     }
 
+    /// Start a fluent [`PtyOp`] chain for the watch+write+capture
+    /// pattern. The builder enforces arm-before-write ordering and
+    /// terminates with either a plain `.capture(settle)` or a
+    /// content-aware `.expect(timeout, label)` after a `.watch(pattern)`.
+    ///
+    /// The underlying primitives ([`Self::arm_watch`], [`Self::write_bytes`],
+    /// [`Self::capture_after`]) remain available as escape hatches.
+    ///
+    /// ```no_run
+    /// use std::time::Duration;
+    /// use ptytrace::pty::{PtyTracer, PtyTracerConfig};
+    ///
+    /// let mut rec = PtyTracer::spawn(PtyTracerConfig::default(), &["bash"])?;
+    /// let _bytes = rec
+    ///     .op()
+    ///     .write(b"echo hi\n".to_vec())
+    ///     .capture(Duration::from_millis(5))?;
+    /// # Ok::<(), anyhow::Error>(())
+    /// ```
+    pub fn op(&mut self) -> PtyOp<'_> {
+        PtyOp::new(self)
+    }
+
     /// Arm a content-aware sync point: the drainer starts watching the
     /// PTY output stream for `pattern` from this moment forward and
     /// returns a [`WatchHandle`]. Block on `WatchHandle::wait` to sleep
@@ -701,7 +740,7 @@ impl PtyTracer {
         Ok(elapsed)
     }
 
-    fn check_runtime(&self) -> anyhow::Result<()> {
+    pub(super) fn check_runtime(&self) -> anyhow::Result<()> {
         if self.started_at.elapsed() > self.cfg.max_runtime {
             anyhow::bail!(
                 "recording exceeded max_runtime={}ms (child hung or script too long?)",
