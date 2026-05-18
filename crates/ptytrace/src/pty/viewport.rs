@@ -10,7 +10,7 @@ use std::os::fd::RawFd;
 
 use super::room_protocol::TerminalSize;
 use super::status_bar::{self, Bar};
-use super::terminal_state::{RestoreGuard, viewport_restore_sequence};
+use super::terminal_state::{RestoreGuard, child_output_enter_sequence, viewport_restore_sequence};
 
 pub(crate) struct ViewportRenderer {
     stdout_fd: RawFd,
@@ -30,7 +30,14 @@ impl ViewportRenderer {
     pub(crate) fn enter(stdout_fd: RawFd, title: &str, bar: &Bar) -> anyhow::Result<Self> {
         let terminal = terminal_size(stdout_fd).unwrap_or(TerminalSize::new(80, 24));
         let size = remote_view_size(terminal);
-        write_all(stdout_fd, b"\x1b[?1049h\x1b[?25l\x1b[H\x1b[2J")?;
+        // Alt-screen enter must be IMMEDIATELY followed by cursor-home
+        // (`\x1b[H`) — see `ALT_SCREEN_ENTER` and the
+        // `alt_screen_enter_includes_explicit_cursor_home` /
+        // `alt_screen_enter_homes_cursor` tests in `terminal_state.rs`.
+        // Cursor-hide and screen-clear come AFTER the home, never
+        // between the alt-screen enter and the home.
+        write_all(stdout_fd, child_output_enter_sequence())?;
+        write_all(stdout_fd, b"\x1b[?25l\x1b[2J")?;
         write_all(stdout_fd, &set_window_title_sequence(title))?;
         let mut renderer = Self {
             stdout_fd,
@@ -49,6 +56,26 @@ impl ViewportRenderer {
         self.redraw(bar, false)
     }
 
+    /// Update the renderer's parser to match a new canonical size.
+    ///
+    /// `size` is the ALREADY-REDUCED viewport size (the remote PTY's
+    /// canonical content area, NOT the full local terminal size).
+    /// `enter` is the only call site that performs the reduction
+    /// itself, because it queries the local ioctl size directly. All
+    /// post-enter size updates flow from already-reduced sources:
+    ///
+    /// - share path: `share::sizing::sync_canonical_size` passes the
+    ///   canonical PTY size, which is the per-axis min over
+    ///   `HostViewport::reported_size(stdout_fd)` (already reduced)
+    ///   and connected clients' reported sizes (also reduced — see
+    ///   below).
+    /// - connect path: client polls `ViewportRenderer::reported_size`
+    ///   (reduced) and sends it to the server; server echoes back
+    ///   the canonical size (still reduced); client feeds that into
+    ///   this function.
+    ///
+    /// Do not call `remote_view_size` on `size` here — that would
+    /// double-reduce.
     pub(crate) fn resize(
         &mut self,
         stdout_fd: RawFd,
