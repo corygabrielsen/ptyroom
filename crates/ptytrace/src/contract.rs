@@ -66,15 +66,33 @@ impl Contract {
         Ok(spec)
     }
 
-    /// Write the spec to disk as pretty-printed JSON with a trailing
-    /// newline.
+    /// Canonical on-disk byte representation. Compact JSON produced by
+    /// [`serde_json::to_vec`] plus a single trailing `\n`.
+    ///
+    /// This is the form that contract files MUST take. Anything that
+    /// hashes a contract (witness `contract_sha256`, B+C composition,
+    /// fixture diffs) MUST hash these bytes — never the raw bytes of an
+    /// arbitrary on-disk file, since whitespace, key ordering changes
+    /// between `serde_json` versions, or a hand-edit reflowing the JSON
+    /// would otherwise change the hash without changing meaning.
+    ///
+    /// # Errors
+    /// Serialization failure (in practice unreachable for valid specs).
+    pub fn canonical_bytes(&self) -> anyhow::Result<Vec<u8>> {
+        let mut bytes = serde_json::to_vec(self).context("serialize spec")?;
+        bytes.push(b'\n');
+        Ok(bytes)
+    }
+
+    /// Write the spec to disk in its [`canonical_bytes`] form.
     ///
     /// # Errors
     /// IO error or serialization failure.
+    ///
+    /// [`canonical_bytes`]: Self::canonical_bytes
     pub fn write(&self, path: impl AsRef<Path>) -> anyhow::Result<()> {
-        let mut json = serde_json::to_string_pretty(self)?;
-        json.push('\n');
-        std::fs::write(path.as_ref(), json).context("write spec")?;
+        let bytes = self.canonical_bytes()?;
+        std::fs::write(path.as_ref(), bytes).context("write spec")?;
         Ok(())
     }
 
@@ -261,5 +279,47 @@ mod tests {
         let spec = Contract::new();
         let report = spec.check(&trace);
         assert!(report.all_passed());
+    }
+
+    #[test]
+    fn canonical_bytes_round_trip_is_stable() {
+        // Build a non-trivial contract whose JSON shape exercises both
+        // string and number scalars and a non-empty predicate array, so
+        // the canonical form is something subsequent serde_json versions
+        // could plausibly format differently in pretty mode.
+        let original = Contract::new()
+            .with(Predicate::ContainsText {
+                text: "hello".into(),
+            })
+            .with(Predicate::DoesNotContainText {
+                text: "error".into(),
+            });
+        let bytes = original.canonical_bytes().unwrap();
+        // Trailing newline is part of the canonical form.
+        assert_eq!(bytes.last(), Some(&b'\n'));
+        // Compact form: no spaces between separators.
+        assert!(
+            !bytes.windows(2).any(|w| w == b", " || w == b": "),
+            "canonical form must be compact JSON: {:?}",
+            String::from_utf8_lossy(&bytes)
+        );
+        // Round-trip: parse, re-serialize, expect bit-identical bytes.
+        let parsed: Contract = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(parsed.canonical_bytes().unwrap(), bytes);
+    }
+
+    #[test]
+    fn write_then_read_then_canonical_bytes_matches() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("spec.json");
+        let spec = Contract::new().with(Predicate::ContainsText { text: "x".into() });
+        spec.write(&path).unwrap();
+        let on_disk = std::fs::read(&path).unwrap();
+        assert_eq!(on_disk, spec.canonical_bytes().unwrap());
+        let round_tripped = Contract::read(&path).unwrap();
+        assert_eq!(
+            round_tripped.canonical_bytes().unwrap(),
+            spec.canonical_bytes().unwrap()
+        );
     }
 }

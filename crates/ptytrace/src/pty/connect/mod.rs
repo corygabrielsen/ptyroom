@@ -396,9 +396,15 @@ mod tests {
     }
 
     #[test]
-    fn unknown_local_command_forwards_command_byte_without_prefix() {
+    fn unknown_local_command_drops_command_byte() {
+        // ^]<unknown> must not forward the unknown byte to the remote.
+        // The pre-fix code pushed `x` onto the remote buffer, so an
+        // operator who mistyped a local command would silently leak
+        // arbitrary bytes (including control characters) into the shared
+        // PTY. Both the Ctrl-] prefix and the unknown byte stay local;
+        // only the surrounding plain bytes reach the wire.
         let mut expected = room_protocol::encode_hello_control();
-        expected.extend_from_slice(b"axb");
+        expected.extend_from_slice(b"ab");
 
         assert_eq!(collect_join_input_with_mode(b"a\x1dxb", true), expected);
     }

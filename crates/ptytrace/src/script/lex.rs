@@ -266,7 +266,17 @@ fn parse_number_or_duration(
     let dur = match unit.as_str() {
         "ms" => Duration::from_millis(n),
         "s" => Duration::from_secs(n),
-        "m" => Duration::from_secs(n * 60),
+        "m" => {
+            // `Duration::from_secs` takes u64; an attacker-controlled
+            // minute literal up to u64::MAX silently wraps if we let
+            // the multiply panic on overflow. Return a parse error so
+            // bad input is rejected cleanly instead of crashing the
+            // process.
+            let secs = n
+                .checked_mul(60)
+                .ok_or_else(|| anyhow!("duration overflow: {n}m exceeds u64 seconds"))?;
+            Duration::from_secs(secs)
+        }
         other => bail!("unknown duration unit {other:?} (expected ms / s / m)"),
     };
     Ok(Token::Duration(dur))
@@ -386,6 +396,40 @@ mod tests {
         let lines = lex("Sleep 1s   # wait a bit\n").unwrap();
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].args.len(), 1);
+    }
+
+    #[test]
+    fn minute_literal_at_u64_max_errors_cleanly() {
+        // u64::MAX minutes overflows the seconds multiply; pre-fix the
+        // lexer panicked, which let any script with a hostile duration
+        // literal crash the recorder.
+        let src = format!("Sleep {}m\n", u64::MAX);
+        let err = lex(&src).expect_err("overflow must be a clean parse error");
+        // The lexer wraps errors with `script:N: in number` context, so
+        // walk the chain to find the underlying overflow diagnostic.
+        let chain: String = err
+            .chain()
+            .map(|c| c.to_string().to_lowercase())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            chain.contains("overflow"),
+            "expected overflow diagnostic in chain, got {chain:?}"
+        );
+    }
+
+    #[test]
+    fn minute_literal_just_below_overflow_still_parses() {
+        // Boundary check: u64::MAX / 60 is the largest minute count
+        // that fits in seconds; one above must overflow, this one
+        // must succeed.
+        let n = u64::MAX / 60;
+        let src = format!("Sleep {n}m\n");
+        let lines = lex(&src).unwrap();
+        let Token::Duration(d) = &lines[0].args[0] else {
+            panic!("expected Duration");
+        };
+        assert_eq!(d.as_secs(), n * 60);
     }
 
     #[test]

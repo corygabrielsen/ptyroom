@@ -258,14 +258,38 @@ fn build_concat(frames_dir: &Path, timing: &[TimingEntry]) -> anyhow::Result<Str
         if !png.exists() {
             anyhow::bail!("missing frame PNG: {}", png.display());
         }
-        writeln!(s, "file '{}'", png.display())?;
+        let escaped = escape_concat_path(&png)?;
+        writeln!(s, "file '{escaped}'")?;
         writeln!(s, "duration {:.4}", entry.dwell_seconds())?;
     }
     // ffmpeg concat demuxer quirk: last frame is repeated, its duration ignored.
     let last = &timing[timing.len() - 1];
     let last_png = frames_dir.join(format!("{}.png", last.frame));
-    writeln!(s, "file '{}'", last_png.display())?;
+    let escaped = escape_concat_path(&last_png)?;
+    writeln!(s, "file '{escaped}'")?;
     Ok(s)
+}
+
+/// Escape a path for inclusion inside a single-quoted `file '…'`
+/// directive in ffmpeg's concat demuxer.
+///
+/// Per the concat demuxer rules, a single quote inside a quoted path
+/// must be closed, escaped, and reopened — i.e. `'` becomes `'\''`.
+/// Newlines have no legal escape in the concat format and would frame
+/// an attacker-controlled following line as a new directive, so we
+/// refuse them outright.
+fn escape_concat_path(path: &Path) -> anyhow::Result<String> {
+    let raw = path.to_string_lossy();
+    if raw.contains('\n') || raw.contains('\r') {
+        anyhow::bail!(
+            "frame path contains a newline (would inject ffmpeg concat directive): {}",
+            path.display()
+        );
+    }
+    // Single quote ends the quoted span; the standard concat escape is
+    // close-quote, backslash-escape the literal quote, reopen-quote.
+    // Backslashes are otherwise literal inside the single-quoted span.
+    Ok(raw.replace('\'', r"'\''"))
 }
 
 #[cfg(test)]
@@ -318,6 +342,50 @@ mod tests {
     #[test]
     fn h264_nvenc_is_not_byte_deterministic() {
         assert!(!Mp4Encoder::H264Nvenc.is_byte_deterministic());
+    }
+
+    #[test]
+    fn escape_concat_path_quotes_single_quote() {
+        let escaped = escape_concat_path(Path::new("/tmp/it's/0001.png")).unwrap();
+        // Single quote must close, escape, reopen — `'` → `'\''`.
+        assert_eq!(escaped, r"/tmp/it'\''s/0001.png");
+    }
+
+    #[test]
+    fn escape_concat_path_rejects_newline() {
+        let err = escape_concat_path(Path::new("/tmp/evil\nfile 'x'\n0001.png"))
+            .expect_err("newline in path must be refused");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("newline"),
+            "expected newline diagnostic, got {msg:?}"
+        );
+    }
+
+    #[test]
+    fn build_concat_escapes_hostile_single_quote_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Frame directory whose own name contains a single quote, so
+        // every concat entry exercises the escape path.
+        let frames = tmp.path().join("it's-frames");
+        fs::create_dir_all(&frames).unwrap();
+        let mut f = fs::File::create(frames.join("0001.png")).unwrap();
+        f.write_all(b"fake-png").unwrap();
+        let timing = vec![TimingEntry {
+            frame: "0001".into(),
+            dwell_ms: 100,
+        }];
+        let s = build_concat(&frames, &timing).unwrap();
+        // Raw single quote must never appear adjacent to the directory
+        // name unescaped — it would close the file directive early.
+        assert!(
+            !s.contains("it's-frames"),
+            "raw apostrophe leaked into concat text: {s:?}"
+        );
+        assert!(
+            s.contains(r"it'\''s-frames"),
+            "expected escaped apostrophe in concat text: {s:?}"
+        );
     }
 
     #[test]

@@ -484,7 +484,12 @@ impl Witness {
     }
 
     fn read_spec_claim(&self, spec_path: &Path) -> anyhow::Result<Result<Vec<u8>, VerifyOutcome>> {
-        let spec_bytes = std::fs::read(spec_path).context("read spec for verify")?;
+        // Re-canonicalize on read so the verifier and the producer are
+        // both hashing Contract::canonical_bytes, never raw file bytes
+        // whose formatting can drift across serde_json versions or
+        // hand-edits.
+        let spec = ptytrace::contract::Contract::read(spec_path)?;
+        let spec_bytes = spec.canonical_bytes()?;
         let spec_hash = sha256_hex(&spec_bytes);
         if let Some(expected) = &self.contract_sha256
             && &spec_hash != expected
