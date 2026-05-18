@@ -7,13 +7,10 @@
 use std::io;
 use std::io::IsTerminal;
 use std::net::{SocketAddr, TcpStream};
-use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
+use std::os::fd::{AsRawFd, RawFd};
 use std::time::Duration;
 
-use anyhow::{Context, anyhow};
-use nix::errno::Errno;
-use nix::poll::PollFlags;
-use nix::unistd::read;
+use anyhow::Context;
 
 use super::input_router::LocalInputRouter;
 use super::room_protocol::{self, TerminalSize};
@@ -21,14 +18,16 @@ use super::terminal_io::write_all;
 use super::terminal_state::{RawModeGuard, termination_requested};
 
 mod drain_stdin;
+mod drain_stream;
 mod output;
 mod poll;
 pub mod stream;
 
 use drain_stdin::{JoinStdin, drain_join_stdin};
+use drain_stream::drain_join_stream;
 use output::OutputSink;
 use poll::poll_join_fds;
-use stream::{ServerEvent, ServerStream};
+use stream::ServerStream;
 
 pub(super) const RESIZE_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -222,76 +221,6 @@ fn relay_fds_with_output(
         )? {
             return Ok(());
         }
-    }
-}
-
-fn drain_join_stream(
-    revents: PollFlags,
-    stream_fd: RawFd,
-    stdout_fd: RawFd,
-    output: &mut OutputSink,
-    protocol_ready: &mut bool,
-    server_stream: &mut ServerStream,
-    buf: &mut [u8],
-) -> anyhow::Result<bool> {
-    if revents.intersects(PollFlags::POLLIN | PollFlags::POLLHUP) {
-        let stream_borrow = unsafe { BorrowedFd::borrow_raw(stream_fd) };
-        match read(stream_borrow, buf) {
-            Ok(0) | Err(Errno::EIO) => {
-                if *protocol_ready {
-                    return Ok(false);
-                }
-                return Err(anyhow!("ptyroom host closed before protocol hello"));
-            }
-            Ok(n) => handle_server_events(
-                server_stream.push(&buf[..n]),
-                stdout_fd,
-                output,
-                protocol_ready,
-            )?,
-            Err(Errno::EINTR) if termination_requested() => return Ok(false),
-            Err(Errno::EINTR) => {}
-            Err(err) => return Err(anyhow!("read ptyroom socket: {err}")),
-        }
-    }
-    Ok(!revents.intersects(PollFlags::POLLERR | PollFlags::POLLNVAL))
-}
-
-fn handle_server_events(
-    events: Vec<ServerEvent>,
-    stdout_fd: RawFd,
-    output: &mut OutputSink,
-    protocol_ready: &mut bool,
-) -> anyhow::Result<()> {
-    for event in events {
-        match event {
-            ServerEvent::Hello(version) => {
-                if version != room_protocol::VERSION {
-                    return Err(anyhow!(
-                        "unsupported ptyroom protocol version {version}; expected {}",
-                        room_protocol::VERSION
-                    ));
-                }
-                *protocol_ready = true;
-            }
-            ServerEvent::Output(bytes) => {
-                ensure_protocol_ready(*protocol_ready)?;
-                output.write_output(stdout_fd, &bytes)?;
-            }
-            ServerEvent::Size(size) => {
-                ensure_protocol_ready(*protocol_ready)?;
-                output.resize(stdout_fd, size)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn ensure_protocol_ready(ready: bool) -> anyhow::Result<()> {
-    if ready {
-        Ok(())
-    } else {
-        Err(anyhow!("ptyroom host did not send protocol hello"))
     }
 }
 
