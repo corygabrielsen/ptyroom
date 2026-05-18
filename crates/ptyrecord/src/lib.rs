@@ -257,9 +257,14 @@ impl PtyRecord {
                 self.version
             );
         }
+        // Cheap structural checks first; reject on media_type before
+        // paying the base64 decode cost for trace + media payloads.
+        // A v1 bundle with the wrong media_type can never pass
+        // downstream checks, so spending decode + sha256 work on it
+        // is pure waste.
+        ensure_supported_media_type(&self.media.media_type)?;
         let trace_bytes = self.trace.decode()?;
         let media_bytes = self.media.decode()?;
-        ensure_supported_media_type(&self.media.media_type)?;
         verify_embedded_hash("trace", &trace_bytes, &self.trace.sha256)?;
         verify_embedded_hash("media", &media_bytes, &self.media.sha256)?;
 
