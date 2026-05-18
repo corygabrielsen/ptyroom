@@ -72,15 +72,27 @@ impl Contract {
     }
 
     /// Write the spec to disk as pretty-printed JSON with a trailing
-    /// newline.
+    /// newline. Bytes written here are byte-identical to
+    /// [`canonicalize_bytes`] applied to the same file later — callers
+    /// that hash either side get the same digest.
     ///
     /// # Errors
     /// IO error or serialization failure.
     pub fn write(&self, path: impl AsRef<Path>) -> anyhow::Result<()> {
+        std::fs::write(path.as_ref(), self.to_json_bytes()?).context("write spec")?;
+        Ok(())
+    }
+
+    /// Serialize as pretty-printed JSON bytes with exactly one trailing
+    /// newline. The canonical form used everywhere that hashes a
+    /// contract.
+    ///
+    /// # Errors
+    /// JSON serialization failure.
+    pub fn to_json_bytes(&self) -> anyhow::Result<Vec<u8>> {
         let mut json = serde_json::to_string_pretty(self)?;
         json.push('\n');
-        std::fs::write(path.as_ref(), json).context("write spec")?;
-        Ok(())
+        Ok(json.into_bytes())
     }
 
     /// Replay `trace` and check each predicate against the
@@ -137,6 +149,23 @@ impl Default for Contract {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Normalize on-disk spec bytes to the canonical hashing form: trim
+/// trailing whitespace (spaces, tabs, CR, LF), then append exactly one
+/// `\n`. Hashing the result is insensitive to whether the file was
+/// written by [`Contract::write`] or hand-edited with a different
+/// trailing-newline convention.
+#[must_use]
+pub fn canonicalize_bytes(bytes: &[u8]) -> Vec<u8> {
+    let trimmed_len = bytes
+        .iter()
+        .rposition(|b| !matches!(*b, b' ' | b'\t' | b'\r' | b'\n'))
+        .map_or(0, |i| i + 1);
+    let mut out = Vec::with_capacity(trimmed_len + 1);
+    out.extend_from_slice(&bytes[..trimmed_len]);
+    out.push(b'\n');
+    out
 }
 
 /// Result of one predicate evaluated against a trace.
@@ -292,6 +321,35 @@ mod tests {
             !chain.contains("parse spec JSON"),
             "validation error must not claim a JSON parse failure: {chain}"
         );
+    }
+
+    #[test]
+    fn canonicalize_bytes_normalizes_trailing_newline() {
+        // No trailing newline → one appended.
+        assert_eq!(canonicalize_bytes(b"abc"), b"abc\n");
+        // Exactly one trailing newline → unchanged.
+        assert_eq!(canonicalize_bytes(b"abc\n"), b"abc\n");
+        // Multiple trailing newlines → collapsed to one.
+        assert_eq!(canonicalize_bytes(b"abc\n\n\n"), b"abc\n");
+        // CRLF / mixed trailing whitespace → collapsed to one \n.
+        assert_eq!(canonicalize_bytes(b"abc\r\n"), b"abc\n");
+        assert_eq!(canonicalize_bytes(b"abc \t\r\n"), b"abc\n");
+        // Empty input → just a newline.
+        assert_eq!(canonicalize_bytes(b""), b"\n");
+        // All-whitespace input → just a newline.
+        assert_eq!(canonicalize_bytes(b"\n\n\n"), b"\n");
+    }
+
+    #[test]
+    fn canonicalize_matches_to_json_bytes_for_written_spec() {
+        // A contract written by `Contract::write` must hash identically
+        // to canonicalize_bytes applied to the file contents — the
+        // round-trip render→verify path depends on it.
+        let spec = Contract::new().with(Predicate::ContainsText { text: "hi".into() });
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        spec.write(tmp.path()).unwrap();
+        let on_disk = std::fs::read(tmp.path()).unwrap();
+        assert_eq!(canonicalize_bytes(&on_disk), spec.to_json_bytes().unwrap());
     }
 
     #[test]

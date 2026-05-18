@@ -57,7 +57,8 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
     }
     if let Some(spec_path) = &args.spec {
         let spec_bytes = std::fs::read(spec_path)?;
-        r = r.contract_sha256(sha256_hex(&spec_bytes));
+        let canonical = ptytrace::contract::canonicalize_bytes(&spec_bytes);
+        r = r.contract_sha256(sha256_hex(&canonical));
     }
     if let Some(script_path) = &args.script {
         let script_bytes = std::fs::read(script_path)?;
