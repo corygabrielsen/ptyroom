@@ -153,6 +153,11 @@ fn dwell_until_next_visible_event(time_s: f64, next_visible_time_s: Option<f64>)
     }
 }
 
+/// Largest cols/rows a trace resize event is allowed to specify.
+/// Bounds the vt100 grid allocation a pathological or hostile trace
+/// can force. Any sensible terminal is well below this.
+const MAX_TRACE_DIM: u16 = 1024;
+
 fn parse_resize_event(data: &str) -> anyhow::Result<(u16, u16)> {
     let Some((cols, rows)) = data.split_once('x') else {
         anyhow::bail!("malformed resize event: {data:?}");
@@ -161,6 +166,9 @@ fn parse_resize_event(data: &str) -> anyhow::Result<(u16, u16)> {
     let rows = rows.parse::<u16>()?;
     if cols == 0 || rows == 0 {
         anyhow::bail!("resize event has zero dimension: {cols}x{rows}");
+    }
+    if cols > MAX_TRACE_DIM || rows > MAX_TRACE_DIM {
+        anyhow::bail!("resize event exceeds max dimension {MAX_TRACE_DIM}: {cols}x{rows}");
     }
     Ok((cols, rows))
 }
@@ -194,6 +202,9 @@ impl ReplayState {
         if cols == 0 || rows == 0 {
             anyhow::bail!("trace header has zero dimension: {cols}x{rows}");
         }
+        if cols > MAX_TRACE_DIM || rows > MAX_TRACE_DIM {
+            anyhow::bail!("trace header exceeds max dimension {MAX_TRACE_DIM}: {cols}x{rows}");
+        }
 
         Ok(Self {
             parser: vt100::Parser::new(rows, cols, 0),
@@ -221,6 +232,9 @@ impl ReplayState {
     pub fn resize(&mut self, cols: u16, rows: u16) -> anyhow::Result<()> {
         if cols == 0 || rows == 0 {
             anyhow::bail!("resize has zero dimension: {cols}x{rows}");
+        }
+        if cols > MAX_TRACE_DIM || rows > MAX_TRACE_DIM {
+            anyhow::bail!("resize exceeds max dimension {MAX_TRACE_DIM}: {cols}x{rows}");
         }
         self.parser.screen_mut().set_size(rows, cols);
         Ok(())
