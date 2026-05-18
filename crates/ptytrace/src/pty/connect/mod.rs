@@ -6,7 +6,7 @@
 
 use std::io;
 use std::io::IsTerminal;
-use std::net::{Shutdown, SocketAddr, TcpStream};
+use std::net::{SocketAddr, TcpStream};
 use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
 use std::time::Duration;
 
@@ -15,15 +15,17 @@ use nix::errno::Errno;
 use nix::poll::PollFlags;
 use nix::unistd::read;
 
-use super::input_router::{LocalInputAction, LocalInputRouter, LocalStatus};
+use super::input_router::LocalInputRouter;
 use super::room_protocol::{self, TerminalSize};
 use super::terminal_io::write_all;
 use super::terminal_state::{RawModeGuard, termination_requested};
 
+mod drain_stdin;
 mod output;
 mod poll;
 pub mod stream;
 
+use drain_stdin::{JoinStdin, drain_join_stdin};
 use output::OutputSink;
 use poll::poll_join_fds;
 use stream::{ServerEvent, ServerStream};
@@ -128,10 +130,10 @@ fn relay_fds(stream: &TcpStream, stdin_fd: RawFd, stdout_fd: RawFd) -> anyhow::R
 }
 
 #[derive(Debug, Clone, Copy)]
-struct RelayOpts {
-    local_controls: bool,
-    forward_input: bool,
-    report_size: bool,
+pub(super) struct RelayOpts {
+    pub(super) local_controls: bool,
+    pub(super) forward_input: bool,
+    pub(super) report_size: bool,
 }
 
 impl RelayOpts {
@@ -223,65 +225,6 @@ fn relay_fds_with_output(
     }
 }
 
-struct JoinStdin<'a> {
-    stream: &'a TcpStream,
-    stdin_fd: RawFd,
-    stream_fd: RawFd,
-    stdout_fd: RawFd,
-    output: &'a mut OutputSink,
-    input_router: &'a mut LocalInputRouter,
-    opts: RelayOpts,
-    reports_size: bool,
-}
-
-fn drain_join_stdin(
-    revents: PollFlags,
-    stdin_open: &mut bool,
-    io: JoinStdin<'_>,
-    buf: &mut [u8],
-) -> anyhow::Result<bool> {
-    let JoinStdin {
-        stream,
-        stdin_fd,
-        stream_fd,
-        stdout_fd,
-        output,
-        input_router,
-        opts,
-        reports_size,
-    } = io;
-    if !*stdin_open || !revents.intersects(PollFlags::POLLIN | PollFlags::POLLHUP) {
-        return Ok(true);
-    }
-    let stdin_borrow = unsafe { BorrowedFd::borrow_raw(stdin_fd) };
-    match read(stdin_borrow, buf) {
-        Ok(0) => {
-            *stdin_open = false;
-            if opts.forward_input && !reports_size {
-                let _ = stream.shutdown(Shutdown::Write);
-            }
-        }
-        Ok(n) if opts.local_controls => {
-            if !handle_local_input(
-                &buf[..n],
-                input_router,
-                stream_fd,
-                stdout_fd,
-                output,
-                opts.forward_input,
-            )? {
-                let _ = stream.shutdown(Shutdown::Both);
-                return Ok(false);
-            }
-        }
-        Ok(n) if opts.forward_input => write_all(stream_fd, &buf[..n])?,
-        Err(Errno::EINTR) if termination_requested() => return Ok(false),
-        Ok(_) | Err(Errno::EINTR) => {}
-        Err(err) => return Err(anyhow!("read stdin: {err}")),
-    }
-    Ok(true)
-}
-
 fn drain_join_stream(
     revents: PollFlags,
     stream_fd: RawFd,
@@ -350,63 +293,6 @@ fn ensure_protocol_ready(ready: bool) -> anyhow::Result<()> {
     } else {
         Err(anyhow!("ptyroom host did not send protocol hello"))
     }
-}
-
-fn handle_local_input(
-    bytes: &[u8],
-    router: &mut LocalInputRouter,
-    stream_fd: RawFd,
-    stdout_fd: RawFd,
-    output: &mut OutputSink,
-    forward_input: bool,
-) -> anyhow::Result<bool> {
-    let mut remote = Vec::with_capacity(bytes.len());
-    for &byte in bytes {
-        match router.push(byte) {
-            LocalInputAction::Remote(byte) => remote.push(byte),
-            LocalInputAction::SetStatus(status) => {
-                maybe_flush_remote_input(stream_fd, &mut remote, forward_input)?;
-                output.set_status(stdout_fd, status)?;
-            }
-            LocalInputAction::ForceRedraw => {
-                maybe_flush_remote_input(stream_fd, &mut remote, forward_input)?;
-                output.set_status(stdout_fd, LocalStatus::Connected)?;
-                output.force_redraw(stdout_fd)?;
-            }
-            LocalInputAction::Disconnect => {
-                maybe_flush_remote_input(stream_fd, &mut remote, forward_input)?;
-                return Ok(false);
-            }
-            LocalInputAction::UnknownCommand(byte) => {
-                output.set_status(stdout_fd, LocalStatus::Connected)?;
-                remote.push(byte);
-            }
-        }
-    }
-    maybe_flush_remote_input(stream_fd, &mut remote, forward_input)?;
-    Ok(true)
-}
-
-fn maybe_flush_remote_input(
-    stream_fd: RawFd,
-    remote: &mut Vec<u8>,
-    forward_input: bool,
-) -> anyhow::Result<()> {
-    if forward_input {
-        flush_remote_input(stream_fd, remote)
-    } else {
-        remote.clear();
-        Ok(())
-    }
-}
-
-fn flush_remote_input(stream_fd: RawFd, remote: &mut Vec<u8>) -> anyhow::Result<()> {
-    if remote.is_empty() {
-        return Ok(());
-    }
-    write_all(stream_fd, remote.as_slice())?;
-    remote.clear();
-    Ok(())
 }
 
 fn send_resize_if_changed(
