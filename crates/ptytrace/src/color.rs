@@ -146,6 +146,7 @@ impl<'de> Deserialize<'de> for HexColor {
 /// - `"#rrggbb"`                   → [`CellColor::Rgb`]
 /// - `{ "palette": N, "fallback": "#rrggbb" | null }` → [`CellColor::Palette`]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CellColor {
     #[default]
     Default,

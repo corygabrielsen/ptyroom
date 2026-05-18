@@ -189,11 +189,13 @@ fn apply_cors(cfg: &Config, headers: &mut HeaderMap) {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ResizeMsg {
     resize: ResizeBody,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ResizeBody {
     cols: u16,
     rows: u16,
@@ -346,6 +348,8 @@ async fn tcp_to_ws_loop(
             return Ok(());
         }
         for event in stream.push(&buf[..n]) {
+            // `_` arm covers future non_exhaustive ServerEvent variants.
+            #[allow(clippy::collapsible_match, clippy::match_same_arms)]
             match event {
                 ServerEvent::Hello(version) => {
                     if version != protocol::VERSION {
@@ -365,6 +369,7 @@ async fn tcp_to_ws_loop(
                     // browser. The viewer drives its own resize from
                     // window dimensions, so we don't forward here.
                 }
+                _ => {}
             }
         }
     }

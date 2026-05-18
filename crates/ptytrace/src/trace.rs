@@ -23,6 +23,7 @@ pub struct TraceHeader {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum EventKind {
     Output,
     Input,
@@ -63,6 +64,11 @@ impl<'de> Deserialize<'de> for TraceEvent {
         // 3-element heterogeneous array. Use a tuple deserialize with the
         // kind field as a single-char string.
         let (time_s, kind_str, data): (f64, String, String) = Deserialize::deserialize(d)?;
+        if !time_s.is_finite() {
+            return Err(serde::de::Error::custom(format!(
+                "trace event time_s must be finite, got {time_s}"
+            )));
+        }
         let kind = match kind_str.as_str() {
             "o" => EventKind::Output,
             "i" => EventKind::Input,
@@ -110,6 +116,21 @@ impl Trace {
         let mut lines = text.lines().filter(|l| !l.is_empty());
         let header_line = lines.next().ok_or_else(|| anyhow::anyhow!("empty trace"))?;
         let header: TraceHeader = serde_json::from_str(header_line)?;
+        // Asciinema v2 is the only supported header version. Refuse newer
+        // writers so a future v3 trace isn't silently parsed as v2.
+        if header.version > 2 {
+            anyhow::bail!(
+                "trace header version {} not supported by this reader (max supported: 2); upgrade ptytrace",
+                header.version,
+            );
+        }
+        if header.width == 0 || header.height == 0 {
+            anyhow::bail!(
+                "trace header has zero dimension: {}x{}",
+                header.width,
+                header.height,
+            );
+        }
         let events = lines
             .map(serde_json::from_str)
             .collect::<Result<Vec<TraceEvent>, _>>()?;
