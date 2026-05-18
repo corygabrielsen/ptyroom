@@ -969,6 +969,7 @@ name = "ptytrace"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "clap",
  "nix 0.31.2",
  "portable-pty",

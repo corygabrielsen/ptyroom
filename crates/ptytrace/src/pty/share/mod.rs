@@ -1223,11 +1223,14 @@ mod tests {
         let _peer = TcpStream::connect(addr).unwrap();
         let (stream, _) = listener.accept().unwrap();
         let mut client = Client::new(stream).unwrap();
-        assert!(client.enqueue(&vec![b'x'; client::MAX_CLIENT_BACKLOG_BYTES]));
+        assert!(client.enqueue(bytes::Bytes::from(vec![
+            b'x';
+            client::MAX_CLIENT_BACKLOG_BYTES
+        ])));
         let mut clients = vec![client];
         let mut stats = ShareStats::default();
 
-        broadcast(&mut clients, b"y", &mut stats);
+        broadcast(&mut clients, bytes::Bytes::from_static(b"y"), &mut stats);
 
         assert!(clients.is_empty());
         assert_eq!(stats.disconnected, 1);
@@ -1297,17 +1300,17 @@ mod tests {
     fn join_replay_evicts_whole_frames() {
         let mut replay = JoinReplay::default();
         let first_payload = vec![b'a'; client::MAX_JOIN_REPLAY_BYTES - 128];
-        let first = room_protocol::encode_output_frame(&first_payload);
-        let second = room_protocol::encode_output_frame(&vec![b'b'; 256]);
+        let first = bytes::Bytes::from(room_protocol::encode_output_frame(&first_payload));
+        let second = bytes::Bytes::from(room_protocol::encode_output_frame(&vec![b'b'; 256]));
 
-        replay.remember(&first);
-        replay.remember(&second);
+        replay.remember(first);
+        replay.remember(second.clone());
 
         let frames = replay
             .frames()
-            .map(<[u8]>::to_vec)
+            .map(|b| b.to_vec())
             .collect::<Vec<Vec<u8>>>();
-        assert_eq!(frames, vec![second]);
+        assert_eq!(frames, vec![second.to_vec()]);
         assert!(replay.bytes() <= client::MAX_JOIN_REPLAY_BYTES);
     }
 
@@ -1320,12 +1323,12 @@ mod tests {
         let mut replay = JoinReplay::default();
         let first = room_protocol::encode_output_frame(b"one");
         let second = room_protocol::encode_output_frame(b"two");
-        replay.remember(&first);
-        replay.remember(&second);
+        replay.remember(bytes::Bytes::from(first.clone()));
+        replay.remember(bytes::Bytes::from(second.clone()));
 
         assert!(client.enqueue_replay(&replay));
 
-        let queued = client.pending.iter().copied().collect::<Vec<_>>();
+        let queued = client.pending_snapshot();
         assert_eq!(queued, [first, second].concat());
     }
 

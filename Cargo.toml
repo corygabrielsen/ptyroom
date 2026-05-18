@@ -23,6 +23,7 @@ categories = ["command-line-utilities", "development-tools"]
 ab_glyph = "0.2"
 anyhow = "1"
 base64 = "0.22"
+bytes = "1"
 clap = { version = "4", features = ["derive"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 nix = { version = "0.31", features = ["poll", "term", "user"] }
