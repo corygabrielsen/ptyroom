@@ -46,7 +46,7 @@ pub struct Attestation {
 
 /// Replay/freshness material embedded in an [`Attestation`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[non_exhaustive]
 pub enum Freshness {
     /// No freshness proof. Useful for fixtures and providers that only
@@ -445,6 +445,31 @@ mod tests {
         let err = serde_json::from_str::<Attestation>(json).unwrap_err();
 
         assert!(err.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn freshness_rejects_unknown_fields() {
+        // Matches the parent `Attestation` struct's strict-fields
+        // posture — extra fields on a struct variant must be rejected
+        // rather than silently dropped.
+        let bad = r#"{"kind":"nonce","nonce":"n1","extra":true}"#;
+        let err = serde_json::from_str::<Freshness>(bad).unwrap_err();
+        assert!(
+            err.to_string().contains("unknown field"),
+            "expected unknown-field error, got: {err}",
+        );
+
+        let bad2 = r#"{"kind":"timestamp","unix_ms":1,"foo":"bar"}"#;
+        assert!(serde_json::from_str::<Freshness>(bad2).is_err());
+
+        let bad3 = r#"{"kind":"nonce_and_timestamp","nonce":"x","unix_ms":1,"foo":"bar"}"#;
+        assert!(serde_json::from_str::<Freshness>(bad3).is_err());
+
+        // Well-formed variants still parse.
+        let ok = r#"{"kind":"nonce","nonce":"n1"}"#;
+        assert!(serde_json::from_str::<Freshness>(ok).is_ok());
+        let ok2 = r#"{"kind":"none"}"#;
+        assert!(serde_json::from_str::<Freshness>(ok2).is_ok());
     }
 
     #[test]
