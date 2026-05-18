@@ -24,13 +24,13 @@ use std::net::TcpStream;
 use std::net::{Shutdown, SocketAddr, TcpListener};
 use std::os::fd::{AsRawFd, BorrowedFd};
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow};
 use nix::errno::Errno;
 use nix::poll::PollFlags;
-use nix::unistd::read;
+use nix::unistd::{geteuid, read};
 
 #[cfg(test)]
 use self::client::broadcast;
@@ -53,14 +53,43 @@ use crate::recording::TraceBuilder;
 
 const CTL_IO_TIMEOUT: Duration = Duration::from_millis(500);
 
+/// Resolve the directory for ptyroom runtime state (control sockets,
+/// etc.).
+///
+/// Precedence, highest to lowest:
+///   1. `override_dir` (e.g. from a `--state-dir` CLI flag)
+///   2. `PTYROOM_STATE_DIR` environment variable
+///   3. `$XDG_RUNTIME_DIR/ptyroom/` when `XDG_RUNTIME_DIR` is set
+///   4. `/tmp/ptyroom-<euid>/` (tmux-style per-user fallback)
+///
+/// This function is pure resolution; callers create the directory
+/// themselves (see `CtlSocket::bind`).
+#[must_use]
+pub fn resolve_state_dir(override_dir: Option<&Path>) -> PathBuf {
+    if let Some(dir) = override_dir {
+        return dir.to_path_buf();
+    }
+    if let Some(env) = std::env::var_os("PTYROOM_STATE_DIR")
+        && !env.is_empty()
+    {
+        return PathBuf::from(env);
+    }
+    if let Some(xdg) = std::env::var_os("XDG_RUNTIME_DIR")
+        && !xdg.is_empty()
+    {
+        return PathBuf::from(xdg).join("ptyroom");
+    }
+    PathBuf::from(format!("/tmp/ptyroom-{}", geteuid().as_raw()))
+}
+
 /// Filesystem path of the local control socket for a ptyroom host bound
-/// to `port`.
+/// to `port`, under `state_dir`.
 ///
 /// Shared between the host (which creates the socket) and the `ptyroom
 /// ctl` subcommand (which connects to it). Localhost only by design.
 #[must_use]
-pub fn ctl_socket_path(port: u16) -> PathBuf {
-    PathBuf::from(format!("/tmp/ptyroom-{port}.sock"))
+pub fn ctl_socket_path(state_dir: &Path, port: u16) -> PathBuf {
+    state_dir.join(format!("{port}.sock"))
 }
 
 #[derive(Debug, Clone)]
@@ -79,6 +108,9 @@ pub struct ShareOpts {
     pub local_output: bool,
     /// Also forward the share host's stdin into the PTY.
     pub local_input: bool,
+    /// Override directory for runtime state (control socket, etc.).
+    /// `None` uses the precedence in [`resolve_state_dir`].
+    pub state_dir: Option<PathBuf>,
 }
 
 impl Default for ShareOpts {
@@ -91,6 +123,7 @@ impl Default for ShareOpts {
             max_runtime: Duration::from_hours(1),
             local_output: true,
             local_input: true,
+            state_dir: None,
         }
     }
 }
@@ -200,7 +233,8 @@ impl<'a> Session<'a> {
         let ctl_socket = if cfg!(test) {
             None
         } else {
-            match CtlSocket::bind(listen_addr.port()) {
+            let state_dir = resolve_state_dir(opts.state_dir.as_deref());
+            match CtlSocket::bind(&state_dir, listen_addr.port()) {
                 Ok(socket) => Some(socket),
                 Err(err) => {
                     eprintln!("[ptyroom: control socket disabled: {err}]");
@@ -912,6 +946,7 @@ mod tests {
                         local_output: false,
                         local_input: false,
                         max_runtime: Duration::from_secs(5),
+                        state_dir: None,
                     },
                 )
             }

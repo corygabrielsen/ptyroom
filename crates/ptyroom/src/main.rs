@@ -24,7 +24,7 @@ use clap::{Args as ClapArgs, Parser, Subcommand};
 use ptyrecord::PtyRecord;
 use ptyrender::witness::{RenderOptions, Witness};
 use ptyroom::connect;
-use ptyroom::share::{ShareOpts, ctl_socket_path, host_local_io_notice, run};
+use ptyroom::share::{ShareOpts, ctl_socket_path, host_local_io_notice, resolve_state_dir, run};
 use tempfile::TempDir;
 
 #[derive(Parser)]
@@ -115,6 +115,10 @@ struct HostArgs {
     /// Allow binding a no-auth/no-encryption room outside loopback.
     #[arg(long)]
     allow_unauthenticated_public_bind: bool,
+    /// Directory for runtime state (control socket). Overrides
+    /// `PTYROOM_STATE_DIR` and `XDG_RUNTIME_DIR`.
+    #[arg(long, value_name = "PATH")]
+    state_dir: Option<PathBuf>,
     /// Command to run in the room. Empty uses `$SHELL` or `bash`.
     #[arg(
         value_name = "COMMAND",
@@ -134,8 +138,19 @@ struct JoinArgs {
 #[derive(ClapArgs)]
 struct CtlArgs {
     /// Room host:port printed by `ptyroom host`. Used to locate the
-    /// host's local control socket (`/tmp/ptyroom-<port>.sock`).
+    /// host's local control socket (`<state-dir>/<port>.sock`).
+    ///
+    /// The state directory resolves with this precedence:
+    ///   1. `--state-dir`
+    ///   2. `PTYROOM_STATE_DIR` env var
+    ///   3. `$XDG_RUNTIME_DIR/ptyroom/` if set
+    ///   4. `/tmp/ptyroom-<euid>/` (per-user fallback)
     addr: SocketAddr,
+    /// Directory for runtime state (control socket). Must match the
+    /// value the host resolved to. Overrides `PTYROOM_STATE_DIR` and
+    /// `XDG_RUNTIME_DIR`.
+    #[arg(long, value_name = "PATH")]
+    state_dir: Option<PathBuf>,
     /// Control namespace.
     #[command(subcommand)]
     namespace: CtlNamespace,
@@ -226,6 +241,7 @@ fn host(args: HostArgs) -> anyhow::Result<()> {
             max_runtime: Duration::from_secs(args.max_secs),
             local_output: !args.no_local_output,
             local_input: !args.no_local_input,
+            state_dir: args.state_dir,
         },
     )?;
     eprintln!(
@@ -301,7 +317,8 @@ fn watch(args: JoinArgs) -> anyhow::Result<()> {
 }
 
 fn ctl(args: CtlArgs) -> anyhow::Result<()> {
-    let socket_path = ctl_socket_path(args.addr.port());
+    let state_dir = resolve_state_dir(args.state_dir.as_deref());
+    let socket_path = ctl_socket_path(&state_dir, args.addr.port());
     let mut stream = UnixStream::connect(&socket_path).with_context(|| {
         format!(
             "connect ptyroom control socket at {}",

@@ -1,6 +1,7 @@
 //! Unix-domain control socket for `ptyroom host` queue management.
 //!
-//! A host process binds a per-port socket under `/tmp/`; the
+//! A host process binds a per-port socket under the resolved
+//! runtime state directory (see [`super::resolve_state_dir`]); the
 //! `ptyroom ctl <addr> queue ...` subcommand connects to it to
 //! enqueue messages, inject the next one into the shared PTY, list
 //! depth, or clear. The protocol is a single-line verb followed by
@@ -17,7 +18,7 @@
 
 use std::io::BufRead;
 use std::os::unix::net::UnixListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
@@ -34,11 +35,15 @@ pub(super) struct CtlSocket {
 }
 
 impl CtlSocket {
-    /// Bind a control socket for `port`. Returns `Err` if another
-    /// process holds the path (the host treats this as non-fatal and
-    /// runs without queue control).
-    pub(super) fn bind(port: u16) -> anyhow::Result<Self> {
-        let path = ctl_socket_path(port);
+    /// Bind a control socket for `port` under `state_dir`. Creates
+    /// `state_dir` if missing (best-effort; default permissions).
+    /// Returns `Err` if another process holds the path (the host treats
+    /// this as non-fatal and runs without queue control).
+    pub(super) fn bind(state_dir: &Path, port: u16) -> anyhow::Result<Self> {
+        std::fs::create_dir_all(state_dir).with_context(|| {
+            format!("create ptyroom state directory at {}", state_dir.display())
+        })?;
+        let path = ctl_socket_path(state_dir, port);
         let _ = std::fs::remove_file(&path);
         let listener = UnixListener::bind(&path)
             .with_context(|| format!("bind ptyroom control socket at {}", path.display()))?;

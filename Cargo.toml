@@ -24,7 +24,7 @@ anyhow = "1"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
-nix = { version = "0.31", features = ["poll", "term"] }
+nix = { version = "0.31", features = ["poll", "term", "user"] }
 portable-pty = "0.9.0"
 ptyrecord = { version = "0.1.0", path = "crates/ptyrecord" }
 ptyrender = { version = "0.1.0", path = "crates/ptyrender" }
