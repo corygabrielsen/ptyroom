@@ -173,6 +173,43 @@ fn wait_for_byte_stable_under_parallel_load() {
     }
 }
 
+/// Regression: dropping `PtyTracer` without calling `stop()` must not
+/// close the PTY master fd while the drainer thread is still using it.
+///
+/// The drainer's `select`/`read` loop borrows the master fd; if `pty`
+/// drops first, the kernel closes that fd and may immediately recycle
+/// the number to an unrelated resource — the drainer then reads from
+/// or writes to the wrong fd. The lifecycle invariant is enforced by
+/// `PtyTracer`'s field declaration order: `drainer` is declared before
+/// `pty`, so the drainer's `Drop` (signal stop + join thread) runs
+/// while the fd is still valid.
+///
+/// This test exercises the drop path many times after the child has
+/// emitted bytes the drainer is actively processing. A regression in
+/// field order surfaces as a panic from the drainer thread (mutex
+/// poisoning observed by `consume`) or a failure to join cleanly.
+#[test]
+fn drop_without_stop_does_not_race_drainer_against_fd_close() {
+    for _ in 0..50 {
+        let cfg = PtyTracerConfig {
+            container: None,
+            max_runtime: Duration::from_secs(10),
+            ..PtyTracerConfig::default()
+        };
+        let mut r =
+            PtyTracer::spawn(cfg, &[fixture_path().as_str()]).expect("spawn stress fixture");
+        // Wait for the child to emit its prompt so the drainer is
+        // actively reading from the fd at drop time.
+        r.send_raw_wait_for(&[], ms(0), PATTERN, ms(2000), "wait_pattern")
+            .expect("wait for pattern");
+        // Drop without `stop()`. The drainer thread is mid-select on
+        // `pty.fd()`. If `pty` is dropped before `drainer`, the fd
+        // closes under the drainer's feet — this test would observe
+        // mutex poisoning or a panic in the drainer thread.
+        drop(r);
+    }
+}
+
 /// Stability under CPU contention. CPU-burning background threads
 /// pressure the recorder/drainer scheduling. Same regression-net role
 /// as the parallel test.
