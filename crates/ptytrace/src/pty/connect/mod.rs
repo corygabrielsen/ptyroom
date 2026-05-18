@@ -6,27 +6,32 @@
 
 use std::io;
 use std::io::IsTerminal;
-use std::net::{Shutdown, SocketAddr, TcpStream};
-use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
+use std::net::{SocketAddr, TcpStream};
+use std::os::fd::{AsRawFd, RawFd};
 use std::time::Duration;
 
-use anyhow::{Context, anyhow};
-use nix::errno::Errno;
-use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
-use nix::unistd::read;
+use anyhow::Context;
 
-use super::input_router::{LocalInputAction, LocalInputRouter, LocalStatus};
-use super::room_protocol::{self, TerminalSize};
+use super::input_router::LocalInputRouter;
+use super::room_protocol;
 use super::terminal_io::write_all;
 use super::terminal_state::{RawModeGuard, termination_requested};
 
+mod drain_stdin;
+mod drain_stream;
 mod output;
+mod poll;
+mod resize;
 pub mod stream;
 
+use drain_stdin::{JoinStdin, drain_join_stdin};
+use drain_stream::drain_join_stream;
 use output::OutputSink;
-use stream::{ServerEvent, ServerStream};
+use poll::poll_join_fds;
+use resize::send_resize_if_changed;
+use stream::ServerStream;
 
-const RESIZE_CHECK_INTERVAL: Duration = Duration::from_millis(250);
+pub(super) const RESIZE_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Connect this process's terminal to a shared PTY server.
 ///
@@ -126,10 +131,10 @@ fn relay_fds(stream: &TcpStream, stdin_fd: RawFd, stdout_fd: RawFd) -> anyhow::R
 }
 
 #[derive(Debug, Clone, Copy)]
-struct RelayOpts {
-    local_controls: bool,
-    forward_input: bool,
-    report_size: bool,
+pub(super) struct RelayOpts {
+    pub(super) local_controls: bool,
+    pub(super) forward_input: bool,
+    pub(super) report_size: bool,
 }
 
 impl RelayOpts {
@@ -219,252 +224,6 @@ fn relay_fds_with_output(
             return Ok(());
         }
     }
-}
-
-#[derive(Debug)]
-struct JoinPollState {
-    stdin_revents: PollFlags,
-    stream_revents: PollFlags,
-}
-
-fn poll_join_fds(
-    stdin_open: bool,
-    stdin_fd: RawFd,
-    stream_fd: RawFd,
-) -> anyhow::Result<JoinPollState> {
-    let stream_borrow = unsafe { BorrowedFd::borrow_raw(stream_fd) };
-    let mut fds = Vec::with_capacity(2);
-    let stdin_index = stdin_open.then(|| {
-        let idx = fds.len();
-        let stdin_borrow = unsafe { BorrowedFd::borrow_raw(stdin_fd) };
-        fds.push(PollFd::new(stdin_borrow, PollFlags::POLLIN));
-        idx
-    });
-    let stream_index = fds.len();
-    fds.push(PollFd::new(stream_borrow, PollFlags::POLLIN));
-    match poll(
-        &mut fds,
-        PollTimeout::try_from(RESIZE_CHECK_INTERVAL).unwrap_or(PollTimeout::MAX),
-    ) {
-        Ok(_) => {}
-        Err(Errno::EINTR) => {
-            return Ok(JoinPollState {
-                stdin_revents: PollFlags::empty(),
-                stream_revents: PollFlags::empty(),
-            });
-        }
-        Err(err) => return Err(anyhow!("poll ptyroom client: {err}")),
-    }
-
-    Ok(JoinPollState {
-        stdin_revents: stdin_index
-            .and_then(|idx| fds[idx].revents())
-            .unwrap_or_else(PollFlags::empty),
-        stream_revents: fds[stream_index].revents().unwrap_or_else(PollFlags::empty),
-    })
-}
-
-struct JoinStdin<'a> {
-    stream: &'a TcpStream,
-    stdin_fd: RawFd,
-    stream_fd: RawFd,
-    stdout_fd: RawFd,
-    output: &'a mut OutputSink,
-    input_router: &'a mut LocalInputRouter,
-    opts: RelayOpts,
-    reports_size: bool,
-}
-
-fn drain_join_stdin(
-    revents: PollFlags,
-    stdin_open: &mut bool,
-    io: JoinStdin<'_>,
-    buf: &mut [u8],
-) -> anyhow::Result<bool> {
-    let JoinStdin {
-        stream,
-        stdin_fd,
-        stream_fd,
-        stdout_fd,
-        output,
-        input_router,
-        opts,
-        reports_size,
-    } = io;
-    if !*stdin_open || !revents.intersects(PollFlags::POLLIN | PollFlags::POLLHUP) {
-        return Ok(true);
-    }
-    let stdin_borrow = unsafe { BorrowedFd::borrow_raw(stdin_fd) };
-    match read(stdin_borrow, buf) {
-        Ok(0) => {
-            *stdin_open = false;
-            if opts.forward_input && !reports_size {
-                let _ = stream.shutdown(Shutdown::Write);
-            }
-        }
-        Ok(n) if opts.local_controls => {
-            if !handle_local_input(
-                &buf[..n],
-                input_router,
-                stream_fd,
-                stdout_fd,
-                output,
-                opts.forward_input,
-            )? {
-                let _ = stream.shutdown(Shutdown::Both);
-                return Ok(false);
-            }
-        }
-        Ok(n) if opts.forward_input => write_all(stream_fd, &buf[..n])?,
-        Err(Errno::EINTR) if termination_requested() => return Ok(false),
-        Ok(_) | Err(Errno::EINTR) => {}
-        Err(err) => return Err(anyhow!("read stdin: {err}")),
-    }
-    Ok(true)
-}
-
-fn drain_join_stream(
-    revents: PollFlags,
-    stream_fd: RawFd,
-    stdout_fd: RawFd,
-    output: &mut OutputSink,
-    protocol_ready: &mut bool,
-    server_stream: &mut ServerStream,
-    buf: &mut [u8],
-) -> anyhow::Result<bool> {
-    if revents.intersects(PollFlags::POLLIN | PollFlags::POLLHUP) {
-        let stream_borrow = unsafe { BorrowedFd::borrow_raw(stream_fd) };
-        match read(stream_borrow, buf) {
-            Ok(0) | Err(Errno::EIO) => {
-                if *protocol_ready {
-                    return Ok(false);
-                }
-                return Err(anyhow!("ptyroom host closed before protocol hello"));
-            }
-            Ok(n) => handle_server_events(
-                server_stream.push(&buf[..n]),
-                stdout_fd,
-                output,
-                protocol_ready,
-            )?,
-            Err(Errno::EINTR) if termination_requested() => return Ok(false),
-            Err(Errno::EINTR) => {}
-            Err(err) => return Err(anyhow!("read ptyroom socket: {err}")),
-        }
-    }
-    Ok(!revents.intersects(PollFlags::POLLERR | PollFlags::POLLNVAL))
-}
-
-fn handle_server_events(
-    events: Vec<ServerEvent>,
-    stdout_fd: RawFd,
-    output: &mut OutputSink,
-    protocol_ready: &mut bool,
-) -> anyhow::Result<()> {
-    for event in events {
-        match event {
-            ServerEvent::Hello(version) => {
-                if version != room_protocol::VERSION {
-                    return Err(anyhow!(
-                        "unsupported ptyroom protocol version {version}; expected {}",
-                        room_protocol::VERSION
-                    ));
-                }
-                *protocol_ready = true;
-            }
-            ServerEvent::Output(bytes) => {
-                ensure_protocol_ready(*protocol_ready)?;
-                output.write_output(stdout_fd, &bytes)?;
-            }
-            ServerEvent::Size(size) => {
-                ensure_protocol_ready(*protocol_ready)?;
-                output.resize(stdout_fd, size)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn ensure_protocol_ready(ready: bool) -> anyhow::Result<()> {
-    if ready {
-        Ok(())
-    } else {
-        Err(anyhow!("ptyroom host did not send protocol hello"))
-    }
-}
-
-fn handle_local_input(
-    bytes: &[u8],
-    router: &mut LocalInputRouter,
-    stream_fd: RawFd,
-    stdout_fd: RawFd,
-    output: &mut OutputSink,
-    forward_input: bool,
-) -> anyhow::Result<bool> {
-    let mut remote = Vec::with_capacity(bytes.len());
-    for &byte in bytes {
-        match router.push(byte) {
-            LocalInputAction::Remote(byte) => remote.push(byte),
-            LocalInputAction::SetStatus(status) => {
-                maybe_flush_remote_input(stream_fd, &mut remote, forward_input)?;
-                output.set_status(stdout_fd, status)?;
-            }
-            LocalInputAction::ForceRedraw => {
-                maybe_flush_remote_input(stream_fd, &mut remote, forward_input)?;
-                output.set_status(stdout_fd, LocalStatus::Connected)?;
-                output.force_redraw(stdout_fd)?;
-            }
-            LocalInputAction::Disconnect => {
-                maybe_flush_remote_input(stream_fd, &mut remote, forward_input)?;
-                return Ok(false);
-            }
-            LocalInputAction::UnknownCommand(byte) => {
-                output.set_status(stdout_fd, LocalStatus::Connected)?;
-                remote.push(byte);
-            }
-        }
-    }
-    maybe_flush_remote_input(stream_fd, &mut remote, forward_input)?;
-    Ok(true)
-}
-
-fn maybe_flush_remote_input(
-    stream_fd: RawFd,
-    remote: &mut Vec<u8>,
-    forward_input: bool,
-) -> anyhow::Result<()> {
-    if forward_input {
-        flush_remote_input(stream_fd, remote)
-    } else {
-        remote.clear();
-        Ok(())
-    }
-}
-
-fn flush_remote_input(stream_fd: RawFd, remote: &mut Vec<u8>) -> anyhow::Result<()> {
-    if remote.is_empty() {
-        return Ok(());
-    }
-    write_all(stream_fd, remote.as_slice())?;
-    remote.clear();
-    Ok(())
-}
-
-fn send_resize_if_changed(
-    stream_fd: RawFd,
-    size: Option<TerminalSize>,
-    last_size: &mut Option<TerminalSize>,
-) -> anyhow::Result<()> {
-    let Some(size) = size else {
-        return Ok(());
-    };
-    if Some(size) == *last_size {
-        return Ok(());
-    }
-    let frame = room_protocol::encode_resize_control(size);
-    write_all(stream_fd, &frame)?;
-    *last_size = Some(size);
-    Ok(())
 }
 
 fn addr_label(stream: &TcpStream) -> String {
