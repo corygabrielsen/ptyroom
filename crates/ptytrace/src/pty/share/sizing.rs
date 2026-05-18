@@ -47,17 +47,29 @@ pub(super) fn desired_session_size(
     host_size: Option<TerminalSize>,
     clients: &[Client],
 ) -> TerminalSize {
-    let mut sizes = host_size
+    // A zero-valued axis means "I don't know this dimension yet,"
+    // not "I want a zero-sized terminal." Filter per-axis before the
+    // min fold so e.g. one client reporting (80, 0) and another
+    // reporting (0, 24) compose to (80, 24) rather than collapsing
+    // to (0, 0). When every participant has both axes unknown the
+    // fold yields no contributors on that axis and we fall back.
+    let sizes: Vec<TerminalSize> = host_size
         .into_iter()
-        .chain(clients.iter().filter_map(|client| client.size));
-    let Some(mut desired) = sizes.next() else {
-        return fallback;
+        .chain(clients.iter().filter_map(|client| client.size))
+        .collect();
+    let min_axis = |selector: fn(TerminalSize) -> u16| -> Option<u16> {
+        sizes
+            .iter()
+            .filter_map(|s| {
+                let v = selector(*s);
+                (v != 0).then_some(v)
+            })
+            .min()
     };
-    for size in sizes {
-        desired.cols = desired.cols.min(size.cols);
-        desired.rows = desired.rows.min(size.rows);
+    TerminalSize {
+        cols: min_axis(|s| s.cols).unwrap_or(fallback.cols),
+        rows: min_axis(|s| s.rows).unwrap_or(fallback.rows),
     }
-    desired
 }
 
 pub(super) fn refresh_host_size(

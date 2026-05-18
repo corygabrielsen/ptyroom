@@ -1200,6 +1200,31 @@ mod tests {
     }
 
     #[test]
+    fn desired_session_size_ignores_per_axis_zeros() {
+        // A zero on one axis means "I don't know this dimension yet."
+        // Two clients each missing one axis should compose to a
+        // sensible non-zero size, not collapse the PTY to (0, 24).
+        let fallback = TerminalSize {
+            cols: 100,
+            rows: 30,
+        };
+        let cols_only = client_with_size(TerminalSize { cols: 80, rows: 0 });
+        let rows_only = client_with_size(TerminalSize { cols: 0, rows: 24 });
+
+        assert_eq!(
+            sizing::desired_session_size(fallback, None, &[cols_only, rows_only]),
+            TerminalSize { cols: 80, rows: 24 }
+        );
+
+        // If every participant has both axes zero, fall back.
+        let blank = client_with_size(TerminalSize { cols: 0, rows: 0 });
+        assert_eq!(
+            sizing::desired_session_size(fallback, None, &[blank]),
+            fallback
+        );
+    }
+
+    #[test]
     fn output_frames_preserve_control_lookalikes_as_data() {
         let payload = b"before\x1bPptyroom;size;1;1\x1b\\after";
         let mut expected = Vec::new();
