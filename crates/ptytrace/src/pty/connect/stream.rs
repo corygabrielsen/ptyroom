@@ -36,12 +36,22 @@ impl ServerStream {
     fn drain(&mut self, events: &mut Vec<ServerEvent>) {
         loop {
             if let Some(len) = self.pending_data_len {
+                // Zero-length data frame: emit nothing, clear the
+                // pending-length marker, and re-enter the drain so a
+                // subsequent control frame already in the buffer is
+                // processed in the same call instead of waiting on a
+                // later push(). Handled explicitly rather than relying
+                // on the `if len > 0` skip below — the explicit branch
+                // documents the protocol contract (data;0 is a no-op
+                // frame, not a stall).
+                if len == 0 {
+                    self.pending_data_len = None;
+                    continue;
+                }
                 if self.pending.len() < len {
                     return;
                 }
-                if len > 0 {
-                    events.push(ServerEvent::Output(self.pending.drain(..len).collect()));
-                }
+                events.push(ServerEvent::Output(self.pending.drain(..len).collect()));
                 self.pending_data_len = None;
                 continue;
             }
@@ -173,6 +183,28 @@ mod tests {
         assert_eq!(
             stream.push(&frames),
             vec![ServerEvent::Output(b"next".to_vec())]
+        );
+    }
+
+    /// A `data;0` frame must not stall a subsequent control frame on
+    /// the same buffer. Regression guard: if the drain loop ever stops
+    /// re-entering after consuming the zero-length data marker, the
+    /// size frame here would be left in `pending` until another push.
+    #[test]
+    fn zero_length_data_frame_does_not_stall_following_size_control() {
+        let mut stream = ServerStream::default();
+        let mut frames = room_protocol::encode_output_frame(b"");
+        frames.extend_from_slice(&room_protocol::encode_size_control(TerminalSize {
+            cols: 120,
+            rows: 40,
+        }));
+
+        assert_eq!(
+            stream.push(&frames),
+            vec![ServerEvent::Size(TerminalSize {
+                cols: 120,
+                rows: 40
+            })]
         );
     }
 

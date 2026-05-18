@@ -13,6 +13,7 @@
 mod client;
 mod ctl;
 mod host_viewport;
+mod pending;
 mod poll_loop;
 mod pty_output;
 mod sizing;
@@ -37,6 +38,7 @@ use self::client::broadcast;
 use self::client::{Client, JoinReplay, ShareStats};
 use self::ctl::{CtlCommand, CtlSocket, QueueOp, parse_ctl_command};
 use self::host_viewport::HostViewport;
+use self::pending::PendingState;
 use self::poll_loop::{accept_ready_clients, poll_share_fds, process_client_revents};
 use self::pty_output::{PtyOutputSinks, handle_pty_revents};
 use self::sizing::{initial_host_size, initial_pty_size, refresh_host_size, sync_canonical_size};
@@ -210,7 +212,7 @@ struct Session<'a> {
     join_replay: JoinReplay,
     stats: ShareStats,
     builder: TraceBuilder,
-    last_event: Instant,
+    pending: PendingState,
     listen_addr: SocketAddr,
     out_path: PathBuf,
     started: Instant,
@@ -285,7 +287,13 @@ impl<'a> Session<'a> {
             join_replay: JoinReplay::default(),
             stats: ShareStats::default(),
             builder: TraceBuilder::new(),
-            last_event: started,
+            // PendingState starts empty; the first PTY-read/resize is
+            // buffered, and its dwell is measured against the *next*
+            // event's arrival rather than against `started`. Fixes the
+            // bug where the first event's dwell absorbed session
+            // bootstrap latency (same bug pattern as live mode, commit
+            // `26b840b`).
+            pending: PendingState::default(),
             listen_addr,
             out_path: opts.out,
             started,
@@ -490,7 +498,7 @@ impl<'a> Session<'a> {
             self.host_viewport.as_mut(),
             self.stdout_fd,
             &mut self.builder,
-            &mut self.last_event,
+            &mut self.pending,
             &mut self.stats,
         )?;
         self.local_stdin_open = self.maybe_drain_host_input(poll_state.stdin_revents, buf)?;
@@ -507,11 +515,15 @@ impl<'a> Session<'a> {
                 stats: &mut self.stats,
             },
             &mut self.builder,
-            &mut self.last_event,
+            &mut self.pending,
         )
     }
 
     fn finish(mut self) -> anyhow::Result<ShareSummary> {
+        // No more events will arrive — flush the buffered event with
+        // dwell 0 before sealing the trace. Asciinema players hold
+        // the final frame indefinitely.
+        self.pending.flush_final(&mut self.builder)?;
         finish_share_run(
             &mut self.pty,
             self.builder,
