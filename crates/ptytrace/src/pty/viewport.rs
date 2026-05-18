@@ -10,7 +10,7 @@ use std::os::fd::RawFd;
 
 use super::room_protocol::TerminalSize;
 use super::status_bar::{self, Bar};
-use super::terminal_state::{RestoreGuard, viewport_restore_sequence};
+use super::terminal_state::{RestoreGuard, child_output_enter_sequence, viewport_restore_sequence};
 
 pub(crate) struct ViewportRenderer {
     stdout_fd: RawFd,
@@ -30,7 +30,14 @@ impl ViewportRenderer {
     pub(crate) fn enter(stdout_fd: RawFd, title: &str, bar: &Bar) -> anyhow::Result<Self> {
         let terminal = terminal_size(stdout_fd).unwrap_or(TerminalSize::new(80, 24));
         let size = remote_view_size(terminal);
-        write_all(stdout_fd, b"\x1b[?1049h\x1b[?25l\x1b[H\x1b[2J")?;
+        // Alt-screen enter must be IMMEDIATELY followed by cursor-home
+        // (`\x1b[H`) — see `ALT_SCREEN_ENTER` and the
+        // `alt_screen_enter_includes_explicit_cursor_home` /
+        // `alt_screen_enter_homes_cursor` tests in `terminal_state.rs`.
+        // Cursor-hide and screen-clear come AFTER the home, never
+        // between the alt-screen enter and the home.
+        write_all(stdout_fd, child_output_enter_sequence())?;
+        write_all(stdout_fd, b"\x1b[?25l\x1b[2J")?;
         write_all(stdout_fd, &set_window_title_sequence(title))?;
         let mut renderer = Self {
             stdout_fd,
