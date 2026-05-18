@@ -56,18 +56,23 @@ impl Contract {
     /// IO error or JSON parse failure; or schema-version mismatch.
     pub fn read(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let bytes = std::fs::read(path.as_ref()).context("read spec")?;
-        let spec: Self = serde_json::from_slice(&bytes).context("parse spec")?;
-        anyhow::ensure!(
-            spec.version == SPEC_VERSION,
-            "spec version {} not supported (expected {})",
-            spec.version,
-            SPEC_VERSION,
-        );
+        let spec: Self = serde_json::from_slice(&bytes).context("parse spec JSON")?;
+        spec.validate().context("validate spec")?;
         Ok(spec)
     }
 
-    /// Canonical on-disk byte representation. Compact JSON produced by
-    /// [`serde_json::to_vec`] plus a single trailing `\n`.
+    fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.version == SPEC_VERSION,
+            "spec version {} not supported (expected {})",
+            self.version,
+            SPEC_VERSION,
+        );
+        Ok(())
+    }
+
+    /// Canonical on-disk byte representation. Pretty-printed JSON via
+    /// [`serde_json::to_string_pretty`] plus a single trailing `\n`.
     ///
     /// This is the form that contract files MUST take. Anything that
     /// hashes a contract (witness `contract_sha256`, B+C composition,
@@ -76,23 +81,24 @@ impl Contract {
     /// between `serde_json` versions, or a hand-edit reflowing the JSON
     /// would otherwise change the hash without changing meaning.
     ///
+    /// Pretty form (not compact) is chosen so contract files stay
+    /// human-editable; the trailing newline + the `serde_json`-pinned
+    /// formatter give the determinism guarantee.
+    ///
     /// # Errors
     /// Serialization failure (in practice unreachable for valid specs).
     pub fn canonical_bytes(&self) -> anyhow::Result<Vec<u8>> {
-        let mut bytes = serde_json::to_vec(self).context("serialize spec")?;
-        bytes.push(b'\n');
-        Ok(bytes)
+        let mut json = serde_json::to_string_pretty(self).context("serialize spec")?;
+        json.push('\n');
+        Ok(json.into_bytes())
     }
 
     /// Write the spec to disk in its [`canonical_bytes`] form.
     ///
     /// # Errors
     /// IO error or serialization failure.
-    ///
-    /// [`canonical_bytes`]: Self::canonical_bytes
     pub fn write(&self, path: impl AsRef<Path>) -> anyhow::Result<()> {
-        let bytes = self.canonical_bytes()?;
-        std::fs::write(path.as_ref(), bytes).context("write spec")?;
+        std::fs::write(path.as_ref(), self.canonical_bytes()?).context("write spec")?;
         Ok(())
     }
 
@@ -150,6 +156,23 @@ impl Default for Contract {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Normalize on-disk spec bytes to the canonical hashing form: trim
+/// trailing whitespace (spaces, tabs, CR, LF), then append exactly one
+/// `\n`. Hashing the result is insensitive to whether the file was
+/// written by [`Contract::write`] or hand-edited with a different
+/// trailing-newline convention.
+#[must_use]
+pub fn canonicalize_bytes(bytes: &[u8]) -> Vec<u8> {
+    let trimmed_len = bytes
+        .iter()
+        .rposition(|b| !matches!(*b, b' ' | b'\t' | b'\r' | b'\n'))
+        .map_or(0, |i| i + 1);
+    let mut out = Vec::with_capacity(trimmed_len + 1);
+    out.extend_from_slice(&bytes[..trimmed_len]);
+    out.push(b'\n');
+    out
 }
 
 /// Result of one predicate evaluated against a trace.
@@ -274,6 +297,72 @@ mod tests {
     }
 
     #[test]
+    fn read_distinguishes_parse_from_validate_errors() {
+        // Malformed JSON: error chain must say "parse spec JSON", not
+        // mention "validate".
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"{ not json").unwrap();
+        let err = Contract::read(tmp.path()).unwrap_err();
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("parse spec JSON"),
+            "expected parse context, got: {chain}"
+        );
+        assert!(
+            !chain.contains("validate spec"),
+            "parse error must not claim validation: {chain}"
+        );
+
+        // Well-formed JSON, wrong version: error chain must say
+        // "validate spec", not mention "parse".
+        let tmp2 = tempfile::NamedTempFile::new().unwrap();
+        let bad_version = format!(r#"{{"version":{},"predicates":[]}}"#, SPEC_VERSION + 1);
+        std::fs::write(tmp2.path(), bad_version).unwrap();
+        let err = Contract::read(tmp2.path()).unwrap_err();
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("validate spec"),
+            "expected validate context, got: {chain}"
+        );
+        assert!(
+            !chain.contains("parse spec JSON"),
+            "validation error must not claim a JSON parse failure: {chain}"
+        );
+    }
+
+    #[test]
+    fn canonicalize_bytes_normalizes_trailing_newline() {
+        // No trailing newline → one appended.
+        assert_eq!(canonicalize_bytes(b"abc"), b"abc\n");
+        // Exactly one trailing newline → unchanged.
+        assert_eq!(canonicalize_bytes(b"abc\n"), b"abc\n");
+        // Multiple trailing newlines → collapsed to one.
+        assert_eq!(canonicalize_bytes(b"abc\n\n\n"), b"abc\n");
+        // CRLF / mixed trailing whitespace → collapsed to one \n.
+        assert_eq!(canonicalize_bytes(b"abc\r\n"), b"abc\n");
+        assert_eq!(canonicalize_bytes(b"abc \t\r\n"), b"abc\n");
+        // Empty input → just a newline.
+        assert_eq!(canonicalize_bytes(b""), b"\n");
+        // All-whitespace input → just a newline.
+        assert_eq!(canonicalize_bytes(b"\n\n\n"), b"\n");
+    }
+
+    #[test]
+    fn canonicalize_matches_to_json_bytes_for_written_spec() {
+        // A contract written by `Contract::write` must hash identically
+        // to canonicalize_bytes applied to the file contents — the
+        // round-trip render→verify path depends on it.
+        let spec = Contract::new().with(Predicate::ContainsText { text: "hi".into() });
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        spec.write(tmp.path()).unwrap();
+        let on_disk = std::fs::read(tmp.path()).unwrap();
+        assert_eq!(
+            canonicalize_bytes(&on_disk),
+            spec.canonical_bytes().unwrap()
+        );
+    }
+
+    #[test]
     fn empty_spec_passes_trivially() {
         let trace = trace_with("anything");
         let spec = Contract::new();
@@ -295,14 +384,11 @@ mod tests {
                 text: "error".into(),
             });
         let bytes = original.canonical_bytes().unwrap();
-        // Trailing newline is part of the canonical form.
+        // Trailing newline is part of the canonical form, and the
+        // canonicalize_bytes helper agrees with Contract::canonical_bytes
+        // on this — they're the same canonical form.
         assert_eq!(bytes.last(), Some(&b'\n'));
-        // Compact form: no spaces between separators.
-        assert!(
-            !bytes.windows(2).any(|w| w == b", " || w == b": "),
-            "canonical form must be compact JSON: {:?}",
-            String::from_utf8_lossy(&bytes)
-        );
+        assert_eq!(canonicalize_bytes(&bytes), bytes);
         // Round-trip: parse, re-serialize, expect bit-identical bytes.
         let parsed: Contract = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(parsed.canonical_bytes().unwrap(), bytes);

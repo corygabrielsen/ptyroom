@@ -320,6 +320,18 @@ impl<'a> Session<'a> {
         }
     }
 
+    fn tick_local_input_router(&mut self) -> anyhow::Result<()> {
+        let Some(router) = self.input_router.as_mut() else {
+            return Ok(());
+        };
+        if let Some(LocalInputAction::SetStatus(status)) = router.tick(std::time::Instant::now())
+            && let Some(view) = self.host_viewport.as_mut()
+        {
+            view.set_status(self.stdout_fd, status)?;
+        }
+        Ok(())
+    }
+
     fn process_host_input(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
         let Some(router) = self.input_router.as_mut() else {
             return write_all(self.pty_fd, bytes);
@@ -458,6 +470,10 @@ impl<'a> Session<'a> {
     }
 
     fn tick(&mut self, buf: &mut [u8]) -> anyhow::Result<bool> {
+        // Drive the local-input router's idle timeout so a lone
+        // `Ctrl-]` does not silently arm Command mode until the host
+        // types again. See `COMMAND_MODE_TIMEOUT` in `input_router.rs`.
+        self.tick_local_input_router()?;
         refresh_host_size(
             self.local_output,
             self.host_viewport.is_some(),
