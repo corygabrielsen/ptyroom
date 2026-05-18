@@ -28,12 +28,14 @@ impl TerminalSize {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ClientControl {
     Hello(u16),
     Resize(TerminalSize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ServerControl {
     Hello(u16),
     Size(TerminalSize),

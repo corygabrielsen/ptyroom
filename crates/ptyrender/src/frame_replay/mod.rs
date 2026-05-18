@@ -72,6 +72,8 @@ pub fn replay(
     // implementation's filenames so paint/encode/golden checks line up.
     let mut visible_idx = 0;
     for (i, event) in trace.events.iter().enumerate() {
+        // `_` arm covers Input and future non_exhaustive EventKind variants.
+        #[allow(clippy::match_same_arms)]
         match event.kind {
             EventKind::Output => {
                 let snapshot = state.process_output(event.data.as_bytes());
@@ -99,7 +101,9 @@ pub fn replay(
                     event.time_s,
                 );
             }
-            EventKind::Input => {}
+            // EventKind::Input and any future non_exhaustive variants:
+            // not emitted as visible frames during replay.
+            _ => {}
         }
     }
 

@@ -7,6 +7,7 @@ use super::super::room_protocol::{self, ServerControl, TerminalSize};
 /// External bridges (e.g. `ptyweb`) consume these to forward PTY
 /// output and geometry changes to their own clients.
 #[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ServerEvent {
     Hello(u16),
     Output(Vec<u8>),

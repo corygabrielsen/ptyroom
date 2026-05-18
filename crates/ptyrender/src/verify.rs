@@ -22,6 +22,7 @@ pub struct Check {
 /// Outcome of a single [`Check`]. Both variants carry a human-readable
 /// detail string surfaced in the report.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum CheckResult {
     Pass(String),
     Fail(String),
