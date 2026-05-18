@@ -81,6 +81,12 @@ fn setter_re() -> &'static Regex {
 /// updates.
 #[must_use]
 pub fn setters_in_chunk(chunk: &[u8]) -> Vec<(u8, HexColor)> {
+    // Fast gate: every OSC setter starts with `ESC`. Most child output
+    // chunks (plain text, screen draws) contain no ESC at all and can
+    // skip the regex compile-time + scan cost entirely.
+    if memchr::memchr(0x1b, chunk).is_none() {
+        return Vec::new();
+    }
     setter_re()
         .captures_iter(chunk)
         .filter_map(|cap| {
@@ -99,6 +105,11 @@ pub fn setters_in_chunk(chunk: &[u8]) -> Vec<(u8, HexColor)> {
 
 /// Scan `chunk` for OSC queries and emit the canned replies.
 pub fn replies_for_chunk(chunk: &[u8], stubs: StubColors) -> Vec<Vec<u8>> {
+    // Same fast gate as `setters_in_chunk`: skip the regex on chunks
+    // that don't contain ESC.
+    if memchr::memchr(0x1b, chunk).is_none() {
+        return Vec::new();
+    }
     query_re()
         .captures_iter(chunk)
         .filter_map(|cap| {
