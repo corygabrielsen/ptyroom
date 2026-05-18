@@ -1,18 +1,21 @@
 //! Host-to-join framing decoder.
 
-use std::collections::VecDeque;
+use bytes::{Bytes, BytesMut};
 
 use super::super::room_protocol::{self, ServerControl, TerminalSize};
 
 /// One semantic event decoded from a ptyroom host's TCP stream.
 ///
 /// External bridges (e.g. `ptyweb`) consume these to forward PTY
-/// output and geometry changes to their own clients.
+/// output and geometry changes to their own clients. The output
+/// payload is a refcounted `Bytes` carved from the decoder's read
+/// buffer via [`BytesMut::split_to`], so the buffer-to-event path is
+/// zero-copy.
 #[derive(Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ServerEvent {
     Hello(u16),
-    Output(Vec<u8>),
+    Output(Bytes),
     Size(TerminalSize),
 }
 
@@ -22,18 +25,18 @@ pub enum ServerEvent {
 /// Push bytes as they arrive; the parser tracks partial frames
 /// across boundaries.
 ///
-/// `pending` is a `VecDeque` so front drains (the common case as
-/// frames are parsed off the head) are O(1) amortized instead of
-/// O(n) shifts on a `Vec`.
+/// `pending` is a `BytesMut` so frames can be carved out via
+/// [`BytesMut::split_to`] without copying — the parser-to-event path
+/// stays zero-copy even on heavy traffic.
 #[derive(Debug, Default)]
 pub struct ServerStream {
-    pending: VecDeque<u8>,
+    pending: BytesMut,
     pending_data_len: Option<usize>,
 }
 
 impl ServerStream {
     pub fn push(&mut self, bytes: &[u8]) -> Vec<ServerEvent> {
-        self.pending.extend(bytes.iter().copied());
+        self.pending.extend_from_slice(bytes);
         let mut events = Vec::new();
         self.drain(&mut events);
         events
@@ -57,38 +60,37 @@ impl ServerStream {
                 if self.pending.len() < len {
                     return;
                 }
-                events.push(ServerEvent::Output(self.pending.drain(..len).collect()));
+                events.push(ServerEvent::Output(self.pending.split_to(len).freeze()));
                 self.pending_data_len = None;
                 continue;
             }
             if self.pending.is_empty() {
                 return;
             }
-            // Searches and slicing require a contiguous view; rotate
-            // the ring once per drain pass, then proceed against the
-            // resulting `&[u8]`.
-            let buf = self.pending.make_contiguous();
-            let Some(start) = room_protocol::find_subslice(buf, room_protocol::PREFIX) else {
-                let keep = room_protocol::prefix_overlap(buf, room_protocol::PREFIX);
-                let output_len = buf.len().saturating_sub(keep);
+            // BytesMut is already contiguous; index directly.
+            let Some(start) = room_protocol::find_subslice(&self.pending, room_protocol::PREFIX)
+            else {
+                let keep = room_protocol::prefix_overlap(&self.pending, room_protocol::PREFIX);
+                let output_len = self.pending.len().saturating_sub(keep);
                 if output_len > 0 {
                     events.push(ServerEvent::Output(
-                        self.pending.drain(..output_len).collect(),
+                        self.pending.split_to(output_len).freeze(),
                     ));
                 }
                 return;
             };
             if start > 0 {
-                events.push(ServerEvent::Output(self.pending.drain(..start).collect()));
+                events.push(ServerEvent::Output(self.pending.split_to(start).freeze()));
                 continue;
             }
 
             let suffix_search_start = room_protocol::PREFIX.len();
-            let Some(end_rel) =
-                room_protocol::find_subslice(&buf[suffix_search_start..], room_protocol::SUFFIX)
-            else {
-                if buf.len() > room_protocol::MAX_CONTROL_BYTES {
-                    events.push(ServerEvent::Output(self.pending.drain(..1).collect()));
+            let Some(end_rel) = room_protocol::find_subslice(
+                &self.pending[suffix_search_start..],
+                room_protocol::SUFFIX,
+            ) else {
+                if self.pending.len() > room_protocol::MAX_CONTROL_BYTES {
+                    events.push(ServerEvent::Output(self.pending.split_to(1).freeze()));
                     continue;
                 }
                 return;
@@ -96,9 +98,14 @@ impl ServerStream {
             let payload_start = room_protocol::PREFIX.len();
             let payload_end = suffix_search_start + end_rel;
             let frame_end = payload_end + room_protocol::SUFFIX.len();
-            let payload = buf[payload_start..payload_end].to_vec();
-            let frame = self.pending.drain(..frame_end).collect::<Vec<_>>();
-            match room_protocol::parse_server_control(&payload) {
+            // Decide what kind of frame this is *before* splitting it
+            // off the pending buffer, so an unknown-control fallback
+            // can still hand the original framed bytes through as
+            // Output without re-allocating the prefix/suffix wrapper.
+            let control =
+                room_protocol::parse_server_control(&self.pending[payload_start..payload_end]);
+            let frame = self.pending.split_to(frame_end).freeze();
+            match control {
                 Some(ServerControl::Hello(version)) => events.push(ServerEvent::Hello(version)),
                 Some(ServerControl::Size(size)) => events.push(ServerEvent::Size(size)),
                 Some(ServerControl::Data(len)) => {
@@ -112,6 +119,8 @@ impl ServerStream {
 
 #[cfg(test)]
 mod tests {
+    use bytes::Bytes;
+
     use super::{ServerEvent, ServerStream};
     use crate::pty::room_protocol::{self, TerminalSize};
 
@@ -122,9 +131,9 @@ mod tests {
         assert_eq!(
             stream.push(b"before\x1bPptyroom;size;40;10\x1b\\after"),
             vec![
-                ServerEvent::Output(b"before".to_vec()),
+                ServerEvent::Output(Bytes::from_static(b"before")),
                 ServerEvent::Size(TerminalSize { cols: 40, rows: 10 }),
-                ServerEvent::Output(b"after".to_vec()),
+                ServerEvent::Output(Bytes::from_static(b"after")),
             ]
         );
     }
@@ -145,14 +154,14 @@ mod tests {
 
         assert_eq!(
             stream.push(b"hello\x1bPpty"),
-            vec![ServerEvent::Output(b"hello".to_vec()),]
+            vec![ServerEvent::Output(Bytes::from_static(b"hello")),]
         );
         assert_eq!(stream.push(b"room;size;80;24"), Vec::new());
         assert_eq!(
             stream.push(b"\x1b\\world"),
             vec![
                 ServerEvent::Size(TerminalSize { cols: 80, rows: 24 }),
-                ServerEvent::Output(b"world".to_vec()),
+                ServerEvent::Output(Bytes::from_static(b"world")),
             ]
         );
     }
@@ -165,7 +174,7 @@ mod tests {
 
         assert_eq!(
             stream.push(&frame),
-            vec![ServerEvent::Output(payload.to_vec())]
+            vec![ServerEvent::Output(Bytes::copy_from_slice(payload))]
         );
     }
 
@@ -178,7 +187,7 @@ mod tests {
         assert_eq!(stream.push(&frame), Vec::new());
         assert_eq!(
             stream.push(&tail),
-            vec![ServerEvent::Output(b"abcdef".to_vec())]
+            vec![ServerEvent::Output(Bytes::from_static(b"abcdef"))]
         );
     }
 
@@ -190,7 +199,7 @@ mod tests {
 
         assert_eq!(
             stream.push(&frames),
-            vec![ServerEvent::Output(b"next".to_vec())]
+            vec![ServerEvent::Output(Bytes::from_static(b"next"))]
         );
     }
 
@@ -223,7 +232,7 @@ mod tests {
 
         assert_eq!(
             stream.push(frame),
-            vec![ServerEvent::Output(frame.to_vec())]
+            vec![ServerEvent::Output(Bytes::copy_from_slice(frame))]
         );
     }
 
@@ -234,7 +243,7 @@ mod tests {
 
         assert_eq!(
             stream.push(frame),
-            vec![ServerEvent::Output(frame.to_vec())]
+            vec![ServerEvent::Output(Bytes::copy_from_slice(frame))]
         );
     }
 }

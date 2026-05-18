@@ -22,6 +22,7 @@ use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpStream};
 use std::os::fd::{AsRawFd, RawFd};
 
+use bytes::{Buf, Bytes};
 use nix::poll::PollFlags;
 
 use super::super::room_protocol::{self, ClientControl, TerminalSize};
@@ -37,14 +38,14 @@ pub(super) const MAX_JOIN_REPLAY_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Default)]
 pub(super) struct JoinReplay {
-    frames: VecDeque<Vec<u8>>,
+    frames: VecDeque<Bytes>,
     bytes: usize,
 }
 
 impl JoinReplay {
-    pub(super) fn remember(&mut self, frame: &[u8]) {
-        self.frames.push_back(frame.to_vec());
+    pub(super) fn remember(&mut self, frame: Bytes) {
         self.bytes = self.bytes.saturating_add(frame.len());
+        self.frames.push_back(frame);
         while self.bytes > MAX_JOIN_REPLAY_BYTES {
             let Some(dropped) = self.frames.pop_front() else {
                 self.bytes = 0;
@@ -58,19 +59,24 @@ impl JoinReplay {
         self.bytes
     }
 
-    pub(super) fn frames(&self) -> impl Iterator<Item = &[u8]> {
-        self.frames.iter().map(Vec::as_slice)
+    pub(super) fn frames(&self) -> impl Iterator<Item = &Bytes> {
+        self.frames.iter()
     }
 }
 
 #[derive(Debug)]
 pub(super) struct Client {
     stream: TcpStream,
-    /// Outbound bytes waiting to flush to the client. Visible to
-    /// mod.rs for the test-only `client_pending_bytes` assertion;
-    /// the production read/write happens through `enqueue`,
-    /// `flush_pending`, and `has_pending`.
-    pub(super) pending: VecDeque<u8>,
+    /// Outbound frames waiting to flush to the client. Each entry is
+    /// a refcounted `Bytes` slice shared with every other client that
+    /// received the same broadcast — fan-out is a refcount bump, not
+    /// a memcpy. Partial writes advance the head `Bytes` in place via
+    /// [`Bytes::advance`]; a fully-written head is popped.
+    pending: VecDeque<Bytes>,
+    /// Total bytes queued across `pending`. Tracked explicitly because
+    /// `VecDeque<Bytes>::len` reports frame count, not byte count, and
+    /// the backlog cap is byte-denominated.
+    pending_bytes: usize,
     input_pending: Vec<u8>,
     /// `true` while the client's input stream is still readable.
     /// Flipped to `false` when the peer closes its write half or a
@@ -95,6 +101,7 @@ impl Client {
         Ok(Self {
             stream,
             pending: VecDeque::new(),
+            pending_bytes: 0,
             input_pending: Vec::new(),
             input_open: true,
             protocol_ready: false,
@@ -117,35 +124,53 @@ impl Client {
         !self.pending.is_empty()
     }
 
-    pub(super) fn enqueue(&mut self, bytes: &[u8]) -> bool {
-        if bytes.len() > MAX_CLIENT_BACKLOG_BYTES.saturating_sub(self.pending.len()) {
+    /// Snapshot of all currently-queued bytes, concatenated. Test-only
+    /// helper for the replay-frame-boundary assertion; production code
+    /// writes each `Bytes` frame directly in `flush_pending` without
+    /// collecting.
+    #[cfg(test)]
+    pub(super) fn pending_snapshot(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.pending_bytes);
+        for frame in &self.pending {
+            out.extend_from_slice(frame);
+        }
+        out
+    }
+
+    pub(super) fn enqueue(&mut self, frame: Bytes) -> bool {
+        if frame.len() > MAX_CLIENT_BACKLOG_BYTES.saturating_sub(self.pending_bytes) {
             return false;
         }
-        self.pending.extend(bytes.iter().copied());
+        self.pending_bytes = self.pending_bytes.saturating_add(frame.len());
+        self.pending.push_back(frame);
         true
     }
 
     pub(super) fn enqueue_replay(&mut self, replay: &JoinReplay) -> bool {
-        if replay.bytes() > MAX_CLIENT_BACKLOG_BYTES.saturating_sub(self.pending.len()) {
+        if replay.bytes() > MAX_CLIENT_BACKLOG_BYTES.saturating_sub(self.pending_bytes) {
             return false;
         }
         for frame in replay.frames() {
-            self.pending.extend(frame.iter().copied());
+            self.pending_bytes = self.pending_bytes.saturating_add(frame.len());
+            self.pending.push_back(frame.clone());
         }
         true
     }
 
     pub(super) fn flush_pending(&mut self) -> bool {
-        while !self.pending.is_empty() {
-            let (front, back) = self.pending.as_slices();
-            let chunk = if front.is_empty() { back } else { front };
-            if chunk.is_empty() {
-                return true;
+        while let Some(head) = self.pending.front_mut() {
+            if head.is_empty() {
+                self.pending.pop_front();
+                continue;
             }
-            match self.stream.write(chunk) {
+            match self.stream.write(head) {
                 Ok(0) => return false,
                 Ok(n) => {
-                    drop(self.pending.drain(..n));
+                    head.advance(n);
+                    self.pending_bytes = self.pending_bytes.saturating_sub(n);
+                    if head.is_empty() {
+                        self.pending.pop_front();
+                    }
                 }
                 Err(err) if err.kind() == io::ErrorKind::WouldBlock => return true,
                 Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
@@ -298,14 +323,25 @@ pub(super) struct ShareStats {
     pub(super) dropped_for_backlog: usize,
 }
 
-/// Fan `bytes` out to every connected client. Clients whose backlog
+/// Fan `frame` out to every connected client. Clients whose backlog
 /// exceeds the per-client budget are dropped on the spot (counter:
 /// `dropped_for_backlog`); clients whose stream write fails are
 /// dropped (`disconnected`). Surviving clients stay in `clients`.
-pub(super) fn broadcast(clients: &mut Vec<Client>, bytes: &[u8], stats: &mut ShareStats) {
+///
+/// The `Bytes` argument is refcount-cloned per client; the underlying
+/// payload allocation is shared across the fan-out instead of being
+/// memcpy'd N times.
+//
+// Take `frame` by value so callers move their last reference into the
+// fan-out — the per-client `clone()` inside the loop is then the only
+// refcount bump that survives, and a single-client broadcast does zero
+// extra clones. Clippy's `needless_pass_by_value` doesn't see that the
+// move-then-clone pattern is intentional here.
+#[allow(clippy::needless_pass_by_value)]
+pub(super) fn broadcast(clients: &mut Vec<Client>, frame: Bytes, stats: &mut ShareStats) {
     let mut kept = Vec::with_capacity(clients.len());
     for mut client in clients.drain(..) {
-        if !client.enqueue(bytes) {
+        if !client.enqueue(frame.clone()) {
             client.disconnect();
             stats.disconnected += 1;
             stats.dropped_for_backlog += 1;
@@ -322,6 +358,7 @@ pub(super) fn broadcast(clients: &mut Vec<Client>, bytes: &[u8], stats: &mut Sha
 /// Fan out a control frame (room-protocol size or hello). Same
 /// semantics as [`broadcast`] — kept as a separate name for
 /// caller-side clarity.
-pub(super) fn broadcast_control(clients: &mut Vec<Client>, bytes: &[u8], stats: &mut ShareStats) {
-    broadcast(clients, bytes, stats);
+#[allow(clippy::needless_pass_by_value)]
+pub(super) fn broadcast_control(clients: &mut Vec<Client>, frame: Bytes, stats: &mut ShareStats) {
+    broadcast(clients, frame, stats);
 }

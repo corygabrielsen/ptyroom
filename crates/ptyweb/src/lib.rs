@@ -38,6 +38,7 @@ use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
+use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use ptyroom::protocol::{self, TerminalSize};
 use ptyroom::stream::{ServerEvent, ServerStream};
@@ -353,7 +354,10 @@ async fn bridge_socket(
     // and from the TCP reader to the WS writer. Splitting the WS lets
     // both halves make progress without lock contention.
     let (ws_tx_send, ws_tx_recv) = mpsc::channel::<WsOut>(CHANNEL_DEPTH);
-    let (pty_tx_send, pty_tx_recv) = mpsc::channel::<Vec<u8>>(CHANNEL_DEPTH);
+    // `Bytes` lets browser-originated frames flow from axum
+    // (Message::Binary already hands us Bytes) into the TCP writer
+    // without a per-frame `to_vec()`.
+    let (pty_tx_send, pty_tx_recv) = mpsc::channel::<Bytes>(CHANNEL_DEPTH);
     let (resize_tx, resize_rx) = mpsc::channel::<TerminalSize>(16);
 
     let (ws_sink, ws_stream) = socket.split();
@@ -422,8 +426,13 @@ fn log_task_exit(res: Result<(&'static str, Result<()>), tokio::task::JoinError>
 }
 
 /// Frame to send over the WebSocket back to the browser.
+///
+/// `Binary` carries `Bytes` (not `Vec<u8>`) so the upstream
+/// `ServerEvent::Output` payload — itself carved zero-copy from the
+/// decoder's `BytesMut` — flows straight into `Message::Binary` without
+/// an extra allocation.
 enum WsOut {
-    Binary(Vec<u8>),
+    Binary(Bytes),
     Text(String),
 }
 
@@ -446,7 +455,7 @@ async fn connect_and_handshake(
         .context("send ptyroom hello")?;
 
     let mut stream = ServerStream::default();
-    let mut pending_output: Vec<Vec<u8>> = Vec::new();
+    let mut pending_output: Vec<Bytes> = Vec::new();
     let mut buf = vec![0_u8; TCP_READ_BUF];
     let mut got_hello = false;
     while !got_hello {
@@ -494,7 +503,7 @@ async fn connect_and_handshake(
 struct HandshakedReader {
     tcp_read: tokio::net::tcp::OwnedReadHalf,
     stream: ServerStream,
-    pending_output: Vec<Vec<u8>>,
+    pending_output: Vec<Bytes>,
 }
 
 async fn tcp_to_ws_loop(handshaked: HandshakedReader, ws_tx: mpsc::Sender<WsOut>) -> Result<()> {
@@ -545,7 +554,7 @@ async fn tcp_to_ws_loop(handshaked: HandshakedReader, ws_tx: mpsc::Sender<WsOut>
 
 async fn tcp_writer_loop(
     mut tcp_write: tokio::net::tcp::OwnedWriteHalf,
-    mut pty_rx: mpsc::Receiver<Vec<u8>>,
+    mut pty_rx: mpsc::Receiver<Bytes>,
     mut resize_rx: mpsc::Receiver<TerminalSize>,
 ) -> Result<()> {
     loop {
@@ -569,7 +578,8 @@ async fn ws_writer_loop(
 ) -> Result<()> {
     while let Some(out) = rx.recv().await {
         let msg = match out {
-            WsOut::Binary(bytes) => Message::Binary(bytes.into()),
+            // Message::Binary takes Bytes; no extra allocation needed.
+            WsOut::Binary(bytes) => Message::Binary(bytes),
             WsOut::Text(text) => Message::Text(text.into()),
         };
         ws_sink.send(msg).await.context("ws send")?;
@@ -580,7 +590,7 @@ async fn ws_writer_loop(
 
 async fn ws_reader_loop(
     mut ws_stream: futures_util::stream::SplitStream<WebSocket>,
-    pty_tx: mpsc::Sender<Vec<u8>>,
+    pty_tx: mpsc::Sender<Bytes>,
     resize_tx: mpsc::Sender<TerminalSize>,
     read_only: bool,
 ) -> Result<()> {
@@ -591,7 +601,10 @@ async fn ws_reader_loop(
                 if read_only {
                     continue;
                 }
-                if pty_tx.send(bytes.to_vec()).await.is_err() {
+                // `Message::Binary` already holds a refcounted `Bytes`;
+                // pass it straight through instead of `to_vec()`ing into
+                // a fresh allocation.
+                if pty_tx.send(bytes).await.is_err() {
                     return Ok(());
                 }
             }

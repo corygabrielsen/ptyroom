@@ -21,6 +21,7 @@ use std::net::TcpListener;
 use std::os::fd::BorrowedFd;
 
 use anyhow::{Context, anyhow};
+use bytes::Bytes;
 use nix::errno::Errno;
 use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 
@@ -104,8 +105,10 @@ pub(super) fn accept_ready_clients(
         match listener.accept() {
             Ok((stream, _addr)) => {
                 let mut client = Client::new(stream)?;
-                client.enqueue(&room_protocol::encode_hello_control());
-                client.enqueue(&room_protocol::encode_size_control(current_size));
+                client.enqueue(Bytes::from(room_protocol::encode_hello_control()));
+                client.enqueue(Bytes::from(room_protocol::encode_size_control(
+                    current_size,
+                )));
                 client.enqueue_replay(join_replay);
                 clients.push(client);
                 accepted += 1;

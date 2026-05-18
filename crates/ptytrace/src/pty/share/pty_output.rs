@@ -21,6 +21,7 @@ use std::os::fd::BorrowedFd;
 use std::time::Instant;
 
 use anyhow::anyhow;
+use bytes::Bytes;
 use nix::errno::Errno;
 use nix::poll::PollFlags;
 use nix::unistd::read;
@@ -80,9 +81,13 @@ fn handle_pty_output(
     } else if local_output {
         let _ = write_all(stdout_fd, bytes);
     }
-    let client_frame = room_protocol::encode_output_frame(bytes);
-    join_replay.remember(&client_frame);
-    broadcast(clients, &client_frame, stats);
+    // Encode once, then refcount-share across every fan-out destination.
+    // `Bytes::clone` is a refcount bump; the broadcast path does N
+    // clones (one per client) on the same underlying allocation rather
+    // than N memcpys.
+    let client_frame = Bytes::from(room_protocol::encode_output_frame(bytes));
+    join_replay.remember(client_frame.clone());
+    broadcast(clients, client_frame, stats);
     // Defer the trace record by one event so the dwell attached to
     // this read is `next_arrival - now` — the time it actually stays
     // on screen — rather than `now - last_event`, which would absorb

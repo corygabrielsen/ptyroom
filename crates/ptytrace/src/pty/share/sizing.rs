@@ -15,6 +15,7 @@ use std::io;
 use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
+use bytes::Bytes;
 
 use super::super::process;
 use super::super::room_protocol::{self, TerminalSize};
@@ -107,7 +108,11 @@ pub(super) fn sync_canonical_size(
         return Ok(());
     };
     record_resize_event(builder, pending, size)?;
-    broadcast_control(clients, &room_protocol::encode_size_control(size), stats);
+    broadcast_control(
+        clients,
+        Bytes::from(room_protocol::encode_size_control(size)),
+        stats,
+    );
     if let Some(viewport) = host_viewport {
         viewport.resize(stdout_fd, size)?;
     }

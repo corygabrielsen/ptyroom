@@ -969,6 +969,7 @@ name = "ptytrace"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "clap",
  "memchr",
  "nix 0.31.2",
@@ -987,6 +988,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "bytes",
  "clap",
  "futures-util",
  "ptyroom",
