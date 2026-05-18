@@ -56,14 +56,19 @@ impl Contract {
     /// IO error or JSON parse failure; or schema-version mismatch.
     pub fn read(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let bytes = std::fs::read(path.as_ref()).context("read spec")?;
-        let spec: Self = serde_json::from_slice(&bytes).context("parse spec")?;
+        let spec: Self = serde_json::from_slice(&bytes).context("parse spec JSON")?;
+        spec.validate().context("validate spec")?;
+        Ok(spec)
+    }
+
+    fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
-            spec.version == SPEC_VERSION,
+            self.version == SPEC_VERSION,
             "spec version {} not supported (expected {})",
-            spec.version,
+            self.version,
             SPEC_VERSION,
         );
-        Ok(spec)
+        Ok(())
     }
 
     /// Write the spec to disk as pretty-printed JSON with a trailing
@@ -253,6 +258,40 @@ mod tests {
         });
         let report = spec.check(&trace);
         assert!(report.all_passed());
+    }
+
+    #[test]
+    fn read_distinguishes_parse_from_validate_errors() {
+        // Malformed JSON: error chain must say "parse spec JSON", not
+        // mention "validate".
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"{ not json").unwrap();
+        let err = Contract::read(tmp.path()).unwrap_err();
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("parse spec JSON"),
+            "expected parse context, got: {chain}"
+        );
+        assert!(
+            !chain.contains("validate spec"),
+            "parse error must not claim validation: {chain}"
+        );
+
+        // Well-formed JSON, wrong version: error chain must say
+        // "validate spec", not mention "parse".
+        let tmp2 = tempfile::NamedTempFile::new().unwrap();
+        let bad_version = format!(r#"{{"version":{},"predicates":[]}}"#, SPEC_VERSION + 1);
+        std::fs::write(tmp2.path(), bad_version).unwrap();
+        let err = Contract::read(tmp2.path()).unwrap_err();
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("validate spec"),
+            "expected validate context, got: {chain}"
+        );
+        assert!(
+            !chain.contains("parse spec JSON"),
+            "validation error must not claim a JSON parse failure: {chain}"
+        );
     }
 
     #[test]
