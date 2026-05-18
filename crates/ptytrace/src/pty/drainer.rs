@@ -326,22 +326,51 @@ impl Watch {
     /// Returns true on match. Updates `carry` to retain the suffix that
     /// could still be the start of the pattern.
     fn observe(&mut self, chunk: &[u8]) -> bool {
-        // Concatenate carry || chunk. Allocates each time; chunks are
-        // bounded so this is cheap.
-        let mut search = Vec::with_capacity(self.carry.len() + chunk.len());
-        search.extend_from_slice(&self.carry);
-        search.extend_from_slice(chunk);
+        // Scan in two pieces to avoid allocating `carry || chunk` per
+        // call. A cross-boundary match must straddle the seam, so it
+        // sits inside `carry || chunk[..pattern.len() - 1]`. Beyond
+        // that prefix, any match lies entirely inside `chunk` and can
+        // be found by scanning `chunk` directly.
+        let pat = &self.pattern;
+        if pat.is_empty() {
+            return true;
+        }
+        let overlap = pat.len() - 1;
 
-        if contains_pattern(&search, &self.pattern) {
+        // 1. Seam scan: only when there's actual carry. Use a small
+        //    scratch buffer with the overlap bytes from chunk's head.
+        if !self.carry.is_empty() {
+            let take = overlap.min(chunk.len());
+            let mut seam = Vec::with_capacity(self.carry.len() + take);
+            seam.extend_from_slice(&self.carry);
+            seam.extend_from_slice(&chunk[..take]);
+            if contains_pattern(&seam, pat) {
+                return true;
+            }
+        }
+
+        // 2. Chunk scan: a hit anywhere inside chunk also satisfies
+        //    the watch even when no carry was present.
+        if contains_pattern(chunk, pat) {
             return true;
         }
 
-        // Save the trailing (pattern.len - 1) bytes for the next chunk —
-        // any shorter is enough, since a complete pattern wouldn't have
-        // fit in those bytes anyway.
-        let carry_len = self.pattern.len().saturating_sub(1);
-        let new_carry_start = search.len().saturating_sub(carry_len);
-        self.carry = search[new_carry_start..].to_vec();
+        // Save the trailing `overlap` bytes of `carry || chunk` as the
+        // new carry. Drawing only from `chunk` is correct when chunk
+        // already covers the overlap; otherwise we keep the tail of
+        // `carry` and append all of chunk.
+        if chunk.len() >= overlap {
+            self.carry.clear();
+            self.carry
+                .extend_from_slice(&chunk[chunk.len() - overlap..]);
+        } else {
+            let combined_len = self.carry.len() + chunk.len();
+            if combined_len > overlap {
+                let drop = combined_len - overlap;
+                self.carry.drain(..drop);
+            }
+            self.carry.extend_from_slice(chunk);
+        }
         false
     }
 
