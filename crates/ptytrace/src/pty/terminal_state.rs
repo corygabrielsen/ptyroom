@@ -182,6 +182,15 @@ impl RestoreGuard {
     /// above: the fd is set once here and cleared once on drop, and
     /// only one `RestoreGuard` may be alive at a time.
     ///
+    /// Install order: signal handlers FIRST, then atomics. A signal
+    /// arriving between handler installation and atomic stores would
+    /// find a still-clear fd and return harmlessly. The reverse order
+    /// would leave atomics armed with no handler to consume them — if
+    /// `SignalHandlers::install` returned `None` (sigaction failure),
+    /// the atomics would stay non-zero indefinitely and a subsequent
+    /// `RestoreGuard::new` would see `GUARD_COUNT` > 0 and the stale
+    /// atomic values until the failed guard's Drop runs.
+    ///
     /// # Panics
     /// If another `RestoreGuard` is already alive in this process.
     /// A concurrent second guard would overwrite the atomics that
@@ -205,13 +214,22 @@ impl RestoreGuard {
         );
         #[cfg(test)]
         let _ = previous;
-        clear_termination_request();
-        SIGNAL_RESTORE_FD.store(fd, Ordering::SeqCst);
-        SIGNAL_RESTORE_SEQUENCE.store(sequence_kind(sequence), Ordering::SeqCst);
+        // Install handlers first; only arm the async-signal-safe
+        // atomics after the handler is in place to read them. If
+        // install returned `None` (sigaction failure in cfg(not(test))
+        // or the cfg(test) stub), skip the atomic stores entirely —
+        // there is no handler to consume the armed state, so leaving
+        // the atomics at their default (-1 / NO_SEQUENCE) is correct.
+        let handlers = SignalHandlers::install();
+        if handlers.is_some() {
+            clear_termination_request();
+            SIGNAL_RESTORE_FD.store(fd, Ordering::SeqCst);
+            SIGNAL_RESTORE_SEQUENCE.store(sequence_kind(sequence), Ordering::SeqCst);
+        }
         Self {
             fd,
             sequence,
-            _signal_handlers: SignalHandlers::install(),
+            _signal_handlers: handlers,
         }
     }
 }
