@@ -178,6 +178,15 @@ fn main() -> anyhow::Result<()> {
         anyhow::bail!("ptyrecord: stdin is not a terminal — recording needs an interactive tty");
     }
 
+    // The TempDir owns every transient artifact (`<stem>.ptytrace`
+    // when no `--trace-out`, `<stem>.mp4` under `--bundle-only`, the
+    // per-frame PNG set the encoder reads). `frames_dir` and the
+    // various transient paths derived below all alias `work.path()`,
+    // so dropping `work` deletes the files behind their backs.
+    // Refactors that move ownership out of this `main` MUST keep
+    // `work` alive at least until `encode()` returns — there's an
+    // explicit `drop(work)` at the bottom of the function pinning the
+    // observable lifetime.
     let work = TempDir::new()?;
     let stem = bundle_stem(&out);
     // Trace stays embedded-only by default — humans don't consume
@@ -272,6 +281,12 @@ fn main() -> anyhow::Result<()> {
     if let Some(witness_out) = &args.witness_out {
         print_wrote(witness_out.display());
     }
+
+    // Pin the TempDir lifetime to here so it's obvious that the
+    // encoder above must see live PNGs and that the trace/media
+    // sidecar reads (when targeting tempdir paths) all complete
+    // before `work` is dropped.
+    drop(work);
 
     Ok(())
 }
