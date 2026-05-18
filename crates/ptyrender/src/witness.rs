@@ -307,11 +307,7 @@ impl Witness {
         let output_path = output_path.as_ref();
         let output_bytes =
             std::fs::read(output_path).context("read rendered output for receipt")?;
-        let output_filename = output_path
-            .file_name()
-            .and_then(std::ffi::OsStr::to_str)
-            .unwrap_or_default()
-            .to_string();
+        let output_filename = utf8_file_name(output_path)?;
 
         Ok(Self {
             version: WITNESS_VERSION,
@@ -669,6 +665,30 @@ fn first_env_diff(expected: &ToolIdentity, got: &ToolIdentity) -> Option<VerifyO
         }
     }
     None
+}
+
+/// Extract a `path`'s final component as an owned UTF8 `String`.
+///
+/// Witness receipts are JSON, so a non-UTF8 filename cannot round-trip.
+/// Callers previously substituted the empty string via
+/// `unwrap_or_default()`, which silently corrupted the provenance
+/// record (it pointed at no file). Fail loudly instead.
+///
+/// # Errors
+/// The path has no terminal component (e.g. ends in `..` after
+/// normalization), or its terminal component contains non-UTF8 bytes.
+pub(crate) fn utf8_file_name(path: &Path) -> anyhow::Result<String> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("path {} has no filename component", path.display()))?;
+    name.to_str()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "path {} has a non-UTF8 filename; witnesses require UTF8",
+                path.display()
+            )
+        })
+        .map(str::to_string)
 }
 
 /// Hex-encoded SHA-256 of a byte slice.
@@ -1064,5 +1084,34 @@ mod tests {
             }
             other => panic!("expected AttestationTargetDiffers, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn utf8_file_name_returns_terminal_component() {
+        let got = super::utf8_file_name(Path::new("/tmp/x/demo.mp4")).unwrap();
+        assert_eq!(got, "demo.mp4");
+    }
+
+    #[test]
+    fn utf8_file_name_rejects_non_utf8_component() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        // 0xFF is never a valid UTF-8 start byte.
+        let bad = OsStr::from_bytes(&[b'a', 0xFF, b'.', b'm', b'p', b'4']);
+        let p = Path::new(bad);
+        let err = super::utf8_file_name(p).unwrap_err().to_string();
+        assert!(err.contains("non-UTF8"), "wrong message: {err}");
+    }
+
+    #[test]
+    fn utf8_file_name_rejects_path_with_no_component() {
+        let err = super::utf8_file_name(Path::new("/"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("no filename component"),
+            "wrong message: {err}"
+        );
     }
 }

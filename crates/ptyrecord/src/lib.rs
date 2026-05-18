@@ -9,6 +9,7 @@
 use std::path::Path;
 use std::path::PathBuf;
 
+use anyhow::Context as _;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use ptyrender::encode::TimingEntry;
@@ -229,8 +230,11 @@ impl PtyRecord {
     /// IO or JSON parse failure, unsupported schema version, invalid
     /// embedded hashes, or projections that do not match the trace.
     pub fn read(path: impl AsRef<Path>) -> anyhow::Result<Self> {
-        let bytes = std::fs::read(path.as_ref())?;
-        let record: Self = serde_json::from_slice(&bytes)?;
+        let path = path.as_ref();
+        let bytes =
+            std::fs::read(path).with_context(|| format!("read ptyrecord {}", path.display()))?;
+        let record: Self = serde_json::from_slice(&bytes)
+            .with_context(|| format!("parse ptyrecord {}", path.display()))?;
         record.validate()?;
         Ok(record)
     }
@@ -253,9 +257,14 @@ impl PtyRecord {
                 self.version
             );
         }
+        // Cheap structural checks first; reject on media_type before
+        // paying the base64 decode cost for trace + media payloads.
+        // A v1 bundle with the wrong media_type can never pass
+        // downstream checks, so spending decode + sha256 work on it
+        // is pure waste.
+        ensure_supported_media_type(&self.media.media_type)?;
         let trace_bytes = self.trace.decode()?;
         let media_bytes = self.media.decode()?;
-        ensure_supported_media_type(&self.media.media_type)?;
         verify_embedded_hash("trace", &trace_bytes, &self.trace.sha256)?;
         verify_embedded_hash("media", &media_bytes, &self.media.sha256)?;
 
@@ -444,13 +453,20 @@ fn push_ansi_stripped(input: &str, out: &mut String) {
 }
 
 fn media_type_for(path: &Path) -> &'static str {
+    // Only map extensions that `ensure_supported_media_type` actually
+    // accepts. Mapping `.gif` to `"image/gif"` would let
+    // `from_paths` produce an EmbeddedFile whose media_type the
+    // validator then rejects two lines later — the rejection still
+    // fires (and is tested), but advertising "image/gif" as a known
+    // type implies bundle support that v1 does not give. Fall through
+    // to the opaque catch-all instead so the validator's failure
+    // message accurately reflects the bundle format.
     match path
         .extension()
         .and_then(std::ffi::OsStr::to_str)
         .map(str::to_ascii_lowercase)
         .as_deref()
     {
-        Some("gif") => "image/gif",
         Some("mp4") => "video/mp4",
         _ => "application/octet-stream",
     }
@@ -689,6 +705,43 @@ mod tests {
 
         let err = PtyRecord::read(&path).unwrap_err().to_string();
         assert!(err.contains("transcript projection does not match embedded trace"));
+    }
+
+    #[test]
+    fn read_io_error_includes_path() {
+        let tmp = TempDir::new().unwrap();
+        let missing = tmp.path().join("does-not-exist.ptyrecord");
+
+        let err = PtyRecord::read(&missing).unwrap_err();
+        // Top-level message names the operation and the path; the
+        // underlying IO error remains accessible via the source chain.
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("read ptyrecord"),
+            "missing 'read ptyrecord' prefix: {chain}"
+        );
+        assert!(
+            chain.contains(missing.to_str().unwrap()),
+            "missing path in error: {chain}"
+        );
+    }
+
+    #[test]
+    fn read_parse_error_includes_path() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("bad.ptyrecord");
+        std::fs::write(&path, b"not valid json at all").unwrap();
+
+        let err = PtyRecord::read(&path).unwrap_err();
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("parse ptyrecord"),
+            "missing 'parse ptyrecord' prefix: {chain}"
+        );
+        assert!(
+            chain.contains(path.to_str().unwrap()),
+            "missing path in error: {chain}"
+        );
     }
 
     fn tiny_record_json() -> (TempDir, serde_json::Value) {
