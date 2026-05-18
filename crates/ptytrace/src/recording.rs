@@ -267,11 +267,19 @@ impl TraceBuilder {
         }
 
         let data = String::from_utf8_lossy(output).into_owned();
+        // Snapshot the accumulator length BEFORE the append so we
+        // can rebuild the pre-call state on predicate failure. The
+        // builder is `&mut self`, so an Err return is the only
+        // observable side-effect signal — leaving partial state in
+        // `accumulated_text` would silently feed corrupted bytes
+        // into subsequent predicate evaluations.
+        let pre_len = self.accumulated_text.len();
         self.accumulated_text.push_str(&data);
 
         if let Some(pred) = predicate
             && !pred.check(&self.accumulated_text)
         {
+            self.accumulated_text.truncate(pre_len);
             anyhow::bail!(
                 "record_step_matching: predicate {pred:?} did not hold against captured output"
             );
@@ -515,6 +523,47 @@ mod tests {
             )
             .unwrap_err();
         assert!(err.to_string().contains("predicate"));
+    }
+
+    /// Regression: a failed predicate previously left the matched-
+    /// against bytes in `accumulated_text`, so a subsequent call's
+    /// predicate would see the rolled-back step's bytes as if they
+    /// had been recorded. The fix snapshots
+    /// `accumulated_text.len()` pre-append and truncates on
+    /// predicate failure.
+    ///
+    /// Test shape: feed "hello" against a predicate that fails
+    /// (looking for "WORLD"). On the next call, assert
+    /// `DoesNotContainText { text: "hello" }` passes against
+    /// payload "X". Post-fix the accumulator is "X" (no "hello") so
+    /// the predicate passes. Pre-fix the accumulator was "helloX"
+    /// and the predicate would have failed — the assertion is
+    /// load-bearing for the rollback.
+    #[test]
+    fn predicate_failure_rolls_back_accumulated_text() {
+        let mut b = TraceBuilder::new();
+        let _ = b
+            .record_step_matching(
+                Vec::new(),
+                b"hello".to_vec(),
+                Dwell::from_millis(1),
+                Some(Predicate::ContainsText {
+                    text: "WORLD".into(),
+                }),
+            )
+            .unwrap_err();
+
+        // Pre-fix this would Err — "helloX" contains "hello".
+        // Post-fix this passes — accumulator is just "X".
+        b.record_step_matching(
+            Vec::new(),
+            b"X".to_vec(),
+            Dwell::from_millis(1),
+            Some(Predicate::DoesNotContainText {
+                text: "hello".into(),
+            }),
+        )
+        .unwrap();
     }
 
     #[test]
