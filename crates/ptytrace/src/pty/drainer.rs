@@ -175,6 +175,20 @@ impl Drainer {
     /// race, the existing buffered bytes are scanned at registration
     /// time too — if the pattern is already present, the handle fires
     /// immediately.
+    /// Signal the drainer thread to stop and block until it exits.
+    /// Idempotent: subsequent calls are no-ops (the join handle is
+    /// consumed on the first call). Used by `PtyTracer`'s `Drop` impl
+    /// to guarantee the drainer is no longer borrowing the PTY master
+    /// fd before that fd is closed; also runs unconditionally when the
+    /// `Drainer` itself drops, so callers that ignore `shutdown` still
+    /// get clean teardown.
+    pub fn shutdown(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+
     pub fn register_watch(&self, pattern: Vec<u8>) -> WatchHandle {
         assert!(!pattern.is_empty(), "register_watch: empty pattern");
         let signal = Arc::new(WatchSignal {
@@ -207,10 +221,7 @@ impl Drainer {
 
 impl Drop for Drainer {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::SeqCst);
-        if let Some(t) = self.thread.take() {
-            let _ = t.join();
-        }
+        self.shutdown();
     }
 }
 
@@ -238,8 +249,10 @@ fn drain_loop(fd: RawFd, mut stubs: StubColors, state: Arc<Mutex<State>>, stop: 
     while !stop.load(Ordering::SeqCst) {
         let mut set = FdSet::new();
         // Safety: `fd` is the master end of a PTY whose lifetime exceeds
-        // this thread (the parent `PtyTracer` joins us in `Drop` before
-        // dropping the OwnedFd).
+        // this thread. `PtyTracer` declares `drainer` before `pty`, so
+        // Rust drops the drainer (sets `stop` + joins this thread) before
+        // dropping `PtyMaster` (which closes the fd). The fd is therefore
+        // valid for every iteration of this loop.
         let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
         set.insert(borrowed);
         let mut tv = TimeVal::milliseconds(50);

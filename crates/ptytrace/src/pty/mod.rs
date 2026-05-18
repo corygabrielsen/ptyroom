@@ -215,8 +215,15 @@ impl Default for PtyTracerConfig {
 
 pub struct PtyTracer {
     cfg: PtyTracerConfig,
-    pty: PtyMaster,
+    // Field order is load-bearing: Rust drops fields in declaration
+    // order, and the drainer thread borrows the PTY master fd in its
+    // select/read loop. `drainer` must drop before `pty` so the
+    // drainer's `Drop` (set stop flag + join thread) runs while the fd
+    // is still valid. Reversing this order yields EBADF — or worse, a
+    // recycled fd pointing at an unrelated resource — in the drainer
+    // thread's read/select calls.
     drainer: Drainer,
+    pty: PtyMaster,
     /// Hold the cold `docker run` rcfile alive — `Drop` unlinks it.
     _rcfile: Option<NamedTempFile>,
     recording: TraceBuilder,
@@ -291,8 +298,8 @@ impl PtyTracer {
         let drainer = Drainer::start(pty.fd(), cfg.stubs);
         Self {
             cfg,
-            pty,
             drainer,
+            pty,
             _rcfile: rcfile,
             recording: TraceBuilder::new(),
             started_at: Instant::now(),
@@ -717,16 +724,32 @@ impl PtyTracer {
     /// # Errors
     /// `finish_synthetic` failed to assemble the recorded trace.
     pub fn stop(mut self) -> anyhow::Result<Trace> {
-        let mut trace = self
-            .recording
+        // `PtyTracer` implements `Drop`, so we can't move out of fields
+        // here — take ownership of `recording` via `mem::take` instead.
+        let recording = std::mem::take(&mut self.recording);
+        let mut trace = recording
             .finish_synthetic(self.cfg.cols, self.cfg.rows)?
             .into_trace();
         for (key, value) in &self.cfg.env {
             trace.header.env.insert(key.clone(), value.clone());
         }
         self.pty.terminate_child();
-        // Drop fields in order: drainer joins, _rcfile unlinks.
+        // `Drop for PtyTracer` joins the drainer before `pty` drops, so
+        // the PTY master fd is still valid when the drainer's read/select
+        // loop exits.
         Ok(trace)
+    }
+}
+
+impl Drop for PtyTracer {
+    fn drop(&mut self) {
+        // Lifecycle invariant: the drainer thread borrows `pty.fd()` in
+        // its read/select loop, so it must exit before `pty` is dropped
+        // (which closes the master fd). Field declaration order alone
+        // would handle this, but doing it explicitly here makes the
+        // invariant survive reorderings and surfaces the dependency
+        // for any reader of this file.
+        self.drainer.shutdown();
     }
 }
 
