@@ -156,6 +156,10 @@ struct CtlArgs {
     namespace: CtlNamespace,
 }
 
+/// Operator subsystems addressable via `ctl`. Each variant is a
+/// noun; its nested enum holds the verbs. New admin commands extend
+/// by adding a noun, not a flat top-level verb. Convention authority:
+/// `docs/ctl-protocol.md`.
 #[derive(Subcommand)]
 enum CtlNamespace {
     /// Queue operations: enqueue messages and inject them into the PTY.

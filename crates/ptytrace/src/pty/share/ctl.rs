@@ -58,6 +58,10 @@ impl Drop for CtlSocket {
     }
 }
 
+/// One parsed control command. Outer variants are namespaces (nouns);
+/// inner enums are the actions (verbs) — mirrors the
+/// `ctl <noun> <action>` CLI convention documented in
+/// `docs/ctl-protocol.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum CtlCommand {
     Queue(QueueOp),
