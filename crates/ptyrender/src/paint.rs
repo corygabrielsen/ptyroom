@@ -123,8 +123,14 @@ impl<'a> Painter<'a> {
         // of the linear scan inside `PaletteOverrides::get`.
         let palette = PaletteLookup::build(&snap.palette);
 
+        // Hoist the resolved-cell scratch buffer out of the row loop
+        // so it's allocated once per frame instead of once per row.
+        // Rows share width; `clear` + `extend` reuses the existing
+        // capacity without reallocating.
+        let mut resolved: Vec<Option<ResolvedCell<'_>>> = Vec::with_capacity(snap.cols());
+
         for (y, row) in snap.grid.iter_rows().enumerate() {
-            self.paint_row(&mut img, snap, &palette, row, y);
+            self.paint_row(&mut img, snap, &palette, row, y, &mut resolved);
         }
         img
     }
@@ -139,24 +145,27 @@ impl<'a> Painter<'a> {
         Ok(())
     }
 
-    fn paint_row(
+    fn paint_row<'b>(
         &self,
         img: &mut RgbImage,
-        snap: &Frame,
+        snap: &'b Frame,
         palette: &PaletteLookup,
-        row: &[Option<Cell>],
+        row: &'b [Option<Cell>],
         y_idx: usize,
+        resolved: &mut Vec<Option<ResolvedCell<'b>>>,
     ) {
         let cy = self.padding + usize_to_u32(y_idx) * self.metrics.height;
 
-        // Pass 1: resolve every cell's effective fg/bg once.
-        let resolved: Vec<Option<ResolvedCell<'_>>> = row
-            .iter()
-            .map(|opt| opt.as_ref().map(|c| resolve(c, snap, palette)))
-            .collect();
+        // Pass 1: resolve every cell's effective fg/bg once into the
+        // shared scratch buffer.
+        resolved.clear();
+        resolved.extend(
+            row.iter()
+                .map(|opt| opt.as_ref().map(|c| resolve(c, snap, palette))),
+        );
 
         // Pass 2: paint background runs.
-        self.paint_bg_runs(img, &resolved, snap.bg, cy);
+        self.paint_bg_runs(img, resolved, snap.bg, cy);
 
         // Pass 3: paint glyphs.
         for (x, slot) in resolved.iter().enumerate() {
