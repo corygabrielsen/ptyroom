@@ -24,7 +24,7 @@ mod poll;
 mod resize;
 pub mod stream;
 
-use drain_stdin::{JoinStdin, drain_join_stdin};
+use drain_stdin::{JoinStdin, drain_join_stdin, tick_local_input_router};
 use drain_stream::drain_join_stream;
 use output::OutputSink;
 use poll::poll_join_fds;
@@ -193,6 +193,13 @@ fn relay_fds_with_output(
             &mut last_size,
         )?;
         let poll_state = poll_join_fds(stdin_open, stdin_fd, stream_fd)?;
+
+        // Reset the local-input router if Command mode has been idle
+        // past `COMMAND_MODE_TIMEOUT` — keeps a lone `Ctrl-]` from
+        // hijacking the next keystroke arbitrarily far in the future.
+        if opts.local_controls {
+            tick_local_input_router(&mut input_router, stdout_fd, output)?;
+        }
 
         if !drain_join_stdin(
             poll_state.stdin_revents,

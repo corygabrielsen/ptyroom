@@ -121,6 +121,19 @@ fn handle_local_input(
     Ok(true)
 }
 
+/// Drive the router's idle-timeout clock and reflect any reset in the
+/// status bar. Called once per relay tick by the poll loop.
+pub(super) fn tick_local_input_router(
+    router: &mut LocalInputRouter,
+    stdout_fd: RawFd,
+    output: &mut OutputSink,
+) -> anyhow::Result<()> {
+    if let Some(LocalInputAction::SetStatus(status)) = router.tick(std::time::Instant::now()) {
+        output.set_status(stdout_fd, status)?;
+    }
+    Ok(())
+}
+
 fn maybe_flush_remote_input(
     stream_fd: RawFd,
     remote: &mut Vec<u8>,
