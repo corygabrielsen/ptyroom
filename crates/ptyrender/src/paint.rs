@@ -16,7 +16,7 @@ use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
 use anyhow::Context;
 use image::{Rgb, RgbImage};
 
-use crate::color::HexColor;
+use crate::color::{CellColor, HexColor, PaletteOverrides};
 use crate::frame::{Cell, Frame};
 
 /// Bundled `DejaVu` Sans Mono. Embedded for byte-stable rendering.
@@ -118,8 +118,13 @@ impl<'a> Painter<'a> {
         let bg_rgb = Rgb([snap.bg.r(), snap.bg.g(), snap.bg.b()]);
         let mut img = RgbImage::from_pixel(w, h, bg_rgb);
 
+        // Build a flat 256-slot palette lookup once per frame so
+        // per-cell palette resolution is an O(1) array index instead
+        // of the linear scan inside `PaletteOverrides::get`.
+        let palette = PaletteLookup::build(&snap.palette);
+
         for (y, row) in snap.grid.iter_rows().enumerate() {
-            self.paint_row(&mut img, snap, row, y);
+            self.paint_row(&mut img, snap, &palette, row, y);
         }
         img
     }
@@ -134,13 +139,20 @@ impl<'a> Painter<'a> {
         Ok(())
     }
 
-    fn paint_row(&self, img: &mut RgbImage, snap: &Frame, row: &[Option<Cell>], y_idx: usize) {
+    fn paint_row(
+        &self,
+        img: &mut RgbImage,
+        snap: &Frame,
+        palette: &PaletteLookup,
+        row: &[Option<Cell>],
+        y_idx: usize,
+    ) {
         let cy = self.padding + usize_to_u32(y_idx) * self.metrics.height;
 
         // Pass 1: resolve every cell's effective fg/bg once.
         let resolved: Vec<Option<ResolvedCell<'_>>> = row
             .iter()
-            .map(|opt| opt.as_ref().map(|c| resolve(c, snap)))
+            .map(|opt| opt.as_ref().map(|c| resolve(c, snap, palette)))
             .collect();
 
         // Pass 2: paint background runs.
@@ -269,9 +281,73 @@ struct ResolvedCell<'a> {
     bg: HexColor,
 }
 
-fn resolve<'a>(cell: &'a Cell, snap: &Frame) -> ResolvedCell<'a> {
-    let (fg, bg) = cell.resolve_layers(snap);
+/// Per-frame O(1) palette index lookup. Populated once from the
+/// frame's [`PaletteOverrides`], then queried for every cell that
+/// references an indexed palette color. Replaces the linear scan
+/// inside `PaletteOverrides::get` on the per-cell hot path.
+struct PaletteLookup {
+    table: [Option<HexColor>; 256],
+    is_empty: bool,
+}
+
+impl PaletteLookup {
+    fn build(overrides: &PaletteOverrides) -> Self {
+        let mut table = [None; 256];
+        let is_empty = overrides.is_empty();
+        if !is_empty {
+            for (idx, color) in overrides.iter() {
+                table[idx as usize] = Some(color);
+            }
+        }
+        Self { table, is_empty }
+    }
+
+    #[inline]
+    fn get(&self, idx: u8) -> Option<HexColor> {
+        if self.is_empty {
+            return None;
+        }
+        self.table[idx as usize]
+    }
+}
+
+fn resolve<'a>(cell: &'a Cell, snap: &Frame, palette: &PaletteLookup) -> ResolvedCell<'a> {
+    let mut fg = resolve_color(&cell.fg, snap.fg, palette);
+    let mut bg = resolve_color(&cell.bg, snap.bg, palette);
+    if cell.is_inverse() {
+        std::mem::swap(&mut fg, &mut bg);
+    }
     ResolvedCell { cell, fg, bg }
+}
+
+/// Per-frame variant of [`CellColor::resolve`] that consults the
+/// precomputed [`PaletteLookup`] instead of the original
+/// [`PaletteOverrides`]'s linear scan.
+fn resolve_color(
+    color: &CellColor,
+    default_for_layer: HexColor,
+    palette: &PaletteLookup,
+) -> HexColor {
+    match color {
+        CellColor::Default => default_for_layer,
+        CellColor::Rgb(c) => *c,
+        CellColor::Palette { idx, fallback } => {
+            if let Some(fb) = fallback {
+                return *fb;
+            }
+            if let Some(over) = palette.get(*idx) {
+                return over;
+            }
+            if (*idx as usize) < crate::color::DEFAULT_ANSI_16.len() {
+                return crate::color::DEFAULT_ANSI_16[*idx as usize];
+            }
+            default_for_layer
+        }
+        // `CellColor` is `#[non_exhaustive]`; future variants fall
+        // back to the layer default rather than panicking.
+        #[allow(unreachable_patterns, clippy::match_same_arms)]
+        _ => default_for_layer,
+    }
 }
 
 fn fill_rect(img: &mut RgbImage, x0: u32, y0: u32, x1: u32, y1: u32, c: HexColor) {
