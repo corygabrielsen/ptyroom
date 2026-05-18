@@ -321,14 +321,35 @@ impl TraceBuilder {
             ]),
         };
 
+        // Timestamp plateau policy: a zero-dwell step does not advance
+        // `t_ns`, so two adjacent zero-dwell events emit the same
+        // `time_s`. That's the same behavior asciinema players have
+        // tolerated for years and downstream consumers (frame_replay,
+        // ptyrecord transcript) already treat it as "two events at the
+        // same instant," not a malformed trace. We deliberately do
+        // NOT bump duplicates by 1 ns here — enforcing strict
+        // monotonicity would silently mutate caller-supplied dwells.
+        // The `PTYTRACE_DEBUG_PLATEAU` env var enables an
+        // opt-in stderr trace for callers diagnosing unexpected
+        // collisions.
         let mut events = Vec::new();
         let mut t_ns: u64 = 0;
-        for step in &self.steps {
+        let debug_plateau = std::env::var_os("PTYTRACE_DEBUG_PLATEAU").is_some();
+        let mut last_t_ns: Option<u64> = None;
+        for (idx, step) in self.steps.iter().enumerate() {
+            if debug_plateau && last_t_ns == Some(t_ns) {
+                eprintln!(
+                    "[ptytrace] zero-dwell timestamp plateau at event {idx}: \
+                     two consecutive events share time_s={}",
+                    ns_to_seconds(t_ns)
+                );
+            }
             events.push(TraceEvent {
                 time_s: ns_to_seconds(t_ns),
                 kind: step.kind,
                 data: step.data.clone(),
             });
+            last_t_ns = Some(t_ns);
             t_ns = t_ns.saturating_add(step.dwell.as_nanos());
         }
 

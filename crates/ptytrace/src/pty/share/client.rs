@@ -256,19 +256,26 @@ impl Client {
                 }
                 false
             }
-            Some(ClientControl::Resize(size)) => {
-                if self.protocol_ready {
-                    self.size = Some(size);
-                    true
-                } else {
-                    false
-                }
+            Some(ClientControl::Resize(size)) if self.protocol_ready => {
+                self.size = Some(size);
+                true
             }
-            None => self.protocol_ready,
+            // Resize-before-hello disconnects the client. A malformed
+            // control frame after a successful hello is not a benign
+            // re-send; treat it the same and disconnect. Pre-fix the
+            // `None` arm returned `self.protocol_ready`, silently
+            // dropping any frame the parser couldn't decode.
+            Some(ClientControl::Resize(_)) | None => false,
         }
     }
 
-    pub(super) fn disconnect(&self) {
+    pub(super) fn disconnect(&mut self) {
+        // Clear the reported size so any future code path that
+        // pools or reuses `Client` records can't inherit a stale
+        // value into the next session's `desired_session_size` fold.
+        // Today disconnected clients are dropped from the vec on the
+        // spot, so this is defense-in-depth — but free.
+        self.size = None;
         let _ = self.stream.shutdown(Shutdown::Both);
     }
 

@@ -82,6 +82,13 @@ impl Default for LiveStitchConfig {
     }
 }
 
+/// Output of [`LiveFrameStitcher::finish`]. `frames_dir` is the
+/// directory the PNG sequence was written into — it does NOT include
+/// ownership of any backing `TempDir`. Callers that hand the stitcher
+/// a tempdir-relative path are responsible for keeping that tempdir
+/// alive until they're done with `frames_dir` (typically: until
+/// `encode()` returns). Dropping the tempdir prematurely deletes the
+/// PNGs behind the encoder's back.
 #[derive(Debug, Clone)]
 pub struct StitchedFrames {
     pub frames_dir: PathBuf,

@@ -53,6 +53,27 @@ use crate::recording::TraceBuilder;
 
 const CTL_IO_TIMEOUT: Duration = Duration::from_millis(500);
 
+/// RAII wrapper that calls `shutdown(Shutdown::Both)` on the wrapped
+/// `UnixStream` when the guard goes out of scope, regardless of
+/// whether scope exit was a normal return, an early return on error,
+/// or stack unwinding from a panic. Used in `handle_ctl_connection`
+/// so the peer never sees a half-open ctl socket.
+struct CtlStreamGuard {
+    stream: UnixStream,
+}
+
+impl CtlStreamGuard {
+    fn new(stream: UnixStream) -> Self {
+        Self { stream }
+    }
+}
+
+impl Drop for CtlStreamGuard {
+    fn drop(&mut self) {
+        let _ = self.stream.shutdown(Shutdown::Both);
+    }
+}
+
 /// Resolve the directory for ptyroom runtime state (control sockets,
 /// etc.).
 ///
@@ -362,11 +383,17 @@ impl<'a> Session<'a> {
         }
     }
 
-    fn handle_ctl_connection(&mut self, mut stream: UnixStream) {
-        stream.set_read_timeout(Some(CTL_IO_TIMEOUT)).ok();
-        stream.set_write_timeout(Some(CTL_IO_TIMEOUT)).ok();
+    fn handle_ctl_connection(&mut self, stream: UnixStream) {
+        // `CtlStreamGuard` calls `shutdown(Both)` on drop so even a
+        // panic inside `parse_ctl_command` or `execute_ctl_command`
+        // closes the socket cleanly. Pre-fix, only the happy match
+        // arm shut the stream down; any error path that unwound past
+        // the explicit call leaked a half-open peer connection.
+        let mut guard = CtlStreamGuard::new(stream);
+        guard.stream.set_read_timeout(Some(CTL_IO_TIMEOUT)).ok();
+        guard.stream.set_write_timeout(Some(CTL_IO_TIMEOUT)).ok();
         let parse_result = {
-            let mut reader = BufReader::new(&mut stream);
+            let mut reader = BufReader::new(&mut guard.stream);
             parse_ctl_command(&mut reader)
         };
         let response = match parse_result {
@@ -376,8 +403,10 @@ impl<'a> Session<'a> {
             },
             Err(err) => format!("err {err}\n"),
         };
-        let _ = stream.write_all(response.as_bytes());
-        let _ = stream.shutdown(Shutdown::Both);
+        let _ = guard.stream.write_all(response.as_bytes());
+        // Explicit drop documents that shutdown runs here on the happy
+        // path too; the Drop impl makes the error paths equivalent.
+        drop(guard);
     }
 
     fn execute_ctl_command(&mut self, cmd: CtlCommand) -> anyhow::Result<String> {
@@ -710,6 +739,27 @@ mod tests {
         let mut reader = std::io::Cursor::new(b"frobnicate\n".to_vec());
         let err = parse_ctl_command(&mut reader).unwrap_err();
         assert!(err.to_string().contains("unknown"));
+    }
+
+    #[test]
+    fn parse_ctl_strips_leading_whitespace() {
+        // Leading spaces/tabs in front of the verb should not produce
+        // an empty-verb error.
+        let mut reader = std::io::Cursor::new(b"  \tnext\n".to_vec());
+        assert_eq!(
+            parse_ctl_command(&mut reader).unwrap(),
+            CtlCommand::Queue(QueueOp::Next)
+        );
+    }
+
+    #[test]
+    fn parse_ctl_rejects_unbounded_line() {
+        // No newline ever — `read_line` would otherwise grow without
+        // limit. The cap should kick in and surface as an error.
+        let huge = vec![b'x'; ctl::MAX_CTL_LINE_BYTES + 1];
+        let mut reader = std::io::Cursor::new(huge);
+        let err = parse_ctl_command(&mut reader).unwrap_err();
+        assert!(err.to_string().contains("too long"));
     }
 
     #[test]
@@ -1176,6 +1226,31 @@ mod tests {
             TerminalSize { cols: 90, rows: 25 }
         );
         assert_eq!(sizing::desired_session_size(fallback, None, &[]), fallback);
+    }
+
+    #[test]
+    fn desired_session_size_ignores_per_axis_zeros() {
+        // A zero on one axis means "I don't know this dimension yet."
+        // Two clients each missing one axis should compose to a
+        // sensible non-zero size, not collapse the PTY to (0, 24).
+        let fallback = TerminalSize {
+            cols: 100,
+            rows: 30,
+        };
+        let cols_only = client_with_size(TerminalSize { cols: 80, rows: 0 });
+        let rows_only = client_with_size(TerminalSize { cols: 0, rows: 24 });
+
+        assert_eq!(
+            sizing::desired_session_size(fallback, None, &[cols_only, rows_only]),
+            TerminalSize { cols: 80, rows: 24 }
+        );
+
+        // If every participant has both axes zero, fall back.
+        let blank = client_with_size(TerminalSize { cols: 0, rows: 0 });
+        assert_eq!(
+            sizing::desired_session_size(fallback, None, &[blank]),
+            fallback
+        );
     }
 
     #[test]
