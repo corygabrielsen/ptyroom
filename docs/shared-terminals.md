@@ -150,9 +150,19 @@ straight through to the child PTY.
 
 ## Message Queue
 
-`ptyroom host` exposes a local message queue over a Unix socket at
-`/tmp/ptyroom-<port>.sock`, where `<port>` is the host's bound TCP
-port. External processes drive the queue with `ptyroom ctl`:
+`ptyroom host` exposes a local message queue over a Unix socket
+named `<port>.sock`, located under the resolved state directory:
+
+1. `--state-dir <PATH>` flag on the host (and matching flag on `ctl`)
+2. `$PTYROOM_STATE_DIR` environment variable
+3. `$XDG_RUNTIME_DIR/ptyroom/` if `XDG_RUNTIME_DIR` is set
+4. `/tmp/ptyroom-<euid>/` fallback otherwise
+
+Default on a systemd-managed Linux desktop is
+`/run/user/<uid>/ptyroom/<port>.sock`. `ptyroom ctl` resolves the same
+chain and must agree with the host on which directory to use (matching
+`--state-dir`, env, or both unset). External processes drive the queue
+with `ptyroom ctl`:
 
 ```bash
 ptyroom ctl 127.0.0.1:7373 queue add "first prompt"
