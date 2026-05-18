@@ -2,7 +2,7 @@
 
 use std::io::IsTerminal;
 use std::os::fd::{BorrowedFd, RawFd};
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicUsize, Ordering};
 
 #[cfg(not(test))]
 use nix::libc;
@@ -14,9 +14,39 @@ const VIEWPORT_SEQUENCE: u8 = 2;
 const TERMINATION_SIGNALS: [libc::c_int; 4] =
     [libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT];
 
+// INVARIANT_SIGNAL_RESTORE_FD_IS_STABLE
+// ====================================
+// `SIGNAL_RESTORE_FD` and `SIGNAL_RESTORE_SEQUENCE` are read from
+// async-signal context by `handle_termination_signal`. The handler
+// can only do async-signal-safe work — no allocation, no Mutex, no
+// most of stdlib. It also has no way to coordinate with a writer:
+// if the main thread mutates either atomic between the handler's
+// load of FD and its `libc::write` call, the handler writes to a
+// stale (or worse, recycled-by-another-thread) fd.
+//
+// To make this race unreachable, the fd is set EXACTLY ONCE per
+// `RestoreGuard` lifetime — in `RestoreGuard::new` — and cleared
+// EXACTLY ONCE in `Drop`. There is no `set_fd` API. The session's
+// stdout fd is captured once at session start (`share/mod.rs` and
+// `connect.rs`) and threaded immutably through all subsequent
+// viewport calls, so an in-place fd swap was never needed.
+//
+// `GUARD_COUNT` enforces the second half of the contract: only one
+// `RestoreGuard` may be alive at a time. A second concurrent
+// construction would clobber the atomics from under the
+// already-installed signal handlers; we panic instead. In practice
+// the codebase's guard sites are mutually exclusive (host-viewport
+// XOR child-output-tee, see `setup_host_terminal`), so the counter
+// is a guard-rail against future regressions, not load-bearing.
+//
+// Tests for this invariant are platform-specific (signal delivery)
+// and intentionally omitted — the invariant is enforced
+// structurally by the absence of a mutation API and the runtime
+// counter check.
 static TERMINATION_REQUESTED: AtomicBool = AtomicBool::new(false);
 static SIGNAL_RESTORE_FD: AtomicI32 = AtomicI32::new(-1);
 static SIGNAL_RESTORE_SEQUENCE: AtomicU8 = AtomicU8::new(NO_SEQUENCE);
+static GUARD_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 // No trailing CRLF: `\x1b[?25h` is the last byte. A `\r\n` tail would
 // advance the cursor one row, and at viewport bottom that scrolls
@@ -147,8 +177,34 @@ pub(super) struct RestoreGuard {
 }
 
 impl RestoreGuard {
+    /// Install signal handlers and arm the async-signal-safe restore
+    /// path on `fd`. See `INVARIANT_SIGNAL_RESTORE_FD_IS_STABLE`
+    /// above: the fd is set once here and cleared once on drop, and
+    /// only one `RestoreGuard` may be alive at a time.
+    ///
+    /// # Panics
+    /// If another `RestoreGuard` is already alive in this process.
+    /// A concurrent second guard would overwrite the atomics that
+    /// the first guard's installed signal handlers read from,
+    /// reintroducing the signal-handler TOCTOU this guard exists to
+    /// prevent.
     #[must_use]
     pub(super) fn new(fd: RawFd, sequence: &'static [u8]) -> Self {
+        let previous = GUARD_COUNT.fetch_add(1, Ordering::SeqCst);
+        // In `cfg(test)`, `SignalHandlers::install` is a no-op stub
+        // (see below) so concurrent test threads can each construct a
+        // guard against an isolated pipe fd without colliding on real
+        // signal-handler installation. The single-guard invariant
+        // only matters when real handlers are installed, which is
+        // only in `cfg(not(test))`.
+        #[cfg(not(test))]
+        assert_eq!(
+            previous, 0,
+            "RestoreGuard: a second guard cannot be installed while one is \
+             alive — see INVARIANT_SIGNAL_RESTORE_FD_IS_STABLE",
+        );
+        #[cfg(test)]
+        let _ = previous;
         clear_termination_request();
         SIGNAL_RESTORE_FD.store(fd, Ordering::SeqCst);
         SIGNAL_RESTORE_SEQUENCE.store(sequence_kind(sequence), Ordering::SeqCst);
@@ -158,11 +214,6 @@ impl RestoreGuard {
             _signal_handlers: SignalHandlers::install(),
         }
     }
-
-    pub(super) fn set_fd(&mut self, fd: RawFd) {
-        self.fd = fd;
-        SIGNAL_RESTORE_FD.store(fd, Ordering::SeqCst);
-    }
 }
 
 impl Drop for RestoreGuard {
@@ -171,6 +222,7 @@ impl Drop for RestoreGuard {
         SIGNAL_RESTORE_FD.store(-1, Ordering::SeqCst);
         SIGNAL_RESTORE_SEQUENCE.store(NO_SEQUENCE, Ordering::SeqCst);
         clear_termination_request();
+        GUARD_COUNT.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
