@@ -13,7 +13,7 @@ use std::time::Duration;
 use anyhow::Context;
 
 use super::input_router::LocalInputRouter;
-use super::room_protocol::{self, TerminalSize};
+use super::room_protocol;
 use super::terminal_io::write_all;
 use super::terminal_state::{RawModeGuard, termination_requested};
 
@@ -21,12 +21,14 @@ mod drain_stdin;
 mod drain_stream;
 mod output;
 mod poll;
+mod resize;
 pub mod stream;
 
 use drain_stdin::{JoinStdin, drain_join_stdin};
 use drain_stream::drain_join_stream;
 use output::OutputSink;
 use poll::poll_join_fds;
+use resize::send_resize_if_changed;
 use stream::ServerStream;
 
 pub(super) const RESIZE_CHECK_INTERVAL: Duration = Duration::from_millis(250);
@@ -222,23 +224,6 @@ fn relay_fds_with_output(
             return Ok(());
         }
     }
-}
-
-fn send_resize_if_changed(
-    stream_fd: RawFd,
-    size: Option<TerminalSize>,
-    last_size: &mut Option<TerminalSize>,
-) -> anyhow::Result<()> {
-    let Some(size) = size else {
-        return Ok(());
-    };
-    if Some(size) == *last_size {
-        return Ok(());
-    }
-    let frame = room_protocol::encode_resize_control(size);
-    write_all(stream_fd, &frame)?;
-    *last_size = Some(size);
-    Ok(())
 }
 
 fn addr_label(stream: &TcpStream) -> String {
