@@ -44,11 +44,36 @@ A reverse proxy in front of `ptyweb` should:
 ## Endpoints
 
 - `GET /` — viewer HTML
-- `GET /viewer.js`, `GET /xterm.js`, `GET /xterm.css` — vendored assets
+- `GET /viewer.js`, `GET /xterm.js`, `GET /xterm.css`,
+  `GET /xterm-addon-fit.js` — vendored assets
 - `GET /healthz` — liveness probe (returns `ok`)
 - `GET /ws` — WebSocket upgrade; gated on `X-PtyWeb-Auth`
 
 ## Vendored assets
 
-`xterm.js` 5.3.0 (MIT). Update by replacing `src/viewer/xterm.js` and
-`src/viewer/xterm.css`.
+- `xterm.js` 5.3.0 (MIT) — `src/viewer/xterm.{js,css}`
+- `xterm-addon-fit` 0.8.0 (MIT) — `src/viewer/xterm-addon-fit.js`
+  (responsive geometry; matches xterm 5.x peer dep)
+
+## WebSocket protocol
+
+- **browser → ptyweb**: binary frame = keystroke bytes (raw); text
+  frame = JSON control, e.g. `{"resize":{"cols":120,"rows":40}}`
+- **ptyweb → browser**: binary frame = PTY output bytes; text frame =
+  JSON status, e.g.
+  `{"status":"connected","room":"127.0.0.1:7373","read_only":false}`
+
+The status frame is sent exactly once per WebSocket handshake.
+
+## Reconnect behavior
+
+The viewer keeps the `Terminal` instance alive across disconnects.
+Connection loss appends a `[disconnected]` line and dims the terminal;
+on reconnect, a `[reconnected]` line is appended, the dim clears, and a
+fresh status frame re-renders the badge. Backoff is exponential with a
+30 s cap.
+
+## Integration
+
+For embedding `ptyweb` into another process (companion app, ops tool,
+CI runner) see [INTEGRATION.md](./INTEGRATION.md).
