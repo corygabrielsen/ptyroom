@@ -56,6 +56,26 @@ impl ViewportRenderer {
         self.redraw(bar, false)
     }
 
+    /// Update the renderer's parser to match a new canonical size.
+    ///
+    /// `size` is the ALREADY-REDUCED viewport size (the remote PTY's
+    /// canonical content area, NOT the full local terminal size).
+    /// `enter` is the only call site that performs the reduction
+    /// itself, because it queries the local ioctl size directly. All
+    /// post-enter size updates flow from already-reduced sources:
+    ///
+    /// - share path: `share::sizing::sync_canonical_size` passes the
+    ///   canonical PTY size, which is the per-axis min over
+    ///   `HostViewport::reported_size(stdout_fd)` (already reduced)
+    ///   and connected clients' reported sizes (also reduced — see
+    ///   below).
+    /// - connect path: client polls `ViewportRenderer::reported_size`
+    ///   (reduced) and sends it to the server; server echoes back
+    ///   the canonical size (still reduced); client feeds that into
+    ///   this function.
+    ///
+    /// Do not call `remote_view_size` on `size` here — that would
+    /// double-reduce.
     pub(crate) fn resize(
         &mut self,
         stdout_fd: RawFd,
