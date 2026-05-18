@@ -713,6 +713,16 @@ mod tests {
     }
 
     #[test]
+    fn parse_ctl_rejects_unbounded_line() {
+        // No newline ever — `read_line` would otherwise grow without
+        // limit. The cap should kick in and surface as an error.
+        let huge = vec![b'x'; ctl::MAX_CTL_LINE_BYTES + 1];
+        let mut reader = std::io::Cursor::new(huge);
+        let err = parse_ctl_command(&mut reader).unwrap_err();
+        assert!(err.to_string().contains("too long"));
+    }
+
+    #[test]
     fn parse_ctl_clear_and_list_round_trip() {
         let mut clear = std::io::Cursor::new(b"clear\n".to_vec());
         let mut list = std::io::Cursor::new(b"list\n".to_vec());
