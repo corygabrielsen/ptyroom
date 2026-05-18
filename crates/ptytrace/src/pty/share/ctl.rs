@@ -131,10 +131,7 @@ pub(super) fn parse_ctl_command<R: Read>(reader: &mut R) -> anyhow::Result<CtlCo
             if len > CTL_MAX_PAYLOAD_BYTES {
                 anyhow::bail!("payload too large (max {CTL_MAX_PAYLOAD_BYTES} bytes)");
             }
-            let mut payload = vec![0_u8; len];
-            reader
-                .read_exact(&mut payload)
-                .context("read ctl payload")?;
+            let payload = read_payload(reader, len)?;
             let text = String::from_utf8(payload).context("payload is not valid UTF-8")?;
             Ok(CtlCommand::Queue(QueueOp::Add(text)))
         }
@@ -146,6 +143,36 @@ pub(super) fn parse_ctl_command<R: Read>(reader: &mut R) -> anyhow::Result<CtlCo
             anyhow::bail!("unknown control verb {lossy:?}")
         }
     }
+}
+
+/// Payload size above which we read into an uninitialized capacity
+/// buffer chunk-by-chunk instead of pre-zeroing the whole `Vec`.
+/// Below this threshold, the zero-fill is cheaper than the loop
+/// bookkeeping; above it, the saved `memset` dominates.
+const CTL_PAYLOAD_STREAM_THRESHOLD: usize = 16 * 1024;
+
+fn read_payload<R: Read>(reader: &mut R, len: usize) -> anyhow::Result<Vec<u8>> {
+    if len <= CTL_PAYLOAD_STREAM_THRESHOLD {
+        let mut payload = vec![0_u8; len];
+        reader
+            .read_exact(&mut payload)
+            .context("read ctl payload")?;
+        return Ok(payload);
+    }
+    // Large payload path: allocate capacity once, then read 4 KiB at
+    // a time into the uninitialized tail instead of zeroing the full
+    // 64 KiB buffer up front. Uses the safe `chunk` + `extend_from_slice`
+    // pattern to avoid `MaybeUninit` machinery.
+    let mut payload: Vec<u8> = Vec::with_capacity(len);
+    let mut chunk = [0_u8; 4 * 1024];
+    while payload.len() < len {
+        let want = (len - payload.len()).min(chunk.len());
+        reader
+            .read_exact(&mut chunk[..want])
+            .context("read ctl payload")?;
+        payload.extend_from_slice(&chunk[..want]);
+    }
+    Ok(payload)
 }
 
 fn trim_start_ws(s: &[u8]) -> &[u8] {
