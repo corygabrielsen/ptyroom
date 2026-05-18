@@ -101,7 +101,12 @@ pub(super) fn parse_ctl_command<R: BufRead>(reader: &mut R) -> anyhow::Result<Ct
     if line.len() >= MAX_CTL_LINE_BYTES && !line.ends_with('\n') {
         anyhow::bail!("ctl command line too long (max {MAX_CTL_LINE_BYTES} bytes)");
     }
-    let trimmed = line.trim_end_matches(['\n', '\r']);
+    // Strip both ends: trailing CRLF and any incidental leading
+    // whitespace. Pre-fix, `" add 5\nhello"` parsed the verb as empty
+    // and produced an opaque "unknown control verb" error.
+    let trimmed = line
+        .trim_start_matches([' ', '\t'])
+        .trim_end_matches(['\n', '\r']);
     let mut parts = trimmed.splitn(2, ' ');
     let verb = parts.next().unwrap_or("");
     match verb {

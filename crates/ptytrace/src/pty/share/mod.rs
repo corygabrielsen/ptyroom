@@ -713,6 +713,17 @@ mod tests {
     }
 
     #[test]
+    fn parse_ctl_strips_leading_whitespace() {
+        // Leading spaces/tabs in front of the verb should not produce
+        // an empty-verb error.
+        let mut reader = std::io::Cursor::new(b"  \tnext\n".to_vec());
+        assert_eq!(
+            parse_ctl_command(&mut reader).unwrap(),
+            CtlCommand::Queue(QueueOp::Next)
+        );
+    }
+
+    #[test]
     fn parse_ctl_rejects_unbounded_line() {
         // No newline ever — `read_line` would otherwise grow without
         // limit. The cap should kick in and surface as an error.
