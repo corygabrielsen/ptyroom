@@ -13,7 +13,9 @@ use tempfile::TempDir;
 use crate::encode::{EncodeRequest, Mp4Encoder, encode};
 use crate::frame_replay::replay;
 use crate::paint::{FONT_BYTES, PaintConfig, Painter};
-use crate::witness::{RenderOptions, ToolIdentity, WITNESS_VERSION, Witness, sha256_hex};
+use crate::witness::{
+    RenderOptions, ToolIdentity, WITNESS_VERSION, Witness, sha256_hex, utf8_file_name,
+};
 use ptytrace::pty::StubColors;
 use ptytrace::trace::Trace;
 
@@ -181,15 +183,17 @@ impl Render {
         // ffmpeg fork twice when the render itself also forks ffmpeg.
         let tool = ToolIdentity::current()?;
 
+        // Reject non-UTF8 / componentless output paths up front, before
+        // doing the expensive render — a receipt that cannot be emitted
+        // makes the render output useless to this codepath. See
+        // `utf8_file_name` for why silent fallback to "" was the wrong
+        // shape.
+        let output_filename = utf8_file_name(&out_path)?;
+
         self.execute(&out_path)?;
 
         let output_bytes = std::fs::read(&out_path)?;
         let output_sha256 = sha256_hex(&output_bytes);
-        let output_filename = out_path
-            .file_name()
-            .and_then(std::ffi::OsStr::to_str)
-            .unwrap_or_default()
-            .to_string();
 
         Ok(Witness {
             version: WITNESS_VERSION,
