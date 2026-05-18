@@ -346,46 +346,6 @@ impl PtyTracer {
         self.send_and_capture(key.bytes(), dwell, settle)
     }
 
-    /// Send a key `repeat` times, with `dwell` between each.
-    ///
-    /// # Errors
-    /// As [`PtyTracer::dwell`].
-    pub fn keys(&mut self, key: Key, dwell: Duration, repeat: usize) -> anyhow::Result<()> {
-        for _ in 0..repeat {
-            self.key(key, dwell)?;
-        }
-        Ok(())
-    }
-
-    /// Send repeated raw key bytes as one live burst while advancing trace time
-    /// as if each key happened at `dwell` cadence.
-    ///
-    /// This is the virtual-time form of [`PtyTracer::keys`]: useful when the
-    /// child program can process queued input deterministically and the demo
-    /// does not need host sleeps between individual keys.
-    ///
-    /// # Errors
-    /// Recording exceeded `max_runtime`, or PTY write failed.
-    pub fn keys_burst(&mut self, key: Key, dwell: Duration, repeat: usize) -> anyhow::Result<()> {
-        if repeat == 0 {
-            return Ok(());
-        }
-
-        self.check_runtime()?;
-        let bytes = key.bytes();
-        let mut input = Vec::with_capacity(bytes.len() * repeat);
-        for _ in 0..repeat {
-            input.extend_from_slice(bytes);
-        }
-        write_all(self.pty.fd(), &input)?;
-
-        let total_dwell = dwell.saturating_mul(u32::try_from(repeat).unwrap_or(u32::MAX));
-        let captured = self.drainer.consume();
-        self.recording
-            .record_step(input, captured, Dwell::from_duration(total_dwell))?;
-        Ok(())
-    }
-
     /// Add presentation output directly to the trace without touching the PTY.
     ///
     /// This is the low-level presentation-time escape hatch. The output is
@@ -497,14 +457,6 @@ impl PtyTracer {
             )?;
         }
         Ok(())
-    }
-
-    /// Send raw bytes (escape sequences, control codes) with the given dwell.
-    ///
-    /// # Errors
-    /// As [`PtyTracer::dwell`].
-    pub fn send_raw(&mut self, bytes: &[u8], dwell: Duration) -> anyhow::Result<()> {
-        self.send_and_capture(bytes, dwell, DEFAULT_SETTLE)
     }
 
     /// Send raw bytes and record output after `pattern` appears in the PTY
