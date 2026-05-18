@@ -225,14 +225,13 @@ impl Drop for Drainer {
     }
 }
 
-/// Search `haystack` for `needle`. Naive O(n*m) — patterns are short
-/// (~10 bytes for OSC sequences) and chunks are bounded; no need for
-/// a proper substring search algorithm.
+/// Search `haystack` for `needle`. Uses memchr's two-way-style memmem
+/// for near-linear scans on long inputs.
 fn contains_pattern(haystack: &[u8], needle: &[u8]) -> bool {
     if needle.is_empty() || haystack.len() < needle.len() {
         return false;
     }
-    haystack.windows(needle.len()).any(|w| w == needle)
+    memchr::memmem::find(haystack, needle).is_some()
 }
 
 // `Arc` parameters are moved in but only their refs are used inside the
