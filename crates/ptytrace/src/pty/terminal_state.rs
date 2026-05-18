@@ -173,7 +173,13 @@ pub(super) const fn viewport_restore_sequence() -> &'static [u8] {
 pub(super) struct RestoreGuard {
     fd: RawFd,
     sequence: &'static [u8],
-    _signal_handlers: Option<SignalHandlers>,
+    // `Option` so `Drop` can `.take()` it and force the handler
+    // teardown to happen BEFORE clearing the async-signal-safe
+    // atomics. The implicit field-drop order would run the
+    // restore-fd write and atomic clears between the user-visible
+    // Drop body and the handlers' own Drop, which is not the
+    // ordering the async-signal-safe contract requires.
+    signal_handlers: Option<SignalHandlers>,
 }
 
 impl RestoreGuard {
@@ -229,7 +235,7 @@ impl RestoreGuard {
         Self {
             fd,
             sequence,
-            _signal_handlers: handlers,
+            signal_handlers: handlers,
         }
     }
 }
@@ -237,6 +243,20 @@ impl RestoreGuard {
 impl Drop for RestoreGuard {
     fn drop(&mut self) {
         restore_fd_best_effort(self.fd, self.sequence);
+        // Uninstall handlers BEFORE clearing atomics. After
+        // `signal_handlers.take()` is dropped, the `SignalHandlers`
+        // Drop has restored the previous sigactions, so no
+        // termination signal can land in our async-signal-safe
+        // handler past this point. Only then is it safe to zero the
+        // atomics — if we zeroed first, a signal racing between the
+        // store and the handler-uninstall would load fd=-1 and
+        // return early. Currently safe by accident; this ordering
+        // makes "no handler can fire" the explicit precondition for
+        // clearing the atomics. `let _ = ...` drops at end of
+        // statement (unlike `let _x = ...` which holds the binding
+        // until scope end) — verified by the cfg(test) build, which
+        // has a unit `SignalHandlers` and is lint-clean here.
+        let _ = self.signal_handlers.take();
         SIGNAL_RESTORE_FD.store(-1, Ordering::SeqCst);
         SIGNAL_RESTORE_SEQUENCE.store(NO_SEQUENCE, Ordering::SeqCst);
         clear_termination_request();
