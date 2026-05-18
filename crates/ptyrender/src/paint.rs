@@ -274,8 +274,15 @@ fn resolve<'a>(cell: &'a Cell, snap: &Frame) -> ResolvedCell<'a> {
 fn fill_rect(img: &mut RgbImage, x0: u32, y0: u32, x1: u32, y1: u32, c: HexColor) {
     let px = Rgb([c.r(), c.g(), c.b()]);
     let (w, h) = (img.width(), img.height());
+    // Clamp both corners so an origin past the image edge is a no-op
+    // instead of a panic on `put_pixel`.
+    let x0 = x0.min(w);
+    let y0 = y0.min(h);
     let x1 = x1.min(w);
     let y1 = y1.min(h);
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
     for y in y0..y1 {
         for x in x0..x1 {
             img.put_pixel(x, y, px);
@@ -365,6 +372,19 @@ mod tests {
         // The bottom-right 2×2 should be red, top-left 2×2 untouched.
         assert_eq!(img.get_pixel(3, 3), &Rgb([255, 0, 0]));
         assert_eq!(img.get_pixel(0, 0), &Rgb([0, 0, 0]));
+    }
+
+    #[test]
+    fn fill_rect_origin_past_bounds_is_noop() {
+        // An x0/y0 past the image edge must not panic; the rect is empty.
+        let mut img = RgbImage::new(4, 4);
+        fill_rect(&mut img, 10, 10, 20, 20, HexColor::from_rgb(255, 0, 0));
+        fill_rect(&mut img, 0, 10, 4, 20, HexColor::from_rgb(255, 0, 0));
+        fill_rect(&mut img, 10, 0, 20, 4, HexColor::from_rgb(255, 0, 0));
+        // Reversed/empty rects also no-op.
+        fill_rect(&mut img, 3, 3, 1, 1, HexColor::from_rgb(255, 0, 0));
+        assert_eq!(img.get_pixel(0, 0), &Rgb([0, 0, 0]));
+        assert_eq!(img.get_pixel(3, 3), &Rgb([0, 0, 0]));
     }
 
     #[test]
