@@ -1,5 +1,7 @@
 //! Host-to-join framing decoder.
 
+use std::collections::VecDeque;
+
 use super::super::room_protocol::{self, ServerControl, TerminalSize};
 
 /// One semantic event decoded from a ptyroom host's TCP stream.
@@ -19,15 +21,19 @@ pub enum ServerEvent {
 ///
 /// Push bytes as they arrive; the parser tracks partial frames
 /// across boundaries.
+///
+/// `pending` is a `VecDeque` so front drains (the common case as
+/// frames are parsed off the head) are O(1) amortized instead of
+/// O(n) shifts on a `Vec`.
 #[derive(Debug, Default)]
 pub struct ServerStream {
-    pending: Vec<u8>,
+    pending: VecDeque<u8>,
     pending_data_len: Option<usize>,
 }
 
 impl ServerStream {
     pub fn push(&mut self, bytes: &[u8]) -> Vec<ServerEvent> {
-        self.pending.extend_from_slice(bytes);
+        self.pending.extend(bytes.iter().copied());
         let mut events = Vec::new();
         self.drain(&mut events);
         events
@@ -58,10 +64,13 @@ impl ServerStream {
             if self.pending.is_empty() {
                 return;
             }
-            let Some(start) = room_protocol::find_subslice(&self.pending, room_protocol::PREFIX)
-            else {
-                let keep = room_protocol::prefix_overlap(&self.pending, room_protocol::PREFIX);
-                let output_len = self.pending.len().saturating_sub(keep);
+            // Searches and slicing require a contiguous view; rotate
+            // the ring once per drain pass, then proceed against the
+            // resulting `&[u8]`.
+            let buf = self.pending.make_contiguous();
+            let Some(start) = room_protocol::find_subslice(buf, room_protocol::PREFIX) else {
+                let keep = room_protocol::prefix_overlap(buf, room_protocol::PREFIX);
+                let output_len = buf.len().saturating_sub(keep);
                 if output_len > 0 {
                     events.push(ServerEvent::Output(
                         self.pending.drain(..output_len).collect(),
@@ -75,11 +84,10 @@ impl ServerStream {
             }
 
             let suffix_search_start = room_protocol::PREFIX.len();
-            let Some(end_rel) = room_protocol::find_subslice(
-                &self.pending[suffix_search_start..],
-                room_protocol::SUFFIX,
-            ) else {
-                if self.pending.len() > room_protocol::MAX_CONTROL_BYTES {
+            let Some(end_rel) =
+                room_protocol::find_subslice(&buf[suffix_search_start..], room_protocol::SUFFIX)
+            else {
+                if buf.len() > room_protocol::MAX_CONTROL_BYTES {
                     events.push(ServerEvent::Output(self.pending.drain(..1).collect()));
                     continue;
                 }
@@ -88,7 +96,7 @@ impl ServerStream {
             let payload_start = room_protocol::PREFIX.len();
             let payload_end = suffix_search_start + end_rel;
             let frame_end = payload_end + room_protocol::SUFFIX.len();
-            let payload = self.pending[payload_start..payload_end].to_vec();
+            let payload = buf[payload_start..payload_end].to_vec();
             let frame = self.pending.drain(..frame_end).collect::<Vec<_>>();
             match room_protocol::parse_server_control(&payload) {
                 Some(ServerControl::Hello(version)) => events.push(ServerEvent::Hello(version)),

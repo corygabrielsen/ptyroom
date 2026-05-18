@@ -486,14 +486,18 @@ impl Witness {
         // hand-edits.
         let spec = ptytrace::contract::Contract::read(spec_path)?;
         let spec_bytes = spec.canonical_bytes()?;
-        let spec_hash = sha256_hex(&spec_bytes);
-        if let Some(expected) = &self.contract_sha256
-            && &spec_hash != expected
-        {
-            return Ok(Err(VerifyOutcome::ContractDiffers {
-                expected: expected.clone(),
-                got: spec_hash,
-            }));
+        // Only hash + compare when the receipt actually carries a
+        // contract claim. Skipping the SHA-256 + hex round-trip when
+        // there's nothing to compare against avoids ~spec_bytes.len()
+        // bytes of digest work per verify call on the no-claim path.
+        if let Some(expected) = self.contract_sha256.as_deref() {
+            let spec_hash = sha256_hex(&spec_bytes);
+            if spec_hash.as_bytes() != expected.as_bytes() {
+                return Ok(Err(VerifyOutcome::ContractDiffers {
+                    expected: expected.to_owned(),
+                    got: spec_hash,
+                }));
+            }
         }
         Ok(Ok(spec_bytes))
     }

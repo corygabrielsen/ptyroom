@@ -19,6 +19,7 @@ path = "src/lib.rs"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+memchr.workspace = true
 nix.workspace = true
 portable-pty.workspace = true
 regex.workspace = true

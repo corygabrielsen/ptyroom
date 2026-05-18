@@ -256,12 +256,14 @@ fn build_concat(frames_dir: &Path, timing: &[TimingEntry]) -> anyhow::Result<Str
     // For typical absolute paths (~50-90 chars) plus the duration line,
     // 120 bytes/entry is a reasonable over-estimate that fits within
     // one allocation even for long traces.
+    //
+    // No per-frame `png.exists()` stat: ffmpeg emits a clear "No such
+    // file or directory" diagnostic when a referenced frame is missing,
+    // and the surrounding `run_ffmpeg` failure path surfaces ffmpeg's
+    // stderr. Skipping the stat saves a syscall per frame.
     let mut s = String::with_capacity(timing.len() * 120);
     for entry in timing {
         let png = frames_dir.join(format!("{}.png", entry.frame));
-        if !png.exists() {
-            anyhow::bail!("missing frame PNG: {}", png.display());
-        }
         let escaped = escape_concat_path(&png)?;
         writeln!(s, "file '{escaped}'")?;
         writeln!(s, "duration {:.4}", entry.dwell_seconds())?;
@@ -392,15 +394,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn build_concat_errors_on_missing_png() {
-        let tmp = tempfile::tempdir().unwrap();
-        let frames = tmp.path().join("frames");
-        fs::create_dir_all(&frames).unwrap();
-        let timing = vec![TimingEntry {
-            frame: "0001".into(),
-            dwell_ms: 100,
-        }];
-        assert!(build_concat(&frames, &timing).is_err());
-    }
+    // Removed `build_concat_errors_on_missing_png`: the per-frame
+    // `Path::exists` precheck was dropped to save a syscall per
+    // frame; the missing-file diagnostic now comes from ffmpeg
+    // itself when the concat file is consumed.
 }
