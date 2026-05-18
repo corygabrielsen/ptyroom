@@ -4,7 +4,7 @@ use std::process::Command;
 
 use serde_json::Value;
 
-const USER_FACING_CRATES: [&str; 4] = ["ptyrecord", "ptyrender", "ptyroom", "ptytrace"];
+const USER_FACING_CRATES: [&str; 5] = ["ptyrecord", "ptyrender", "ptyroom", "ptytrace", "ptyweb"];
 
 #[test]
 fn workspace_contains_only_user_facing_crates() {
@@ -63,6 +63,8 @@ fn member_dependencies_follow_command_algebra() {
     //                 `host` binary that produces .ptyrecord + .mp4
     //                 alongside the trace, mirroring ptyrecord's
     //                 solo-session output set for symmetry)
+    //   ptyweb     <- browser ↔ ptyroom WebSocket bridge; depends
+    //                 only on ptyroom (re-exports the wire protocol)
     //
     // The rule was previously stricter — ptyroom depended only on
     // ptytrace, with rendering deferred to a manual `ptyrender X`
@@ -79,26 +81,27 @@ fn member_dependencies_follow_command_algebra() {
         &metadata,
         "ptytrace",
         &[],
-        &["ptyrender", "ptyrecord", "ptyroom"],
+        &["ptyrender", "ptyrecord", "ptyroom", "ptyweb"],
     );
     assert_dependencies(
         &metadata,
         "ptyrender",
         &["ptytrace"],
-        &["ptyrecord", "ptyroom"],
+        &["ptyrecord", "ptyroom", "ptyweb"],
     );
     assert_dependencies(
         &metadata,
         "ptyrecord",
         &["ptytrace", "ptyrender"],
-        &["ptyroom"],
+        &["ptyroom", "ptyweb"],
     );
     assert_dependencies(
         &metadata,
         "ptyroom",
         &["ptytrace", "ptyrender", "ptyrecord"],
-        &[],
+        &["ptyweb"],
     );
+    assert_dependencies(&metadata, "ptyweb", &["ptyroom"], &[]);
 }
 
 #[test]

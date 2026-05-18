@@ -2,21 +2,30 @@
 
 use super::super::room_protocol::{self, ServerControl, TerminalSize};
 
+/// One semantic event decoded from a ptyroom host's TCP stream.
+///
+/// External bridges (e.g. `ptyweb`) consume these to forward PTY
+/// output and geometry changes to their own clients.
 #[derive(Debug, PartialEq, Eq)]
-pub(super) enum ServerEvent {
+pub enum ServerEvent {
     Hello(u16),
     Output(Vec<u8>),
     Size(TerminalSize),
 }
 
+/// Stateful decoder that turns a host's raw byte stream into
+/// [`ServerEvent`] values.
+///
+/// Push bytes as they arrive; the parser tracks partial frames
+/// across boundaries.
 #[derive(Debug, Default)]
-pub(super) struct ServerStream {
+pub struct ServerStream {
     pending: Vec<u8>,
     pending_data_len: Option<usize>,
 }
 
 impl ServerStream {
-    pub(super) fn push(&mut self, bytes: &[u8]) -> Vec<ServerEvent> {
+    pub fn push(&mut self, bytes: &[u8]) -> Vec<ServerEvent> {
         self.pending.extend_from_slice(bytes);
         let mut events = Vec::new();
         self.drain(&mut events);

@@ -14,6 +14,7 @@
 //! recording machine.
 
 pub mod connect;
+pub mod room_protocol;
 pub mod share;
 
 mod drainer;
@@ -22,7 +23,6 @@ mod keys;
 mod live;
 mod osc;
 mod process;
-mod room_protocol;
 mod status_bar;
 mod terminal_io;
 mod terminal_state;

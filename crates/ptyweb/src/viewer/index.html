@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>ptyweb</title>
+    <link rel="stylesheet" href="xterm.css" />
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        background: #000;
+        color: #ddd;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      #status {
+        position: fixed;
+        top: 6px;
+        right: 8px;
+        padding: 2px 8px;
+        font-size: 12px;
+        background: rgba(20, 20, 20, 0.75);
+        border: 1px solid #333;
+        border-radius: 3px;
+        display: none;
+      }
+      #status.show {
+        display: block;
+      }
+      #term {
+        height: 100%;
+        width: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="status"></div>
+    <div id="term"></div>
+    <script src="xterm.js"></script>
+    <script src="viewer.js"></script>
+  </body>
+</html>

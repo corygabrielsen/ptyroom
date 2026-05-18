@@ -3,51 +3,60 @@
 //! Host, join, and watch paths use this module so protocol names,
 //! versioning, control parsing, and frame construction cannot drift
 //! independently.
+//!
+//! The encoders and decoders here are also the public surface
+//! external bridges (e.g. `ptyweb`) speak to a running ptyroom host
+//! without re-implementing the framing.
 
-pub(super) const VERSION: u16 = 1;
-pub(super) const MAX_CONTROL_BYTES: usize = 1024;
+pub const VERSION: u16 = 1;
+pub const MAX_CONTROL_BYTES: usize = 1024;
 const MAX_DATA_FRAME_BYTES: usize = 16 * 1024 * 1024;
-pub(super) const PREFIX: &[u8] = b"\x1bPptyroom;";
-pub(super) const SUFFIX: &[u8] = b"\x1b\\";
+pub const PREFIX: &[u8] = b"\x1bPptyroom;";
+pub const SUFFIX: &[u8] = b"\x1b\\";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct TerminalSize {
-    pub(super) cols: u16,
-    pub(super) rows: u16,
+pub struct TerminalSize {
+    pub cols: u16,
+    pub rows: u16,
 }
 
 impl TerminalSize {
-    pub(super) const fn new(cols: u16, rows: u16) -> Self {
+    #[must_use]
+    pub const fn new(cols: u16, rows: u16) -> Self {
         Self { cols, rows }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ClientControl {
+pub enum ClientControl {
     Hello(u16),
     Resize(TerminalSize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ServerControl {
+pub enum ServerControl {
     Hello(u16),
     Size(TerminalSize),
     Data(usize),
 }
 
-pub(super) fn encode_hello_control() -> Vec<u8> {
+#[must_use]
+pub fn encode_hello_control() -> Vec<u8> {
     encode_control(&format!("hello;{VERSION}"))
 }
 
-pub(super) fn encode_resize_control(size: TerminalSize) -> Vec<u8> {
+#[must_use]
+pub fn encode_resize_control(size: TerminalSize) -> Vec<u8> {
     encode_control(&format!("resize;{};{}", size.cols, size.rows))
 }
 
-pub(super) fn encode_size_control(size: TerminalSize) -> Vec<u8> {
+#[must_use]
+pub fn encode_size_control(size: TerminalSize) -> Vec<u8> {
     encode_control(&format!("size;{};{}", size.cols, size.rows))
 }
 
-pub(super) fn encode_output_frame(bytes: &[u8]) -> Vec<u8> {
+#[must_use]
+pub fn encode_output_frame(bytes: &[u8]) -> Vec<u8> {
     let mut frame = Vec::with_capacity(PREFIX.len() + 24 + SUFFIX.len() + bytes.len());
     frame.extend_from_slice(PREFIX);
     frame.extend_from_slice(format!("data;{}", bytes.len()).as_bytes());
@@ -64,7 +73,8 @@ fn encode_control(payload: &str) -> Vec<u8> {
     frame
 }
 
-pub(super) fn parse_client_control(payload: &[u8]) -> Option<ClientControl> {
+#[must_use]
+pub fn parse_client_control(payload: &[u8]) -> Option<ClientControl> {
     let text = std::str::from_utf8(payload).ok()?;
     let mut parts = text.split(';');
     match parts.next()? {
@@ -87,7 +97,8 @@ pub(super) fn parse_client_control(payload: &[u8]) -> Option<ClientControl> {
     }
 }
 
-pub(super) fn parse_server_control(payload: &[u8]) -> Option<ServerControl> {
+#[must_use]
+pub fn parse_server_control(payload: &[u8]) -> Option<ServerControl> {
     let text = std::str::from_utf8(payload).ok()?;
     let mut parts = text.split(';');
     match parts.next()? {
@@ -117,7 +128,8 @@ pub(super) fn parse_server_control(payload: &[u8]) -> Option<ServerControl> {
     }
 }
 
-pub(super) fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+#[must_use]
+pub fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() {
         return Some(0);
     }
@@ -126,7 +138,8 @@ pub(super) fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
-pub(super) fn prefix_overlap(haystack: &[u8], prefix: &[u8]) -> usize {
+#[must_use]
+pub fn prefix_overlap(haystack: &[u8], prefix: &[u8]) -> usize {
     let max = haystack.len().min(prefix.len().saturating_sub(1));
     (1..=max)
         .rev()

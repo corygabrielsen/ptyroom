@@ -21,7 +21,7 @@ use super::terminal_io::write_all;
 use super::terminal_state::{RawModeGuard, termination_requested};
 
 mod output;
-mod stream;
+pub mod stream;
 
 use output::OutputSink;
 use stream::{ServerEvent, ServerStream};
