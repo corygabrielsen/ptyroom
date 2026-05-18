@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 
 use clap::{Args, Subcommand};
 use rayon::prelude::*;
+use tempfile::TempDir;
 
 use ptyrender::encode::{EncodeRequest, Mp4Encoder, TimingEntry, encode};
 use ptyrender::frame::Frame;
@@ -112,13 +113,31 @@ fn run_paint(args: &PaintArgs) -> anyhow::Result<()> {
         cell_h_px: None,
     };
     let painter = Painter::new(FONT_BYTES, cfg)?;
+    // Paint into a sibling scratch directory and promote on success.
+    // A mid-sequence rayon failure would otherwise leave the
+    // user-supplied frames_dir holding a half-written PNG sequence
+    // (some workers already wrote, others did not). The scratch dir
+    // lives in the parent of frames_dir so the final move is a same-
+    // device rename instead of a cross-device copy.
+    let scratch_parent = args.frames_dir.parent().unwrap_or(Path::new("."));
+    let scratch = TempDir::new_in(scratch_parent)?;
+    let scratch_dir = scratch.path();
     snaps
         .par_iter()
         .try_for_each(|snap_path| -> anyhow::Result<()> {
             let frame = Frame::load(snap_path)?;
-            let png_path = png_path_for(snap_path, &args.frames_dir)?;
+            let png_path = png_path_for(snap_path, scratch_dir)?;
             painter.save_png(&frame, &png_path)
         })?;
+    // Promote scratch contents into frames_dir, then drop the empty
+    // tempdir. Move file-by-file because frames_dir already exists
+    // (the create_dir_all above made it) and may hold prior renders
+    // the user wants overwritten.
+    for entry in std::fs::read_dir(scratch_dir)? {
+        let entry = entry?;
+        let target = args.frames_dir.join(entry.file_name());
+        std::fs::rename(entry.path(), target)?;
+    }
     Ok(())
 }
 
@@ -141,4 +160,67 @@ fn png_path_for(snap_path: &Path, frames_dir: &Path) -> anyhow::Result<PathBuf> 
         .and_then(|s| s.to_str())
         .ok_or_else(|| anyhow::anyhow!("snapshot path has no stem: {}", snap_path.display()))?;
     Ok(frames_dir.join(format!("{stem}.png")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PaintArgs, run_paint};
+    use ptyrender::frame_replay::replay;
+    use ptytrace::pty::StubColors;
+    use ptytrace::trace::{EventKind, Trace, TraceEvent, TraceHeader};
+    use tempfile::TempDir;
+
+    /// A malformed snapshot causes the rayon worker for that slot to
+    /// fail. The user-supplied `frames_dir` must end up empty rather
+    /// than holding the partial PNG sequence written by the other
+    /// (succeeding) workers.
+    #[test]
+    fn run_paint_leaves_frames_dir_empty_on_worker_failure() {
+        let tmp = TempDir::new().unwrap();
+        let snaps_dir = tmp.path().join("snaps");
+        let frames_dir = tmp.path().join("frames");
+        std::fs::create_dir(&snaps_dir).unwrap();
+
+        // Generate one valid snapshot via the real replay path so we
+        // know it would paint successfully on its own. Then drop a
+        // malformed sibling next to it — the load failure on the
+        // malformed one must rollback the whole run.
+        let trace = Trace {
+            header: TraceHeader {
+                version: 2,
+                width: 8,
+                height: 2,
+                env: std::collections::BTreeMap::default(),
+            },
+            events: vec![TraceEvent {
+                time_s: 0.0,
+                kind: EventKind::Output,
+                data: "hi".into(),
+            }],
+        };
+        let (frames, _) = replay(&trace, StubColors::default()).unwrap();
+        let valid_bytes = serde_json::to_vec(&frames[0]).unwrap();
+        std::fs::write(snaps_dir.join("0001.json"), &valid_bytes).unwrap();
+        std::fs::write(snaps_dir.join("0002.json"), b"{not valid json").unwrap();
+
+        let err = run_paint(&PaintArgs {
+            snaps_dir,
+            frames_dir: frames_dir.clone(),
+            font_size: 14.0,
+            padding: 12,
+        });
+        assert!(err.is_err(), "expected paint to fail on malformed snapshot");
+
+        // frames_dir was created (run_paint always calls
+        // create_dir_all up front) but holds no partial output.
+        let leftover: Vec<_> = std::fs::read_dir(&frames_dir).unwrap().collect();
+        assert!(
+            leftover.is_empty(),
+            "frames_dir held partial output after worker failure: {:?}",
+            leftover
+                .into_iter()
+                .map(|e| e.unwrap().file_name())
+                .collect::<Vec<_>>()
+        );
+    }
 }
