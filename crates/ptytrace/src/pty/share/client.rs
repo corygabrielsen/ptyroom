@@ -269,7 +269,13 @@ impl Client {
         }
     }
 
-    pub(super) fn disconnect(&self) {
+    pub(super) fn disconnect(&mut self) {
+        // Clear the reported size so any future code path that
+        // pools or reuses `Client` records can't inherit a stale
+        // value into the next session's `desired_session_size` fold.
+        // Today disconnected clients are dropped from the vec on the
+        // spot, so this is defense-in-depth — but free.
+        self.size = None;
         let _ = self.stream.shutdown(Shutdown::Both);
     }
 
