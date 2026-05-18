@@ -36,15 +36,15 @@ enum Cmd {
     Capture(capture::Args),
     /// Run a `.script` file and write a trace.
     Run(run::Args),
-    /// Produce a detached provenance attestation for a trace.
-    Attest(attest::Args),
+    /// Emit an unsigned local-file provenance attestation for a trace.
+    AttestFile(attest::FileArgs),
     /// Concatenate N traces into one, rebasing event timestamps (the trace-monoid ⊕).
     Stitch(stitch::Args),
     /// Replay a trace and check it against a behavioral contract.
     Check(check::Args),
     /// Raw command passthrough: `ptytrace ssh host`, `ptytrace htop`, etc.
     #[command(external_subcommand)]
-    Command(Vec<String>),
+    RecordCommand(Vec<String>),
 }
 
 fn main() -> ExitCode {
@@ -62,10 +62,10 @@ fn main() -> ExitCode {
         }
         Some(Cmd::Capture(args)) => capture::run(args).map(|()| ExitCode::SUCCESS),
         Some(Cmd::Run(args)) => run::run(&args).map(|()| ExitCode::SUCCESS),
-        Some(Cmd::Attest(args)) => attest::run(&args).map(|()| ExitCode::SUCCESS),
+        Some(Cmd::AttestFile(args)) => attest::run_file(&args).map(|()| ExitCode::SUCCESS),
         Some(Cmd::Stitch(args)) => stitch::run(&args).map(|()| ExitCode::SUCCESS),
         Some(Cmd::Check(args)) => check::run(&args).map(bool_to_exit),
-        Some(Cmd::Command(argv)) => capture::run_command(argv).map(|()| ExitCode::SUCCESS),
+        Some(Cmd::RecordCommand(argv)) => capture::run_command(argv).map(|()| ExitCode::SUCCESS),
     };
     match result {
         Ok(code) => code,

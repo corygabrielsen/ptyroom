@@ -155,7 +155,7 @@ fn member_crates_have_package_specific_readmes() {
 #[test]
 fn cli_surfaces_follow_command_algebra() {
     let ptytrace_help = cargo_stdout(&["run", "--quiet", "-p", "ptytrace", "--", "--help"]);
-    for command in ["capture", "run", "attest", "stitch", "check"] {
+    for command in ["capture", "run", "attest-file", "stitch", "check"] {
         assert!(
             ptytrace_help.contains(&format!("\n  {command}")),
             "ptytrace help should expose {command}"

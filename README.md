@@ -314,7 +314,7 @@ ptytrace check --trace demo.ptytrace --contract demo.contract.json
 Attach a local unsigned attestation:
 
 ```bash
-ptytrace attest file --trace demo.ptytrace --out demo.attestation.json
+ptytrace attest-file --trace demo.ptytrace --out demo.attestation.json
 ptyrender demo.ptytrace demo.gif \
     --receipt demo.gif.witness.json \
     --spec demo.contract.json \

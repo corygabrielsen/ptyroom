@@ -1,21 +1,10 @@
-//! `attest` subcommand: produce detached provenance anchors for traces.
+//! `attest-file` subcommand: emit an unsigned local-file provenance
+//! attestation over a trace hash.
 
 use std::path::PathBuf;
 
 #[derive(clap::Args)]
-pub struct Args {
-    #[command(subcommand)]
-    provider: Provider,
-}
-
-#[derive(clap::Subcommand)]
-enum Provider {
-    /// Emit an unsigned local-file attestation over a trace hash.
-    File(FileArgs),
-}
-
-#[derive(clap::Args)]
-struct FileArgs {
+pub struct FileArgs {
     /// Trace file to anchor.
     #[arg(long)]
     trace: PathBuf,
@@ -33,13 +22,7 @@ struct FileArgs {
     nonce: Option<String>,
 }
 
-pub fn run(args: &Args) -> anyhow::Result<()> {
-    match &args.provider {
-        Provider::File(file) => run_file(file),
-    }
-}
-
-fn run_file(args: &FileArgs) -> anyhow::Result<()> {
+pub fn run_file(args: &FileArgs) -> anyhow::Result<()> {
     let (trace_sha256, trace_size_bytes) = ptytrace::attestation_io::trace_sha256(&args.trace)?;
     let attestation = ptytrace::attestation_io::file_attestation(
         &args.trace,
