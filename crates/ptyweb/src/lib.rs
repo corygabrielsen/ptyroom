@@ -189,11 +189,13 @@ fn apply_cors(cfg: &Config, headers: &mut HeaderMap) {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ResizeMsg {
     resize: ResizeBody,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ResizeBody {
     cols: u16,
     rows: u16,
