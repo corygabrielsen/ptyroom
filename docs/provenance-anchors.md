@@ -1,12 +1,26 @@
 # Provenance Anchors And Trust Algebra
 
-The `ptyroom` toolchain can prove that media was rendered from a trace.
-That is not the same as proving the trace came from a particular machine,
-user, service, or courtroom exhibit. A trace is bytes; bytes can be
+## Threat Model
+
+The `ptyroom` verification toolchain defends against byte-level
+tampering of a published artifact between the recorder and the
+verifier. It does not authenticate the original session.
+
+`ptyroom` can prove that media was rendered from a trace. That is not
+the same as proving the trace came from a particular machine, user,
+service, or courtroom exhibit. A trace is bytes; bytes can be
 fabricated.
 
-The missing durable object is an attestation: a provider-specific claim
-over the trace digest.
+The missing durable object is an attestation: a provider-specific
+claim over the trace digest. Attestation strength is inherited from
+the provider — `ptyroom`'s contribution is the binding from the
+provider's claim to a specific trace's SHA-256, not the strength of
+the claim itself.
+
+The narrow useful guarantee is "nothing between the recorder and the
+verifier silently swapped pieces." For the full list of what
+verification does and does not prove, see [What Verification Does Not
+Prove](#what-verification-does-not-prove) below.
 
 ## Objects
 

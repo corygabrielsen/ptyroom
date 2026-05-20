@@ -287,13 +287,33 @@ between those two subcommands is documented in
 
 ## Verification
 
-The artifact pipeline has three verification layers:
+Verification defends against byte-level tampering of a published
+artifact between the recorder and the verifier. It does **not**
+authenticate the original session — a trace is bytes, and bytes can be
+fabricated. The trust roots are SHA-256, the render pipeline's pinned
+byte-stability, and whatever identity an attestation provider's claim
+binds in. The narrow useful guarantee is "nothing between the recorder
+and the verifier silently swapped pieces."
 
-- Witnesses prove that media bytes reproduce from a trace, render config,
-  font, toolchain, and ffmpeg identity.
-- Contracts check behavior by replaying the trace and evaluating predicates
-  over the terminal state.
-- Attestations bind an external provider-specific claim to the trace hash.
+Three layers compose against that threat:
+
+- **Witnesses** prove media bytes reproduce from a specific trace
+  under a specific render config, font, toolchain, and ffmpeg
+  identity. Catches: swapped media, swapped trace, or undisclosed
+  render-pipeline drift.
+- **Contracts** replay the trace and evaluate predicates over the
+  terminal state. Catches: trace modifications that change observable
+  behavior.
+- **Attestations** bind an external provider-specific claim (SSH key,
+  KMS, OIDC identity, transparency log) to the trace hash. Catches:
+  anonymous fabricated traces — verification requires the named
+  identity to have signed `h(T)` at attestation time, per the
+  provider's own security model.
+
+What none of this proves: that the trace reflects a real session, that
+the operator was authorized, or that the recording was complete or
+honest. See [`docs/provenance-anchors.md`](docs/provenance-anchors.md)
+for the full algebra and provider matrix.
 
 Render with a witness:
 

@@ -4,6 +4,50 @@
 It is JSON so browser components can load it with `fetch(...).json()`
 without a decompression dependency.
 
+## Threat Model
+
+The verifier of a `.ptyrecord` defends against tampering of the bundle
+in transit or at rest. It does **not** authenticate the original
+session. The full algebra and provider matrix live in
+[`provenance-anchors.md`](provenance-anchors.md); the qualifications
+that matter when reading or shipping a bundle:
+
+**Verification proves** (assuming SHA-256 is preimage- and
+collision-resistant and the verifier's `ptyrender` matches the
+witness's pinned toolchain):
+
+- The embedded media is byte-for-byte the result of rendering the
+  embedded trace under the witness's render configuration (font,
+  ffmpeg identity, libx264 settings).
+- The embedded trace bytes hash to the witness's `trace_sha256`.
+- If a contract is bound, the trace satisfies the contract's
+  predicates over terminal state.
+- If an attestation is bound, the named provider identity signed over
+  the trace's SHA-256 at attestation time, per that provider's own
+  security model.
+
+**Verification does NOT prove:**
+
+- The trace reflects a real session on a real machine. A trace is
+  bytes; bytes can be fabricated.
+- The recorder, operator, or terminal session was honest, complete,
+  legally authorized, or free of redaction.
+- The render configuration in the witness was the producer's only
+  available choice — different render configs can render the same
+  trace differently.
+- Anything beyond what the bound attestation provider's own
+  guarantees cover.
+
+**Trust roots:** SHA-256, the render pipeline's byte-stability under
+its pinned identity (see [`determinism-audit.md`](determinism-audit.md)),
+and whatever identity the attestation provider's claim binds in.
+
+The narrower useful claim is "nothing between the recorder and the
+verifier silently swapped pieces." When that is the threat you care
+about, bundle verification is load-bearing. When you need
+"this session really happened on this machine at this time," you need
+an attestation from a provider that makes that claim.
+
 ## Algebra
 
 ```text
